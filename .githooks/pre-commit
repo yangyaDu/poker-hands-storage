@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+echo "=== cargo fmt --all -- --check ==="
+cargo fmt --all -- --check
+
+echo "=== cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings ==="
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
+
+echo "=== cargo test --workspace --target x86_64-pc-windows-msvc ==="
+cargo test --workspace --target x86_64-pc-windows-msvc
+
+echo "All pre-commit checks passed."

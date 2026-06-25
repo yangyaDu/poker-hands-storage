@@ -1,0 +1,26 @@
+{
+  "format": "PFSP",
+  "version": 1,
+  "sourceDbChecksum": "0e022c8d273e31b7b4664658411516c24ad2c3829cea9f0cc3cf8f39705a912a",
+  "builtAt": "2026-06-25T14:23:27Z",
+  "dimensions": [
+    {
+      "strategy": "default",
+      "playerCount": 6,
+      "depthBb": 100,
+      "concreteLineCount": 2,
+      "packCount": 2,
+      "status": "success",
+      "error": null,
+      "binFile": "ranges_default_6max_100BB.bin",
+      "idxFile": "ranges_default_6max_100BB.idx",
+      "binFileSizeBytes": 9818,
+      "idxFileSizeBytes": 60
+    }
+  ],
+  "files": [
+    "meta.db",
+    "ranges_default_6max_100BB.bin",
+    "ranges_default_6max_100BB.idx"
+  ]
+}
