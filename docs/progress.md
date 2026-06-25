@@ -9,11 +9,11 @@
 | Phase 0 上游数据确认 | 完成 | 原有 9 个维度数据包 standalone verify 通过 |
 | Phase 1 项目骨架 | 完成 | Rust workspace、core/service crates、README 已建立 |
 | Phase 2 核心 reader | 完成 | `.idx/.bin` mmap reader、pack decoder、CRC32C、DimensionReader 已迁移 |
-| Phase 3 服务核心 | 进行中 | manifest、hand、action schema、metadata、LRU handle pool、QueryService 已实现；config 与 HTTP 接线待 Phase 4 前补齐 |
+| Phase 3 服务核心 | 完成 | manifest、config、hand、action schema、metadata、LRU handle pool、QueryService 已实现 |
 | Phase 3 离线构建扩展 | 完成 | `build` 可从旧 SQLite DB 生成 `manifest.json + meta.db + .idx + .bin` |
-| Phase 4 HTTP | 未开始 | axum routes、配置与进程生命周期待实现 |
+| Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
 | Phase 5 容器化 | 未开始 | Dockerfile、compose、只读 volume 待实现 |
-| Phase 6 完整验收 | 进行中 | 单元/端到端测试通过，真实 smoke 数据已生成 |
+| Phase 6 完整验收 | 进行中 | 47 个测试和真实进程 HTTP smoke 通过；全量构建与跨实现 diff 待完成 |
 
 ## 已实现模块
 
@@ -29,13 +29,19 @@ crates/range-store-core/src/
 crates/service/src/
   action_schema.rs
   builder.rs
+  config.rs
   error.rs
   hand_dict.rs
+  http.rs
   manifest.rs
   meta_db.rs
   naming.rs
   pool.rs
   query_service.rs
+  routes/
+    health.rs
+    metadata.rs
+    query.rs
   sqlite.rs
   main.rs
 ```
@@ -62,12 +68,15 @@ poker-hands-storage-service build
 ## 已完成验证
 
 - `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc --offline -- -D warnings`
 - `cargo test --workspace --target x86_64-pc-windows-msvc --offline`
-- 43 个测试通过，其中包含 SQLite → binary store → QueryService 端到端测试。
+- 47 个测试通过，其中包含 SQLite → binary store → QueryService 和 axum Router 端到端测试。
 - 真实 `range.db` smoke：`default:6:100`，2 packs。
 - smoke 输出：`.bin` 9818 bytes，`.idx` 60 bytes。
 - `AA`、concrete line 1、checksum 查询与源 DB 的 float32 结果一致。
 - 上游 standalone verifier：manifest/catalog/index/pack 全部通过，0 failure。
+- 使用真实 `data/smoke` 启动 HTTP 进程，`/health`、`/ready`、`/query`、`/batch` 通过。
+- 原始 SQLite 已复制到 `data/sqlite/range.db`，与源文件 SHA-256 一致。
 
 ## 当前注意事项
 
@@ -75,5 +84,10 @@ poker-hands-storage-service build
   `x86_64-pc-windows-msvc`。
 - SQLite 通过 `libloading` 动态加载。容器需要提供 `libsqlite3.so.0`；
   Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。
-- HTTP 层尚未实现，因此 Phase 3 完成不代表服务已可部署。
 - 全量 9max 数据构建尚未执行；当前只完成小规模真实 smoke。
+- 容器化尚未完成，当前服务可本地运行但还不是最终部署制品。
+
+## 下一步
+
+Phase 5：新增 multi-stage `Dockerfile`、`docker-compose.yml`、只读数据
+volume、healthcheck 和启动预热配置。

@@ -24,6 +24,10 @@ impl AppError {
         self.code
     }
 
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+
     pub fn invalid_argument(message: impl Into<String>) -> Self {
         Self::new("INVALID_ARGUMENT", message)
     }

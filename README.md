@@ -41,3 +41,34 @@ SQLite is loaded dynamically. Set `PHS_SQLITE3_LIB` when it is not available as
 `sqlite3.dll`, `libsqlite3.so.0`, `libsqlite3.so`, or `libsqlite3.dylib`.
 
 The authoritative standalone verifier remains in `preflop-storage`.
+
+## Run the HTTP service
+
+```powershell
+$env:PHS_DATA_DIR = "data\smoke"
+$env:PHS_META_DB = "data\smoke\meta.db"
+$env:PHS_PREWARM = "default:6:100"
+cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- serve
+```
+
+The service exposes:
+
+- `GET /health`
+- `GET /ready`
+- `POST /query`
+- `POST /batch`
+- `POST /prewarm`
+- `POST /concrete-lines`
+- `POST /drill-scenario-lines`
+
+Configuration:
+
+| Variable | Default |
+| --- | --- |
+| `PHS_BIND` | `0.0.0.0:8080` |
+| `PHS_DATA_DIR` | `/data` |
+| `PHS_META_DB` | `${PHS_DATA_DIR}/meta.db` |
+| `PHS_MAX_OPEN_HANDLES` | `3` |
+| `PHS_VERIFY_CHECKSUMS` | `false` |
+| `PHS_PREWARM` | empty |
+| `RUST_LOG` | `info` |

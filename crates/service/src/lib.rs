@@ -1,10 +1,13 @@
 pub mod action_schema;
 pub mod builder;
+pub mod config;
 pub mod error;
 pub mod hand_dict;
+pub mod http;
 pub mod manifest;
 pub mod meta_db;
 pub mod naming;
 pub mod pool;
 pub mod query_service;
+pub mod routes;
 pub mod sqlite;

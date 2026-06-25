@@ -2,22 +2,37 @@ use std::env;
 use std::path::PathBuf;
 
 use poker_hands_storage_service::builder::{build_store, BuildOptions, DimensionSpec};
+use poker_hands_storage_service::config::ServiceConfig;
 use poker_hands_storage_service::error::AppError;
+use poker_hands_storage_service::http;
 use poker_hands_storage_service::naming::DimensionRef;
 use poker_hands_storage_service::query_service::QueryService;
+use tracing_subscriber::EnvFilter;
 
-fn main() {
-    if let Err(error) = run() {
+#[tokio::main]
+async fn main() {
+    init_tracing();
+    if let Err(error) = run().await {
         eprintln!("{error}");
         std::process::exit(1);
     }
 }
 
-fn run() -> Result<(), AppError> {
+async fn run() -> Result<(), AppError> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
         Some("build") => run_build(args.collect()),
         Some("query") => run_query(args.collect()),
+        Some("serve") => {
+            let remaining: Vec<_> = args.collect();
+            if !remaining.is_empty() {
+                return Err(AppError::invalid_argument(format!(
+                    "Unknown serve option: {}",
+                    remaining.join(" ")
+                )));
+            }
+            http::serve(ServiceConfig::from_env()?).await
+        }
         Some("help") | Some("--help") | Some("-h") | None => {
             print_help();
             Ok(())
@@ -26,6 +41,11 @@ fn run() -> Result<(), AppError> {
             "Unknown command: {command}"
         ))),
     }
+}
+
+fn init_tracing() {
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
 fn run_build(args: Vec<String>) -> Result<(), AppError> {
@@ -159,6 +179,10 @@ Commands:
 
   query --data-dir <dir> --player-count <count> --depth-bb <bb>
         --concrete-line-id <id> --hole-cards <AA|AKs|AsKh>
-        [--strategy <name>] [--verify-checksum]"
+        [--strategy <name>] [--verify-checksum]
+
+  serve
+        Environment: PHS_BIND, PHS_DATA_DIR, PHS_META_DB,
+        PHS_MAX_OPEN_HANDLES, PHS_VERIFY_CHECKSUMS, PHS_PREWARM, RUST_LOG"
     );
 }

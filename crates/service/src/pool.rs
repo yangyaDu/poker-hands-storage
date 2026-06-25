@@ -83,9 +83,18 @@ impl HandlePool {
     }
 
     pub fn known_dimensions(&self) -> Vec<String> {
-        let mut keys: Vec<_> = self.known.keys().cloned().collect();
-        keys.sort();
-        keys
+        let mut dimensions: Vec<_> = self
+            .known
+            .values()
+            .map(|dimension| {
+                format!(
+                    "{}_{}max_{}BB",
+                    dimension.strategy, dimension.player_count, dimension.depth_bb
+                )
+            })
+            .collect();
+        dimensions.sort();
+        dimensions
     }
 }
 

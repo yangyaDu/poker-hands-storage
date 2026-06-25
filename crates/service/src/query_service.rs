@@ -6,7 +6,7 @@ use serde::Serialize;
 
 use crate::action_schema::ActionDef;
 use crate::error::AppError;
-use crate::hand_dict::parse_hole_cards;
+use crate::hand_dict::{parse_hole_cards, ParsedHand};
 use crate::manifest::{load_manifest, queryable_dimensions};
 use crate::meta_db::{ConcreteLineRow, MetadataReader};
 use crate::naming::DimensionRef;
@@ -41,8 +41,14 @@ pub struct BatchItemResult {
     pub concrete_line_id: u32,
     pub input_hole_cards: String,
     pub hand_code: Option<String>,
-    pub strategy: Option<QueryResult>,
+    pub strategy: Option<BatchStrategyResult>,
     pub error: Option<ErrorInfo>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct BatchStrategyResult {
+    pub exists: bool,
+    pub actions: Vec<ActionResult>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -58,9 +64,20 @@ impl QueryService {
         verify_checksums: bool,
     ) -> Result<Self, AppError> {
         let data_dir = data_dir.into();
+        let meta_path = data_dir.join("meta.db");
+        Self::open_with_meta(data_dir, meta_path, max_open_handles, verify_checksums)
+    }
+
+    pub fn open_with_meta(
+        data_dir: impl Into<PathBuf>,
+        meta_path: impl Into<PathBuf>,
+        max_open_handles: usize,
+        verify_checksums: bool,
+    ) -> Result<Self, AppError> {
+        let data_dir = data_dir.into();
         let manifest = load_manifest(&data_dir.join("manifest.json"))?;
         let dimensions = queryable_dimensions(&manifest)?;
-        let meta_path = data_dir.join("meta.db");
+        let meta_path = meta_path.into();
         require_file(&meta_path)?;
 
         let metadata = MetadataReader::new(meta_path);
@@ -97,6 +114,15 @@ impl QueryService {
     ) -> Result<QueryResult, AppError> {
         let parsed = parse_hole_cards(hole_cards)?;
         let reader = self.pool.get_or_open(dimension)?;
+        self.query_with_reader(&reader, concrete_line_id, parsed)
+    }
+
+    fn query_with_reader(
+        &self,
+        reader: &DimensionReader,
+        concrete_line_id: u32,
+        parsed: ParsedHand,
+    ) -> Result<QueryResult, AppError> {
         let fragment = reader.query(concrete_line_id, parsed.hand_id, self.verify_checksums)?;
         let Some(fragment) = fragment else {
             return Ok(QueryResult {
@@ -141,31 +167,64 @@ impl QueryService {
         dimension: &DimensionRef,
         requests: &[(u32, String)],
     ) -> Vec<BatchItemResult> {
+        let reader = self.pool.get_or_open(dimension);
         requests
             .iter()
-            .map(|(concrete_line_id, hole_cards)| {
-                match self.query(dimension, *concrete_line_id, hole_cards) {
-                    Ok(result) => BatchItemResult {
-                        concrete_line_id: *concrete_line_id,
-                        input_hole_cards: hole_cards.clone(),
-                        hand_code: Some(result.hand_code.clone()),
-                        strategy: Some(result),
-                        error: None,
+            .map(
+                |(concrete_line_id, hole_cards)| match parse_hole_cards(hole_cards) {
+                    Ok(parsed) => match &reader {
+                        Ok(reader) => {
+                            match self.query_with_reader(reader, *concrete_line_id, parsed) {
+                                Ok(result) => BatchItemResult {
+                                    concrete_line_id: *concrete_line_id,
+                                    input_hole_cards: hole_cards.clone(),
+                                    hand_code: Some(result.hand_code),
+                                    strategy: Some(BatchStrategyResult {
+                                        exists: result.exists,
+                                        actions: result.actions,
+                                    }),
+                                    error: None,
+                                },
+                                Err(error) => BatchItemResult {
+                                    concrete_line_id: *concrete_line_id,
+                                    input_hole_cards: hole_cards.clone(),
+                                    hand_code: parse_hole_cards(hole_cards)
+                                        .ok()
+                                        .map(|parsed| parsed.hand_code),
+                                    strategy: None,
+                                    error: Some(ErrorInfo {
+                                        code: error.code().to_owned(),
+                                        message: error.message().to_owned(),
+                                    }),
+                                },
+                            }
+                        }
+                        Err(error) => BatchItemResult {
+                            concrete_line_id: *concrete_line_id,
+                            input_hole_cards: hole_cards.clone(),
+                            hand_code: Some(parsed.hand_code),
+                            strategy: None,
+                            error: Some(ErrorInfo {
+                                code: error.code().to_owned(),
+                                message: error.message().to_owned(),
+                            }),
+                        },
                     },
-                    Err(error) => BatchItemResult {
-                        concrete_line_id: *concrete_line_id,
-                        input_hole_cards: hole_cards.clone(),
-                        hand_code: parse_hole_cards(hole_cards)
-                            .ok()
-                            .map(|parsed| parsed.hand_code),
-                        strategy: None,
-                        error: Some(ErrorInfo {
-                            code: error.code().to_owned(),
-                            message: error.to_string(),
-                        }),
-                    },
-                }
-            })
+                    Err(error) => {
+                        let error = AppError::from(error);
+                        BatchItemResult {
+                            concrete_line_id: *concrete_line_id,
+                            input_hole_cards: hole_cards.clone(),
+                            hand_code: None,
+                            strategy: None,
+                            error: Some(ErrorInfo {
+                                code: error.code().to_owned(),
+                                message: error.message().to_owned(),
+                            }),
+                        }
+                    }
+                },
+            )
             .collect()
     }
 
