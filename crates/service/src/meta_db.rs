@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::action_schema::{decode_action_blob, ActionDef};
 use crate::error::AppError;
@@ -15,10 +16,13 @@ pub struct MetadataReader {
     path: PathBuf,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq, Eq)]
 pub struct ConcreteLineRow {
+    /// Concrete line id used by range queries.
     pub concrete_line_id: u32,
+    /// Abstract action line.
     pub abstract_line: String,
+    /// Concrete action line.
     pub concrete_line: String,
 }
 

@@ -1,6 +1,6 @@
 # Poker Hands Storage 实施进度
 
-更新时间：2026-06-25
+更新时间：2026-06-26
 
 ## 当前状态
 
@@ -13,7 +13,7 @@
 | Phase 3 离线构建扩展 | 完成 | `build` 可从旧 SQLite DB 生成 `manifest.json + meta.db + .idx + .bin` |
 | Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
 | Phase 5 容器化 | 完成 | multi-stage Dockerfile、compose、只读 volume、healthcheck、启动预热配置和容器 smoke 已通过 |
-| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke 和容器 smoke 通过；全量构建与跨实现 diff 待完成 |
+| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建和 API 契约化通过；跨实现 diff 待完成 |
 
 ## 已实现模块
 
@@ -79,6 +79,27 @@ poker-hands-storage-service build
 - 原始 SQLite 已复制到 `data/sqlite/range.db`，与源文件 SHA-256 一致。
 - `docker compose up --build -d` 容器 smoke 通过，`/health`、`/ready`、`/query`
   返回正常，compose health 状态为 `healthy`。
+- 全量 `data/sqlite/range.db` 构建到 `data/range-strata` 通过，用时约 2 分 12 秒。
+- 全量输出包含 9 个维度，总大小 362,296,945 bytes（345.51 MiB），其中 `.bin`
+  合计 272,110,768 bytes，`.idx` 合计 11,465,092 bytes，`meta.db`
+  78,716,928 bytes。
+- 9 个维度均通过 `concrete_line_id = 1`、`hole_cards = AA`、checksum 查询抽查。
+- Phase 6a API 契约化已完成：`/swagger` Scalar API Reference、`/api-docs/openapi.json`
+  OpenAPI 文档、请求体字段注释和统一 validation error 已接入。
+
+## 全量构建结果
+
+| 维度 | packs | `.bin` bytes | `.idx` bytes |
+|------|------:|-------------:|-------------:|
+| default:6:100 | 3,737 | 2,172,204 | 82,230 |
+| default:6:200 | 2,363 | 1,666,509 | 52,002 |
+| default:6:300 | 1,816 | 1,390,341 | 39,968 |
+| default:8:100 | 8,892 | 4,635,494 | 195,640 |
+| default:8:200 | 5,454 | 3,438,513 | 120,004 |
+| default:8:300 | 3,643 | 2,865,913 | 80,162 |
+| default:9:100 | 197,087 | 83,756,612 | 4,335,930 |
+| default:9:200 | 203,028 | 108,969,070 | 4,466,632 |
+| default:9:300 | 95,114 | 63,216,112 | 2,092,524 |
 
 ## 当前注意事项
 
@@ -86,8 +107,8 @@ poker-hands-storage-service build
   `x86_64-pc-windows-msvc`。
 - SQLite 通过 `libloading` 动态加载。容器需要提供 `libsqlite3.so.0`；
   Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。
-- 全量 9max 数据构建尚未执行；当前只完成小规模真实 smoke。
-- 容器 smoke 已使用 `data/smoke` 验证；全量数据挂载仍需在 Phase 6 覆盖。
+- 全量 9 个维度数据已构建；跨实现 diff 尚未执行。
+- 容器 smoke 已使用 `data/smoke` 验证；全量 `data/range-strata` 挂载仍需在 Phase 6 覆盖。
 
 ## 容器化配置
 
@@ -98,8 +119,17 @@ poker-hands-storage-service build
   `default:6:100`。
 - 镜像内置 `/health` healthcheck；compose 使用 `/ready` 作为更严格的服务检查。
 
+## API 契约化
+
+- `utoipa` 生成 OpenAPI schema，`GET /swagger` 暴露 Scalar API Reference。
+- `GET /api-docs/openapi.json` 提供原始 OpenAPI JSON。
+- 所有 HTTP 接口已加入 request/response schema、字段说明和错误响应声明。
+- `ValidatedJson<T>` 统一处理 JSON 解析和请求体校验。
+- 当前运行时校验覆盖非空字符串、正整数、非空数组、batch 最大 500 项、prewarm
+  最大 64 个维度。
+
 ## 下一步
 
-1. 执行全量 9 个维度构建。
-2. 与上游 standalone verifier 做全量跨实现 diff。
-3. 使用全量数据挂载运行容器验收。
+1. 与上游 standalone verifier 做全量输出验收。
+2. 执行 SQLite 源数据与 binary store 的跨实现 diff。
+3. 使用全量 `data/range-strata` 挂载运行容器验收。

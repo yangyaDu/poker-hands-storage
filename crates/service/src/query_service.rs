@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use range_store_core::DimensionReader;
 use serde::Serialize;
+use utoipa::ToSchema;
 
 use crate::action_schema::ActionDef;
 use crate::error::AppError;
@@ -19,41 +20,59 @@ pub struct QueryService {
     verify_checksums: bool,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
 pub struct ActionResult {
+    /// Action name, for example `fold`, `call`, or `raise`.
     pub action_name: String,
+    /// Abstract action size from the source range data.
     pub action_size: f32,
+    /// Amount in big blinds.
     pub amount_bb: f32,
+    /// Strategy frequency for this hand/action.
     pub frequency: f64,
+    /// Optional expected value for this hand/action.
     pub hand_ev: Option<f64>,
 }
 
-#[derive(Debug, Clone, Serialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
 pub struct QueryResult {
+    /// Original hole-card input from the request.
     pub input_hole_cards: String,
+    /// Normalized 169-hand code.
     pub hand_code: String,
+    /// Whether strategy data exists for the requested hand and concrete line.
     pub exists: bool,
+    /// Ordered action strategy entries.
     pub actions: Vec<ActionResult>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BatchItemResult {
+    /// Concrete line id for this batch item.
     pub concrete_line_id: u32,
+    /// Original hole-card input for this batch item.
     pub input_hole_cards: String,
+    /// Normalized 169-hand code when the hand input is valid.
     pub hand_code: Option<String>,
+    /// Strategy result when the item was resolved successfully.
     pub strategy: Option<BatchStrategyResult>,
+    /// Per-item error for invalid hand input or lookup failures.
     pub error: Option<ErrorInfo>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BatchStrategyResult {
+    /// Whether strategy data exists for the requested hand and concrete line.
     pub exists: bool,
+    /// Ordered action strategy entries.
     pub actions: Vec<ActionResult>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ErrorInfo {
+    /// Stable application error code.
     pub code: String,
+    /// Human-readable error message.
     pub message: String,
 }
 

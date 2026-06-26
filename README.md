@@ -53,6 +53,8 @@ cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- serv
 
 The service exposes:
 
+- `GET /swagger`
+- `GET /api-docs/openapi.json`
 - `GET /health`
 - `GET /ready`
 - `POST /query`
@@ -72,6 +74,35 @@ Configuration:
 | `PHS_VERIFY_CHECKSUMS` | `false` |
 | `PHS_PREWARM` | empty |
 | `RUST_LOG` | `info` |
+
+## API documentation and validation
+
+Scalar API Reference is available from the running service:
+
+```text
+http://127.0.0.1:8080/swagger
+```
+
+The raw OpenAPI document is available at:
+
+```text
+http://127.0.0.1:8080/api-docs/openapi.json
+```
+
+Request bodies are validated before query execution. Validation failures use the
+standard JSON error shape:
+
+```json
+{
+  "code": "INVALID_ARGUMENT",
+  "message": "request validation failed",
+  "details": {
+    "fields": [
+      { "path": "concrete_line_id", "message": "must be greater than 0" }
+    ]
+  }
+}
+```
 
 ## Run with Docker
 

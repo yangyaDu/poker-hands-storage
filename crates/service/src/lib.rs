@@ -1,4 +1,5 @@
 pub mod action_schema;
+pub mod api_doc;
 pub mod builder;
 pub mod config;
 pub mod error;
@@ -11,3 +12,4 @@ pub mod pool;
 pub mod query_service;
 pub mod routes;
 pub mod sqlite;
+pub mod validation;

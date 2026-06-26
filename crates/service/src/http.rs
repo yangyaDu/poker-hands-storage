@@ -2,17 +2,21 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use axum::http::StatusCode;
-use axum::response::{IntoResponse, Response};
+use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
 use serde_json::Value;
 use tokio::net::TcpListener;
+use utoipa::OpenApi;
+use utoipa::ToSchema;
 
+use crate::api_doc::ApiDoc;
 use crate::config::ServiceConfig;
 use crate::error::AppError;
 use crate::query_service::QueryService;
 use crate::routes;
+use crate::validation::ValidationErrorDetails;
 
 #[derive(Clone)]
 pub struct AppState {
@@ -26,6 +30,9 @@ pub fn router(service: Arc<QueryService>) -> Router {
         started_at: Instant::now(),
     };
     Router::new()
+        .route("/swagger", get(swagger_page))
+        .route("/swagger/", get(swagger_page))
+        .route("/api-docs/openapi.json", get(openapi_json))
         .route("/health", get(routes::health::health))
         .route("/ready", get(routes::health::ready))
         .route("/query", post(routes::query::query))
@@ -38,6 +45,43 @@ pub fn router(service: Arc<QueryService>) -> Router {
         )
         .with_state(state)
 }
+
+async fn openapi_json() -> Json<utoipa::openapi::OpenApi> {
+    Json(ApiDoc::openapi())
+}
+
+async fn swagger_page() -> Html<&'static str> {
+    Html(SWAGGER_HTML)
+}
+
+const SWAGGER_HTML: &str = r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Poker Hands Storage API</title>
+    <style>
+      body {
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference"></script>
+    <script>
+      Scalar.createApiReference('#app', {
+        url: '/api-docs/openapi.json',
+        layout: 'modern',
+        theme: 'default',
+        hideDownloadButton: false,
+        metaData: {
+          title: 'Poker Hands Storage API'
+        }
+      })
+    </script>
+  </body>
+</html>"#;
 
 pub async fn serve(config: ServiceConfig) -> Result<(), AppError> {
     let service = Arc::new(QueryService::open_with_meta(
@@ -84,6 +128,13 @@ impl HttpError {
             details: None,
         }
     }
+
+    pub fn validation(details: ValidationErrorDetails) -> Self {
+        Self {
+            error: AppError::invalid_argument("request validation failed"),
+            details: serde_json::to_value(details).ok(),
+        }
+    }
 }
 
 impl From<AppError> for HttpError {
@@ -95,12 +146,16 @@ impl From<AppError> for HttpError {
     }
 }
 
-#[derive(Serialize)]
-struct ErrorBody<'a> {
-    code: &'a str,
-    message: &'a str,
+#[derive(Serialize, ToSchema)]
+pub struct ErrorResponse {
+    /// Stable application error code.
+    code: String,
+    /// Human-readable error message.
+    message: String,
+    /// Optional structured error details, usually field validation failures.
     #[serde(skip_serializing_if = "Option::is_none")]
-    details: Option<&'a Value>,
+    #[schema(value_type = Option<ValidationErrorDetails>)]
+    details: Option<Value>,
 }
 
 impl IntoResponse for HttpError {
@@ -110,10 +165,10 @@ impl IntoResponse for HttpError {
             "BIN_FILE_NOT_FOUND" | "PACK_NOT_FOUND" => StatusCode::NOT_FOUND,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        let body = ErrorBody {
-            code: self.error.code(),
-            message: self.error.message(),
-            details: self.details.as_ref(),
+        let body = ErrorResponse {
+            code: self.error.code().to_owned(),
+            message: self.error.message().to_owned(),
+            details: self.details,
         };
         (status, Json(body)).into_response()
     }
@@ -147,6 +202,19 @@ mod tests {
         assert_eq!(status, StatusCode::OK);
         assert_eq!(ready["dimensions_known"][0], "default_6max_100BB");
 
+        let (status, openapi) = call_json(&app, Method::GET, "/api-docs/openapi.json", None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(openapi["info"]["title"], "Poker Hands Storage API");
+        assert!(openapi["paths"].get("/query").is_some());
+        assert!(openapi["components"]["schemas"]
+            .get("QueryRequest")
+            .is_some());
+
+        let (status, swagger) = call_text(&app, Method::GET, "/swagger").await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(swagger.contains("Scalar.createApiReference"));
+        assert!(swagger.contains("/api-docs/openapi.json"));
+
         let query = json!({
             "strategy": "default",
             "player_count": 6,
@@ -159,6 +227,23 @@ mod tests {
         assert_eq!(result["hand_code"], "AA");
         assert_eq!(result["exists"], true);
         assert_eq!(result["actions"].as_array().unwrap().len(), 2);
+
+        let invalid_payload = json!({
+            "strategy": "",
+            "player_count": 0,
+            "depth_bb": 0,
+            "concrete_line_id": 0,
+            "hole_cards": ""
+        });
+        let (status, error) = call_json(&app, Method::POST, "/query", Some(invalid_payload)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(error["code"], "INVALID_ARGUMENT");
+        assert_eq!(error["message"], "request validation failed");
+        let fields = error["details"]["fields"].as_array().unwrap();
+        assert!(fields
+            .iter()
+            .any(|field| field["path"] == "concrete_line_id"));
+        assert!(fields.iter().any(|field| field["path"] == "hole_cards"));
 
         let invalid_query = json!({
             "strategy": "default",
@@ -246,6 +331,23 @@ mod tests {
         let status = response.status();
         let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
         (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    async fn call_text(app: &Router, method: Method, path: &str) -> (StatusCode, String) {
+        let response = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(method)
+                    .uri(path)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, String::from_utf8(bytes.to_vec()).unwrap())
     }
 
     fn build_test_store(root: &Path) -> std::path::PathBuf {
