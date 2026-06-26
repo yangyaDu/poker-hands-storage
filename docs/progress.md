@@ -12,8 +12,8 @@
 | Phase 3 服务核心 | 完成 | manifest、config、hand、action schema、metadata、LRU handle pool、QueryService 已实现 |
 | Phase 3 离线构建扩展 | 完成 | `build` 可从旧 SQLite DB 生成 `manifest.json + meta.db + .idx + .bin` |
 | Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
-| Phase 5 容器化 | 未开始 | Dockerfile、compose、只读 volume 待实现 |
-| Phase 6 完整验收 | 进行中 | 47 个测试和真实进程 HTTP smoke 通过；全量构建与跨实现 diff 待完成 |
+| Phase 5 容器化 | 完成 | multi-stage Dockerfile、compose、只读 volume、healthcheck、启动预热配置和容器 smoke 已通过 |
+| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke 和容器 smoke 通过；全量构建与跨实现 diff 待完成 |
 
 ## 已实现模块
 
@@ -77,6 +77,8 @@ poker-hands-storage-service build
 - 上游 standalone verifier：manifest/catalog/index/pack 全部通过，0 failure。
 - 使用真实 `data/smoke` 启动 HTTP 进程，`/health`、`/ready`、`/query`、`/batch` 通过。
 - 原始 SQLite 已复制到 `data/sqlite/range.db`，与源文件 SHA-256 一致。
+- `docker compose up --build -d` 容器 smoke 通过，`/health`、`/ready`、`/query`
+  返回正常，compose health 状态为 `healthy`。
 
 ## 当前注意事项
 
@@ -85,9 +87,19 @@ poker-hands-storage-service build
 - SQLite 通过 `libloading` 动态加载。容器需要提供 `libsqlite3.so.0`；
   Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。
 - 全量 9max 数据构建尚未执行；当前只完成小规模真实 smoke。
-- 容器化尚未完成，当前服务可本地运行但还不是最终部署制品。
+- 容器 smoke 已使用 `data/smoke` 验证；全量数据挂载仍需在 Phase 6 覆盖。
+
+## 容器化配置
+
+- `Dockerfile` 使用 multi-stage 构建 release binary，runtime 基于 Debian slim。
+- runtime 安装 `libsqlite3-0`，提供动态加载所需的 `libsqlite3.so.0`。
+- 容器默认执行 `poker-hands-storage-service serve`，监听 `0.0.0.0:8080`。
+- `docker-compose.yml` 将 `./data/smoke` 挂载为 `/data:ro`，开启 checksum，并预热
+  `default:6:100`。
+- 镜像内置 `/health` healthcheck；compose 使用 `/ready` 作为更严格的服务检查。
 
 ## 下一步
 
-Phase 5：新增 multi-stage `Dockerfile`、`docker-compose.yml`、只读数据
-volume、healthcheck 和启动预热配置。
+1. 执行全量 9 个维度构建。
+2. 与上游 standalone verifier 做全量跨实现 diff。
+3. 使用全量数据挂载运行容器验收。

@@ -72,3 +72,42 @@ Configuration:
 | `PHS_VERIFY_CHECKSUMS` | `false` |
 | `PHS_PREWARM` | empty |
 | `RUST_LOG` | `info` |
+
+## Run with Docker
+
+The default compose setup runs the HTTP service against the checked-in smoke
+fixture. It mounts `./data/smoke` as `/data:ro`, enables checksum verification,
+and prewarms `default:6:100`.
+
+```powershell
+docker compose up --build
+```
+
+Health and readiness checks:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:8080/health
+Invoke-RestMethod http://127.0.0.1:8080/ready
+```
+
+Query smoke:
+
+```powershell
+$body = @{
+  strategy = "default"
+  player_count = 6
+  depth_bb = 100
+  concrete_line_id = 1
+  hole_cards = "AA"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:8080/query `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+For full data, mount a directory containing `manifest.json`, `meta.db`, and the
+matching `.idx/.bin` files to `/data:ro`. The runtime image includes
+`libsqlite3.so.0` for the dynamic SQLite loader.
