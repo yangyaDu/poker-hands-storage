@@ -13,3 +13,4 @@ pub mod query_service;
 pub mod routes;
 pub mod sqlite;
 pub mod validation;
+pub mod verifier;

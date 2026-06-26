@@ -79,6 +79,24 @@ impl IdxReader {
         self.record_count
     }
 
+    /// Return the record at `index` in on-disk order.
+    pub fn record_at(&self, index: u32) -> Option<IdxRecord> {
+        if index >= self.record_count {
+            return None;
+        }
+        let records_base = &self.mmap[IDX_HEADER_SIZE..];
+        let offset = index as usize * IDX_RECORD_SIZE;
+        Some(decode_idx_record_at(records_base, offset))
+    }
+
+    /// Iterate records in on-disk order.
+    pub fn records(&self) -> impl Iterator<Item = IdxRecord> + '_ {
+        (0..self.record_count).map(|index| {
+            self.record_at(index)
+                .expect("record index comes from record_count")
+        })
+    }
+
     /// Scan all .idx records and collect unique `action_schema_id` values.
     ///
     /// Used by the TS layer to prewarm only the subset of action schemas

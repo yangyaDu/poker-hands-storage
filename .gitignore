@@ -12,6 +12,12 @@
 .DS_Store
 Thumbs.db
 
+reports/
+
+
+
+data/sqlite/*.wal
+data/sqlite/*.shm
 # Environment
 .env
 .env.local

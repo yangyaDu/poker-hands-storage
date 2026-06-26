@@ -13,7 +13,7 @@
 | Phase 3 离线构建扩展 | 完成 | `build` 可从旧 SQLite DB 生成 `manifest.json + meta.db + .idx + .bin` |
 | Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
 | Phase 5 容器化 | 完成 | multi-stage Dockerfile、compose、只读 volume、healthcheck、启动预热配置和容器 smoke 已通过 |
-| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建、API 契约化和全量 standalone verifier 通过；跨实现 diff 待完成 |
+| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建、API 契约化和全量 standalone verifier 通过；Rust verifier 7a/7b 已接入，benchmark 迁移待完成 |
 
 ## 已实现模块
 
@@ -38,6 +38,12 @@ crates/service/src/
   naming.rs
   pool.rs
   query_service.rs
+  verifier/
+    catalog.rs
+    precision.rs
+    report.rs
+    source_cross.rs
+    standalone.rs
   routes/
     health.rs
     metadata.rs
@@ -112,7 +118,8 @@ poker-hands-storage-service build
   `x86_64-pc-windows-msvc`。
 - SQLite 通过 `libloading` 动态加载。容器需要提供 `libsqlite3.so.0`；
   Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。
-- 全量 9 个维度数据已构建并通过上游 standalone verifier；跨实现 diff 尚未执行。
+- 全量 9 个维度数据已构建并通过上游 standalone verifier；Rust standalone/cross verifier
+  已接入 CLI，真实全量报告需在发布验证链路中刷新。
 - 容器 smoke 已使用 `data/smoke` 验证；全量 `data/range-strata` 挂载仍需在 Phase 6 覆盖。
 
 ## 容器化配置
@@ -135,5 +142,6 @@ poker-hands-storage-service build
 
 ## 下一步
 
-1. 执行 SQLite 源数据与 binary store 的跨实现 diff。
-2. 使用全量 `data/range-strata` 挂载运行容器验收。
+1. 刷新 Rust verifier standalone/cross 报告。
+2. 迁移 Rust benchmark / benchmark-cold / benchmark-compare。
+3. 使用全量 `data/range-strata` 挂载运行容器验收。

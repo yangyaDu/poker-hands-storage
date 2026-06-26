@@ -109,6 +109,12 @@ impl From<i64> for Value {
     }
 }
 
+impl From<f64> for Value {
+    fn from(value: f64) -> Self {
+        Self::Real(value)
+    }
+}
+
 struct Api {
     _library: Library,
     initialize: InitFn,

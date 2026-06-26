@@ -10,7 +10,7 @@
 //!
 //! Total pack size = hand_count * (5 + action_count * 8) bytes.
 
-use crate::types::DecodedCellResult;
+use crate::types::{DecodedCellResult, DecodedPack, DecodedPackCell};
 
 /// Compute the total byte length of a range pack.
 #[inline]
@@ -100,6 +100,85 @@ pub fn decode_pack_for_hand(
     }
 
     result
+}
+
+/// Fully decode a raw range pack, including unset cells.
+pub fn decode_pack(pack: &[u8], hand_count: u16, action_count: u16) -> Result<DecodedPack, String> {
+    let hand_count_u = hand_count as usize;
+    let action_count_u = action_count as usize;
+    if action_count_u > 32 {
+        return Err(format!(
+            "Invalid action count: {action_count}, expected <= 32"
+        ));
+    }
+
+    let expected_len = hand_count_u * (5 + action_count_u * 8);
+    if pack.len() != expected_len {
+        return Err(format!(
+            "Invalid pack length: expected {expected_len}, got {}",
+            pack.len()
+        ));
+    }
+
+    let mut cursor = 0usize;
+    let mut hand_ids = Vec::with_capacity(hand_count_u);
+    for _ in 0..hand_count_u {
+        hand_ids.push(pack[cursor]);
+        cursor += 1;
+    }
+
+    let mut action_masks = Vec::with_capacity(hand_count_u);
+    for _ in 0..hand_count_u {
+        let mask = u32::from_le_bytes([
+            pack[cursor],
+            pack[cursor + 1],
+            pack[cursor + 2],
+            pack[cursor + 3],
+        ]);
+        action_masks.push(mask);
+        cursor += 4;
+    }
+
+    let mut cells = Vec::with_capacity(hand_count_u * action_count_u);
+    for hand_index in 0..hand_count_u {
+        let hand_id = hand_ids[hand_index];
+        let mask = action_masks[hand_index];
+        for action_id in 0..action_count_u {
+            let frequency = f32::from_le_bytes([
+                pack[cursor],
+                pack[cursor + 1],
+                pack[cursor + 2],
+                pack[cursor + 3],
+            ]);
+            cursor += 4;
+
+            let hand_ev_raw = f32::from_le_bytes([
+                pack[cursor],
+                pack[cursor + 1],
+                pack[cursor + 2],
+                pack[cursor + 3],
+            ]);
+            cursor += 4;
+
+            cells.push(DecodedPackCell {
+                hand_id,
+                action_id: action_id as u32,
+                exists: ((mask >> action_id) & 1) == 1,
+                frequency: frequency as f64,
+                hand_ev: if hand_ev_raw.is_nan() {
+                    None
+                } else {
+                    Some(hand_ev_raw as f64)
+                },
+            });
+        }
+    }
+
+    Ok(DecodedPack {
+        hand_ids,
+        action_masks,
+        cells,
+    })
 }
 
 /// Compute action_count from hand_count and pack byte_length.

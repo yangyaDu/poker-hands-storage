@@ -53,6 +53,24 @@ pub struct DecodedCellResult {
     pub hand_ev: Option<f64>,
 }
 
+/// A decoded cell in a full pack decode, including cells not set in the action mask.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedPackCell {
+    pub hand_id: u8,
+    pub action_id: u32,
+    pub exists: bool,
+    pub frequency: f64,
+    pub hand_ev: Option<f64>,
+}
+
+/// Full decoded representation of one range pack.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DecodedPack {
+    pub hand_ids: Vec<u8>,
+    pub action_masks: Vec<u32>,
+    pub cells: Vec<DecodedPackCell>,
+}
+
 /// Result of querying a pack for a specific hand.
 #[derive(Debug, Clone)]
 pub struct PackDecodeResult {

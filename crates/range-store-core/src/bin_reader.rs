@@ -51,6 +51,12 @@ impl BinReader {
         Ok(Self { _file: file, mmap })
     }
 
+    /// Total mapped file length in bytes.
+    #[inline]
+    pub fn file_len(&self) -> usize {
+        self.mmap.len()
+    }
+
     /// Return a view of the pack data at `offset..offset + byte_length`.
     ///
     /// `offset` must be >= PFSP_HEADER_SIZE (the data starts after the header).

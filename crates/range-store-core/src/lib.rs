@@ -6,4 +6,6 @@ pub mod pack_codec;
 pub mod types;
 
 pub use dimension_reader::{validate_hand_id, DimensionReader};
-pub use types::{BatchQueryRequest, DecodedCellResult, IdxRecord, PackDecodeResult};
+pub use types::{
+    BatchQueryRequest, DecodedCellResult, DecodedPack, DecodedPackCell, IdxRecord, PackDecodeResult,
+};

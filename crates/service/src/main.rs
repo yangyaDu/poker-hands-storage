@@ -7,6 +7,12 @@ use poker_hands_storage_service::error::AppError;
 use poker_hands_storage_service::http;
 use poker_hands_storage_service::naming::DimensionRef;
 use poker_hands_storage_service::query_service::QueryService;
+use poker_hands_storage_service::verifier::cli_args::parse_verify_args;
+use poker_hands_storage_service::verifier::report::{RangeStrataVerifyReport, VerifyMode};
+use poker_hands_storage_service::verifier::source_cross::{run_cross_verify, CrossVerifyOptions};
+use poker_hands_storage_service::verifier::standalone::{
+    run_standalone_verify, StandaloneVerifyOptions,
+};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -23,6 +29,7 @@ async fn run() -> Result<(), AppError> {
     match args.next().as_deref() {
         Some("build") => run_build(args.collect()),
         Some("query") => run_query(args.collect()),
+        Some("verify") => run_verify(args.collect()),
         Some("serve") => {
             let remaining: Vec<_> = args.collect();
             if !remaining.is_empty() {
@@ -95,6 +102,70 @@ fn run_build(args: Vec<String>) -> Result<(), AppError> {
         );
     }
     Ok(())
+}
+
+fn run_verify(args: Vec<String>) -> Result<(), AppError> {
+    let command = parse_verify_args(args)?;
+    let report = match command.mode {
+        VerifyMode::Standalone => run_standalone_verify(&StandaloneVerifyOptions {
+            dir: command.dir,
+            verify_checksums: command.verify_checksums,
+            out_path: Some(command.out_path),
+            md_path: Some(command.md_path),
+        })?,
+        VerifyMode::Cross => run_cross_verify(&CrossVerifyOptions {
+            dir: command.dir,
+            source_db: command
+                .source
+                .ok_or_else(|| AppError::invalid_argument("--source is required for cross mode"))?,
+            sample_size: command.sample_size,
+            max_failures: command.max_failures,
+            verify_checksums: command.verify_checksums,
+            out_path: Some(command.out_path),
+            md_path: Some(command.md_path),
+        })?,
+    };
+    print_verify_summary(&report);
+    if report.has_failures() {
+        return Err(AppError::new("VERIFY_FAILED", "verification failed"));
+    }
+    Ok(())
+}
+
+fn print_verify_summary(report: &RangeStrataVerifyReport) {
+    println!("Range Strata Binary verification complete.");
+    println!("  Dimensions: {}", report.totals.dimensions);
+    println!("  Manifest OK: {}", report.totals.manifest_ok);
+    println!("  Catalog OK: {}", report.totals.catalog_ok);
+    println!(
+        "  Index files OK: {}/{}",
+        report.totals.index_files_ok,
+        report.totals.index_files_ok + report.totals.index_files_failed
+    );
+    println!(
+        "  Pack files OK: {}/{}",
+        report.totals.pack_files_ok,
+        report.totals.pack_files_ok + report.totals.pack_files_failed
+    );
+    println!(
+        "  Index-Pack cross failures: {}",
+        report.totals.index_pack_cross_failures
+    );
+    if report.mode == VerifyMode::Cross {
+        println!(
+            "  Source records checked: {}",
+            report.totals.checked_source_records.unwrap_or_default()
+        );
+        println!(
+            "  Source records failed: {}",
+            report.totals.failed_source_records.unwrap_or_default()
+        );
+        println!(
+            "  Extra binary records: {}",
+            report.totals.extra_binary_records.unwrap_or_default()
+        );
+    }
+    println!("  Total failures: {}", report.failures.len());
 }
 
 fn run_query(args: Vec<String>) -> Result<(), AppError> {
@@ -180,6 +251,11 @@ Commands:
   query --data-dir <dir> --player-count <count> --depth-bb <bb>
         --concrete-line-id <id> --hole-cards <AA|AKs|AsKh>
         [--strategy <name>] [--verify-checksum]
+
+  verify --mode <standalone|cross> --dir <dir>
+        [--source <range.db>] [--sample-size <count>]
+        [--max-failures <count>] [--verify-checksum]
+        [--out <report.json>] [--md <report.md>]
 
   serve
         Environment: PHS_BIND, PHS_DATA_DIR, PHS_META_DB,

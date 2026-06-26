@@ -40,7 +40,35 @@ cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- quer
 SQLite is loaded dynamically. Set `PHS_SQLITE3_LIB` when it is not available as
 `sqlite3.dll`, `libsqlite3.so.0`, `libsqlite3.so`, or `libsqlite3.dylib`.
 
-The authoritative standalone verifier remains in `preflop-storage`.
+## Verify Range Strata output
+
+Standalone verification checks `manifest.json`, `meta.db`, `.idx`, `.bin`,
+index-pack cross references, and optional pack CRC32C checksums without reading
+the source SQLite DB.
+
+```powershell
+cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- verify `
+  --mode standalone `
+  --dir data\range-strata `
+  --verify-checksum
+```
+
+Cross verification first runs standalone checks, then compares source SQLite
+rows against decoded binary packs using float32 bit-exact frequency and hand EV
+semantics.
+
+```powershell
+cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- verify `
+  --mode cross `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --sample-size 10000 `
+  --verify-checksum
+```
+
+Reports default to `reports/range-strata-verify-standalone.json/.md` and
+`reports/range-strata-verify-cross.json/.md`. Use `--sample-size 0` for a full
+source scan in cross mode.
 
 ## Run the HTTP service
 
