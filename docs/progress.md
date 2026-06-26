@@ -13,7 +13,7 @@
 | Phase 3 离线构建扩展 | 完成 | `build` 可从旧 SQLite DB 生成 `manifest.json + meta.db + .idx + .bin` |
 | Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
 | Phase 5 容器化 | 完成 | multi-stage Dockerfile、compose、只读 volume、healthcheck、启动预热配置和容器 smoke 已通过 |
-| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建和 API 契约化通过；跨实现 diff 待完成 |
+| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建、API 契约化和全量 standalone verifier 通过；跨实现 diff 待完成 |
 
 ## 已实现模块
 
@@ -86,6 +86,11 @@ poker-hands-storage-service build
 - 9 个维度均通过 `concrete_line_id = 1`、`hole_cards = AA`、checksum 查询抽查。
 - Phase 6a API 契约化已完成：`/swagger` Scalar API Reference、`/api-docs/openapi.json`
   OpenAPI 文档、请求体字段注释和统一 validation error 已接入。
+- 上游 `preflop-storage` standalone verifier 已对全量 `data/range-strata` 通过 CRC 校验：
+  9 个维度、manifest OK、catalog OK、index files 9/9、pack files 9/9、index-pack
+  cross failures 0、total failures 0。
+- verifier 报告已写入 `reports/range-strata-verify-standalone.json` 和
+  `reports/range-strata-verify-standalone.md`。
 
 ## 全量构建结果
 
@@ -107,7 +112,7 @@ poker-hands-storage-service build
   `x86_64-pc-windows-msvc`。
 - SQLite 通过 `libloading` 动态加载。容器需要提供 `libsqlite3.so.0`；
   Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。
-- 全量 9 个维度数据已构建；跨实现 diff 尚未执行。
+- 全量 9 个维度数据已构建并通过上游 standalone verifier；跨实现 diff 尚未执行。
 - 容器 smoke 已使用 `data/smoke` 验证；全量 `data/range-strata` 挂载仍需在 Phase 6 覆盖。
 
 ## 容器化配置
@@ -130,6 +135,5 @@ poker-hands-storage-service build
 
 ## 下一步
 
-1. 与上游 standalone verifier 做全量输出验收。
-2. 执行 SQLite 源数据与 binary store 的跨实现 diff。
-3. 使用全量 `data/range-strata` 挂载运行容器验收。
+1. 执行 SQLite 源数据与 binary store 的跨实现 diff。
+2. 使用全量 `data/range-strata` 挂载运行容器验收。
