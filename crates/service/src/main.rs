@@ -1,12 +1,14 @@
 use std::env;
 use std::path::PathBuf;
 
+use poker_hands_storage_service::benchmark::run_hot_benchmark;
 use poker_hands_storage_service::config::ServiceConfig;
 use poker_hands_storage_service::domain::dimension::DimensionRef;
 use poker_hands_storage_service::errors::AppError;
 use poker_hands_storage_service::http;
 use poker_hands_storage_service::query::QueryService;
 use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
+use poker_hands_storage_service::scripts::benchmark::parse_benchmark_args;
 use poker_hands_storage_service::scripts::verify_store::parse_verify_args;
 use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
 use poker_hands_storage_service::verification::report::{RangeStrataVerifyReport, VerifyMode};
@@ -30,6 +32,7 @@ async fn run() -> Result<(), AppError> {
         Some("build") => run_build(args.collect()),
         Some("query") => run_query(args.collect()),
         Some("verify") => run_verify(args.collect()),
+        Some("benchmark") => run_benchmark(args.collect()),
         Some("serve") => {
             let remaining: Vec<_> = args.collect();
             if !remaining.is_empty() {
@@ -48,6 +51,23 @@ async fn run() -> Result<(), AppError> {
             "Unknown command: {command}"
         ))),
     }
+}
+
+fn run_benchmark(args: Vec<String>) -> Result<(), AppError> {
+    let command = parse_benchmark_args(args)?;
+    let report = run_hot_benchmark(&command)?;
+    println!("Range Strata Binary benchmark complete.");
+    println!("  Cases: {}", report.cases.len());
+    println!("  Total iterations: {}", report.totals.iterations);
+    println!("  Aggregate QPS: {:.2}", report.totals.avg_qps);
+    println!("  Error count: {}", report.totals.error_count);
+    println!("  Result action count: {}", report.totals.result_count);
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(AppError::new("BENCHMARK_FAILED", "benchmark failed"));
+    }
+    Ok(())
 }
 
 fn init_tracing() {
@@ -256,6 +276,16 @@ Commands:
         [--source <range.db>] [--sample-size <count>]
         [--max-failures <count>] [--verify-checksum]
         [--out <report.json>] [--md <report.md>]
+
+  benchmark --dir <dir> --source <range.db>
+        [--meta <meta.db>] [--workload <workload.json>]
+        [--seed <number>] [--iterations <count>]
+        [--hand-iterations <count>] [--batch-iterations <count>]
+        [--batch-size <count>] [--batch-sizes <csv>]
+        [--dimension <strategy:players:bb>]
+        [--workload-mode <random|abstract-local>]
+        [--warmup-iterations <count>] [--verify-checksum]
+        [--verify-results] [--out <report.json>] [--md <report.md>]
 
   serve
         Environment: PHS_BIND, PHS_DATA_DIR, PHS_META_DB,

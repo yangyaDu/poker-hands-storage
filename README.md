@@ -20,6 +20,7 @@ The HTTP runtime remains read-only. The same binary also provides an offline
 - `storage`: manifest, metadata DB, and dynamically loaded SQLite access.
 - `range_store_builder`: SQLite source to PFSP/PFXI binary store build flow.
 - `query`: hand query service and dimension handle pool.
+- `benchmark`: hot-path benchmark workload generation, metrics, reports, and result checks.
 - `http` and `routes`: Axum server setup, OpenAPI, validation, and handlers.
 - `scripts`: CLI command parsing and command entry points.
 - `verification`: standalone and source-cross verification reports.
@@ -84,6 +85,31 @@ cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- veri
 Reports default to `reports/range-strata-verify-standalone.json/.md` and
 `reports/range-strata-verify-cross.json/.md`. Use `--sample-size 0` for a full
 source scan in cross mode.
+
+## Benchmark hot query path
+
+The Rust benchmark command measures the binary query hot path and can verify the
+first 100 generated hand queries against source SQLite action counts.
+
+```powershell
+cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- benchmark `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --verify-results
+```
+
+Useful workload controls:
+
+- `--seed`, `--iterations`, `--hand-iterations`, `--batch-iterations`
+- `--batch-size`, `--batch-sizes 1,5,10,50,100`
+- `--dimension default:6:100` or `--dimension default_6max_100BB`
+- `--workload-mode random|abstract-local`
+- `--workload <workload.json>` to reuse a fixed workload
+
+Reports default to `reports/benchmark-range-strata-binary.json/.md` and include
+QPS, avg, p50, p95, p99, max, error count, result action count, memory
+approximation, workload details, and result verification notes. The command
+exits non-zero when benchmark errors or `--verify-results` mismatches occur.
 
 ## Run the HTTP service
 

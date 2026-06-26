@@ -13,7 +13,7 @@
 | Phase 3 离线构建扩展 | 完成 | `build` 可从旧 SQLite DB 生成 `manifest.json + meta.db + .idx + .bin` |
 | Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
 | Phase 5 容器化 | 完成 | multi-stage Dockerfile、compose、只读 volume、healthcheck、启动预热配置和容器 smoke 已通过 |
-| Phase 6 完整验收 | 进行中 | 47 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建、API 契约化和全量 standalone verifier 通过；Rust verifier 7a/7b 已接入，benchmark 迁移待完成 |
+| Phase 6 完整验收 | 进行中 | 86 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建、API 契约化、全量 standalone verifier、Rust verifier 7a/7b 和 hot benchmark 7c 已接入；cold/compare 待完成 |
 
 ## 已实现模块
 
@@ -33,6 +33,7 @@ crates/service/src/
   http/
   query/
   range_store_builder/
+  benchmark/
   routes/
     health_routes.rs
     hand_query_routes.rs
@@ -70,9 +71,10 @@ poker-hands-storage-service build
 ## 已完成验证
 
 - `cargo fmt --all -- --check`
-- `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc --offline -- -D warnings`
-- `cargo test --workspace --target x86_64-pc-windows-msvc --offline`
-- 47 个测试通过，其中包含 SQLite → binary store → QueryService 和 axum Router 端到端测试。
+- `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`
+- `cargo test --workspace --target x86_64-pc-windows-msvc`
+- 86 个测试通过，其中包含 SQLite → binary store → QueryService、benchmark hot runner
+  和 axum Router 端到端测试。
 - 真实 `range.db` smoke：`default:6:100`，2 packs。
 - smoke 输出：`.bin` 9818 bytes，`.idx` 60 bytes。
 - `AA`、concrete line 1、checksum 查询与源 DB 的 float32 结果一致。
@@ -93,6 +95,14 @@ poker-hands-storage-service build
   cross failures 0、total failures 0。
 - verifier 报告已写入 `reports/range-strata-verify-standalone.json` 和
   `reports/range-strata-verify-standalone.md`。
+- Rust hot benchmark 7c 已接入 CLI：workload 生成/读取、random/abstract-local、
+  hand-strategy、batch-hand-strategy、多 batch-size、warmup、QPS/avg/p50/p95/p99/max、
+  errorCount/resultCount、内存近似、JSON/Markdown report 和 `--verify-results`
+  action-count 对账。
+- 真实 `data/range-strata` benchmark smoke 通过：8 个 case、55 次迭代、0 error、
+  result verification 20 match / 0 mismatch / 0 errors，报告写入
+  `reports/benchmark-range-strata-binary-smoke.json` 和
+  `reports/benchmark-range-strata-binary-smoke.md`。
 
 ## 全量构建结果
 
@@ -115,7 +125,7 @@ poker-hands-storage-service build
 - SQLite 通过 `libloading` 动态加载。容器需要提供 `libsqlite3.so.0`；
   Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。
 - 全量 9 个维度数据已构建并通过上游 standalone verifier；Rust standalone/cross verifier
-  已接入 CLI，真实全量报告需在发布验证链路中刷新。
+  和 hot benchmark 已接入 CLI，真实全量报告需在发布验证链路中刷新。
 - 容器 smoke 已使用 `data/smoke` 验证；全量 `data/range-strata` 挂载仍需在 Phase 6 覆盖。
 
 ## 容器化配置
@@ -138,6 +148,7 @@ poker-hands-storage-service build
 
 ## 下一步
 
-1. 刷新 Rust verifier standalone/cross 报告。
-2. 迁移 Rust benchmark / benchmark-cold / benchmark-compare。
-3. 使用全量 `data/range-strata` 挂载运行容器验收。
+1. 刷新 Rust verifier standalone/cross 和 benchmark 默认参数报告。
+2. 迁移 Rust `benchmark-cold`。
+3. 迁移 Rust `benchmark compare`。
+4. 使用全量 `data/range-strata` 挂载运行容器验收。

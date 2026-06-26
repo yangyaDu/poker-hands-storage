@@ -25,6 +25,30 @@ name = "scripts_verify_store_test"
 path = "tests/scripts/verify_store.test.rs"
 
 [[test]]
+name = "scripts_benchmark_test"
+path = "tests/scripts/benchmark.test.rs"
+
+[[test]]
+name = "benchmark_metrics_test"
+path = "tests/benchmark/metrics.test.rs"
+
+[[test]]
+name = "benchmark_workload_test"
+path = "tests/benchmark/workload.test.rs"
+
+[[test]]
+name = "benchmark_report_test"
+path = "tests/benchmark/benchmark_report.test.rs"
+
+[[test]]
+name = "benchmark_result_verifier_test"
+path = "tests/benchmark/result_verifier.test.rs"
+
+[[test]]
+name = "benchmark_hot_runner_test"
+path = "tests/benchmark/hot_runner.test.rs"
+
+[[test]]
 name = "verification_float32_precision_test"
 path = "tests/verification/float32_precision.test.rs"
 
