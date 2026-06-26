@@ -27,28 +27,24 @@ crates/range-store-core/src/
   dimension_reader.rs
 
 crates/service/src/
-  action_schema.rs
-  builder.rs
-  config.rs
-  error.rs
-  hand_dict.rs
-  http.rs
-  manifest.rs
-  meta_db.rs
-  naming.rs
-  pool.rs
-  query_service.rs
-  verifier/
-    catalog.rs
-    precision.rs
-    report.rs
-    source_cross.rs
-    standalone.rs
+  config/
+  domain/
+  errors/
+  http/
+  query/
+  range_store_builder/
   routes/
-    health.rs
-    metadata.rs
-    query.rs
-  sqlite.rs
+    health_routes.rs
+    hand_query_routes.rs
+    metadata_routes.rs
+  scripts/
+  storage/
+  verification/
+    catalog_checks.rs
+    float32_precision.rs
+    cross/
+    report/
+    standalone/
   main.rs
 ```
 

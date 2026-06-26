@@ -1,8 +1,8 @@
-pub mod health;
-pub mod metadata;
-pub mod query;
+pub mod hand_query_routes;
+pub mod health_routes;
+pub mod metadata_routes;
 
-use crate::error::AppError;
+use crate::errors::AppError;
 use crate::http::HttpError;
 
 pub async fn run_blocking<T, F>(task: F) -> Result<T, HttpError>

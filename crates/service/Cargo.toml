@@ -3,6 +3,7 @@ name = "poker-hands-storage-service"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+autotests = false
 
 [dependencies]
 axum = "0.8"
@@ -18,3 +19,59 @@ utoipa = { version = "5.5.0", features = ["axum_extras"] }
 [dev-dependencies]
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "scripts_verify_store_test"
+path = "tests/scripts/verify_store.test.rs"
+
+[[test]]
+name = "verification_float32_precision_test"
+path = "tests/verification/float32_precision.test.rs"
+
+[[test]]
+name = "verification_markdown_report_test"
+path = "tests/verification/report/markdown_report.test.rs"
+
+[[test]]
+name = "verification_report_totals_test"
+path = "tests/verification/report/report_totals.test.rs"
+
+[[test]]
+name = "verification_standalone_runner_test"
+path = "tests/verification/standalone/standalone_runner.test.rs"
+
+[[test]]
+name = "verification_source_cross_runner_test"
+path = "tests/verification/cross/source_cross_runner.test.rs"
+
+[[test]]
+name = "domain_action_schema_test"
+path = "tests/domain/action_schema.test.rs"
+
+[[test]]
+name = "domain_hole_cards_test"
+path = "tests/domain/hole_cards.test.rs"
+
+[[test]]
+name = "domain_dimension_test"
+path = "tests/domain/dimension.test.rs"
+
+[[test]]
+name = "config_service_config_test"
+path = "tests/config/service_config.test.rs"
+
+[[test]]
+name = "storage_manifest_reader_test"
+path = "tests/storage/manifest/manifest_reader.test.rs"
+
+[[test]]
+name = "storage_sqlite_connection_test"
+path = "tests/storage/sqlite/sqlite_connection.test.rs"
+
+[[test]]
+name = "http_router_test"
+path = "tests/http/router.test.rs"
+
+[[test]]
+name = "range_store_builder_build_orchestrator_test"
+path = "tests/range_store_builder/build_orchestrator.test.rs"
