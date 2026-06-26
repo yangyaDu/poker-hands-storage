@@ -1,21 +1,118 @@
 use utoipa::OpenApi;
 
 use crate::http::request_validation::{FieldValidationError, ValidationErrorDetails};
-use crate::http::ErrorResponse;
 use crate::query::{
-    ActionHandsEntry, ActionResult, BatchItemResult, BatchStrategyResult, ErrorInfo,
-    HandsByActionsResult, QueryResult,
+    ActionHandsEntry, BatchItemResult, BatchStrategyResult, HandsByActionsResult, QueryResult,
 };
 use crate::routes::hand_query_routes::{
-    BatchQueryItem, BatchRequest, BatchResponse, DimensionRequest, HandsByActionsRequest,
-    PrewarmRequest, PrewarmResponse, QueryRequest,
+    BatchQueryItem, BatchRequest, HandsByActionsRequest, PrewarmRequest, QueryRequest,
 };
 use crate::routes::health_routes::{HealthResponse, ReadyResponse};
-use crate::routes::metadata_routes::{
-    ConcreteLinesRequest, ConcreteLinesResponse, DrillScenarioLinesRequest,
-    DrillScenarioLinesResponse,
-};
+use crate::routes::metadata_routes::{ConcreteLinesRequest, DrillScenarioLinesRequest};
 use crate::storage::metadata::ConcreteLineRow;
+
+/// Concrete response types for OpenAPI documentation.
+/// utoipa doesn't support generic `ApiResponse<T>` in path macros,
+/// so we define concrete wrappers for each endpoint.
+/// These types are only used for OpenAPI schema generation.
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct QueryResponse {
+    code: i32,
+    data: QueryResult,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct BatchResponseEnvelope {
+    code: i32,
+    data: BatchData,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct BatchData {
+    results: Vec<BatchItemResult>,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct HandsByActionsResponseEnvelope {
+    code: i32,
+    data: HandsByActionsResult,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct PrewarmResponseEnvelope {
+    code: i32,
+    data: PrewarmData,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct PrewarmData {
+    prewarmed: usize,
+    total_open: usize,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct ConcreteLinesResponseEnvelope {
+    code: i32,
+    data: ConcreteLinesPayload,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct ConcreteLinesPayload {
+    pub lines: Vec<ConcreteLineRow>,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct DrillScenarioLinesResponseEnvelope {
+    code: i32,
+    data: DrillScenarioLinesPayload,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct DrillScenarioLinesPayload {
+    pub abstract_lines: Vec<String>,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct HealthResponseEnvelope {
+    code: i32,
+    data: HealthResponse,
+    message: String,
+}
+
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct ReadyResponseEnvelope {
+    code: i32,
+    data: ReadyResponse,
+    message: String,
+}
+
+/// Error response body (used for 4xx/5xx responses).
+#[allow(dead_code)]
+#[derive(utoipa::ToSchema)]
+pub struct ErrorResponse {
+    code: i32,
+    #[schema(nullable)]
+    data: Option<()>,
+    message: String,
+}
 
 #[derive(OpenApi)]
 #[openapi(
@@ -31,29 +128,33 @@ use crate::storage::metadata::ConcreteLineRow;
     ),
     components(schemas(
         ActionHandsEntry,
-        ActionResult,
         BatchItemResult,
         BatchQueryItem,
         BatchRequest,
-        BatchResponse,
+        BatchData,
+        BatchResponseEnvelope,
         BatchStrategyResult,
         ConcreteLineRow,
+        ConcreteLinesPayload,
         ConcreteLinesRequest,
-        ConcreteLinesResponse,
-        DimensionRequest,
+        ConcreteLinesResponseEnvelope,
+        DrillScenarioLinesPayload,
         DrillScenarioLinesRequest,
-        DrillScenarioLinesResponse,
-        ErrorInfo,
+        DrillScenarioLinesResponseEnvelope,
         ErrorResponse,
         FieldValidationError,
         HandsByActionsRequest,
         HandsByActionsResult,
+        HandsByActionsResponseEnvelope,
         HealthResponse,
+        HealthResponseEnvelope,
         PrewarmRequest,
-        PrewarmResponse,
+        PrewarmData,
+        PrewarmResponseEnvelope,
         QueryRequest,
-        QueryResult,
+        QueryResponse,
         ReadyResponse,
+        ReadyResponseEnvelope,
         ValidationErrorDetails
     )),
     tags(

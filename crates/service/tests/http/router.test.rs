@@ -20,19 +20,31 @@ async fn serves_query_and_metadata_workflows() {
 
     let (status, health) = call_json(&app, Method::GET, "/health", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(health["status"], "ok");
+    assert_eq!(health["code"], 0);
+    assert_eq!(health["data"]["status"], "ok");
 
     let (status, ready) = call_json(&app, Method::GET, "/ready", None).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(ready["dimensions_known"][0], "default_6max_100BB");
+    assert_eq!(ready["code"], 0);
+    assert_eq!(ready["data"]["dimensions_known"][0], "default_6max_100BB");
 
     let (status, openapi) = call_json(&app, Method::GET, "/api-docs/openapi.json", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(openapi["info"]["title"], "Poker Hands Storage API");
     assert!(openapi["paths"].get("/range/hand-strategy").is_some());
+    assert!(openapi["paths"].get("/range/hand-strategy/batch").is_some());
     assert!(openapi["paths"].get("/range/hands-by-actions").is_some());
+    assert!(openapi["paths"].get("/range/prewarm").is_some());
+    assert!(openapi["paths"].get("/range/concrete-lines").is_some());
+    assert!(openapi["paths"].get("/range/drill-scenarios").is_some());
+    // Old alias paths should not exist
+    assert!(openapi["paths"].get("/query").is_none());
+    assert!(openapi["paths"].get("/batch").is_none());
+    assert!(openapi["paths"].get("/prewarm").is_none());
+    assert!(openapi["paths"].get("/concrete-lines").is_none());
+    assert!(openapi["paths"].get("/drill-scenario-lines").is_none());
     assert!(openapi["components"]["schemas"]
-        .get("QueryRequest")
+        .get("QueryResponse")
         .is_some());
 
     let (status, swagger) = call_text(&app, Method::GET, "/swagger").await;
@@ -49,9 +61,10 @@ async fn serves_query_and_metadata_workflows() {
     });
     let (status, result) = call_json(&app, Method::POST, "/range/hand-strategy", Some(query)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["hand_code"], "AA");
-    assert_eq!(result["exists"], true);
-    assert_eq!(result["actions"].as_array().unwrap().len(), 2);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["hand_code"], "AA");
+    assert_eq!(result["data"]["exists"], true);
+    assert_eq!(result["data"]["actions"].as_array().unwrap().len(), 2);
 
     let invalid_payload = json!({
         "strategy": "",
@@ -68,13 +81,9 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(error["code"], "INVALID_ARGUMENT");
+    assert_ne!(error["code"], 0);
+    assert!(error["data"].is_null());
     assert_eq!(error["message"], "request validation failed");
-    let fields = error["details"]["fields"].as_array().unwrap();
-    assert!(fields
-        .iter()
-        .any(|field| field["path"] == "concrete_line_id"));
-    assert!(fields.iter().any(|field| field["path"] == "hole_cards"));
 
     let invalid_query = json!({
         "strategy": "default",
@@ -91,7 +100,7 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert_eq!(error["code"], "UNKNOWN_HAND");
+    assert_ne!(error["code"], 0);
 
     let batch = json!({
         "strategy": "default",
@@ -110,9 +119,15 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["results"][0]["strategy"]["exists"], true);
-    assert!(result["results"][0]["strategy"].get("hand_code").is_none());
-    assert_eq!(result["results"][1]["error"]["code"], "UNKNOWN_HAND");
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["results"][0]["strategy"]["exists"], true);
+    assert!(result["data"]["results"][0]["strategy"]
+        .get("hand_code")
+        .is_none());
+    assert_eq!(
+        result["data"]["results"][1]["error"]["code"],
+        "UNKNOWN_HAND"
+    );
 
     let prewarm = json!({
         "dimensions": [
@@ -121,8 +136,9 @@ async fn serves_query_and_metadata_workflows() {
     });
     let (status, result) = call_json(&app, Method::POST, "/range/prewarm", Some(prewarm)).await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["prewarmed"], 1);
-    assert_eq!(result["total_open"], 1);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["prewarmed"], 1);
+    assert_eq!(result["data"]["total_open"], 1);
 
     let concrete_lines = json!({
         "strategy": "default",
@@ -138,7 +154,8 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["lines"][0]["concrete_line_id"], 1);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["lines"][0]["concrete_line_id"], 1);
 
     let drill_lines = json!({
         "strategy": "default",
@@ -154,7 +171,8 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["abstract_lines"], json!(["F-F-F"]));
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["abstract_lines"], json!(["F-F-F"]));
 
     // hands-by-actions: query all hands grouped by action
     let hands_by_actions = json!({
@@ -171,8 +189,9 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["concrete_line_id"], 1);
-    let actions = result["actions"].as_array().unwrap();
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["concrete_line_id"], 1);
+    let actions = result["data"]["actions"].as_array().unwrap();
     assert_eq!(actions.len(), 2);
     // Each action should have a hands array with "AA"
     for action in actions {

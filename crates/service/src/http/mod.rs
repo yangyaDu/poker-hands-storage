@@ -9,7 +9,6 @@ use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde::Serialize;
-use serde_json::Value;
 use tokio::net::TcpListener;
 use utoipa::OpenApi;
 use utoipa::ToSchema;
@@ -25,6 +24,59 @@ use crate::routes;
 pub struct AppState {
     pub service: Arc<QueryService>,
     pub started_at: Instant,
+}
+
+/// Unified success response envelope: `{ code, data, message }`.
+/// `code == 0` means success; non-zero means a business error.
+#[derive(Serialize, ToSchema)]
+pub struct ApiResponse<T> {
+    /// Business status code. 0 indicates success.
+    code: i32,
+    /// Typed response payload (null on error).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<T>)]
+    data: Option<T>,
+    /// Human-readable message.
+    message: String,
+}
+
+impl<T> ApiResponse<T> {
+    pub fn ok(data: T) -> Self {
+        Self {
+            code: 0,
+            data: Some(data),
+            message: "success".to_string(),
+        }
+    }
+}
+
+/// Business error codes mapped from `AppError::code()`.
+pub mod error_code {
+    pub const SUCCESS: i32 = 0;
+    pub const INVALID_ARGUMENT: i32 = 4000;
+    pub const UNKNOWN_HAND: i32 = 4001;
+    pub const INVALID_FORMAT: i32 = 4002;
+    pub const BIN_FILE_NOT_FOUND: i32 = 4004;
+    pub const PACK_NOT_FOUND: i32 = 4004;
+    pub const META_DB_ERROR: i32 = 5000;
+    pub const BUILD_ERROR: i32 = 5001;
+    pub const ACTION_SCHEMA_NOT_FOUND: i32 = 5002;
+}
+
+impl From<&AppError> for i32 {
+    fn from(err: &AppError) -> i32 {
+        match err.code() {
+            "INVALID_ARGUMENT" => error_code::INVALID_ARGUMENT,
+            "UNKNOWN_HAND" => error_code::UNKNOWN_HAND,
+            "INVALID_FORMAT" => error_code::INVALID_FORMAT,
+            "BIN_FILE_NOT_FOUND" => error_code::BIN_FILE_NOT_FOUND,
+            "PACK_NOT_FOUND" => error_code::PACK_NOT_FOUND,
+            "META_DB_ERROR" => error_code::META_DB_ERROR,
+            "BUILD_ERROR" => error_code::BUILD_ERROR,
+            "ACTION_SCHEMA_NOT_FOUND" => error_code::ACTION_SCHEMA_NOT_FOUND,
+            _ => error_code::BUILD_ERROR,
+        }
+    }
 }
 
 pub fn router(service: Arc<QueryService>) -> Router {
@@ -134,44 +186,26 @@ async fn shutdown_signal() {
 #[derive(Debug)]
 pub struct HttpError {
     error: AppError,
-    details: Option<Value>,
 }
 
 impl HttpError {
     pub fn invalid_json(message: impl Into<String>) -> Self {
         Self {
             error: AppError::invalid_argument(message),
-            details: None,
         }
     }
 
-    pub fn validation(details: ValidationErrorDetails) -> Self {
+    pub fn validation(_details: ValidationErrorDetails) -> Self {
         Self {
             error: AppError::invalid_argument("request validation failed"),
-            details: serde_json::to_value(details).ok(),
         }
     }
 }
 
 impl From<AppError> for HttpError {
     fn from(error: AppError) -> Self {
-        Self {
-            error,
-            details: None,
-        }
+        Self { error }
     }
-}
-
-#[derive(Serialize, ToSchema)]
-pub struct ErrorResponse {
-    /// Stable application error code.
-    code: String,
-    /// Human-readable error message.
-    message: String,
-    /// Optional structured error details, usually field validation failures.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    #[schema(value_type = Option<ValidationErrorDetails>)]
-    details: Option<Value>,
 }
 
 impl IntoResponse for HttpError {
@@ -181,10 +215,10 @@ impl IntoResponse for HttpError {
             "BIN_FILE_NOT_FOUND" | "PACK_NOT_FOUND" => StatusCode::NOT_FOUND,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        let body = ErrorResponse {
-            code: self.error.code().to_owned(),
+        let body = ApiResponse::<()> {
+            code: (&self.error).into(),
+            data: None,
             message: self.error.message().to_owned(),
-            details: self.details,
         };
         (status, Json(body)).into_response()
     }

@@ -8,7 +8,7 @@ use crate::http::request_validation::{
     validate_positive_u32, validate_required_string, ValidateRequest, ValidatedJson,
     ValidationErrorDetails,
 };
-use crate::http::{AppState, HttpError};
+use crate::http::{ApiResponse, AppState, HttpError};
 use crate::storage::metadata::ConcreteLineRow;
 
 use super::run_blocking;
@@ -30,9 +30,9 @@ pub struct ConcreteLinesRequest {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct ConcreteLinesResponse {
+pub struct ConcreteLinesPayload {
     /// Concrete lines matching the requested abstract line.
-    lines: Vec<ConcreteLineRow>,
+    pub lines: Vec<ConcreteLineRow>,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -52,9 +52,9 @@ pub struct DrillScenarioLinesRequest {
 }
 
 #[derive(Serialize, ToSchema)]
-pub struct DrillScenarioLinesResponse {
+pub struct DrillScenarioLinesPayload {
     /// Abstract lines available for the requested drill scenario.
-    abstract_lines: Vec<String>,
+    pub abstract_lines: Vec<String>,
 }
 
 impl ValidateRequest for ConcreteLinesRequest {
@@ -84,24 +84,31 @@ impl ValidateRequest for DrillScenarioLinesRequest {
     tag = "range",
     request_body(content = ConcreteLinesRequest, content_type = "application/json"),
     responses(
-        (status = 200, description = "Concrete lines for an abstract action line.", body = ConcreteLinesResponse),
-        (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::ErrorResponse),
-        (status = 500, description = "Internal service error.", body = crate::http::ErrorResponse)
+        (status = 200, description = "Concrete lines for an abstract action line.", body = crate::http::openapi::ConcreteLinesResponseEnvelope),
+        (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::openapi::ErrorResponse),
+        (status = 500, description = "Internal service error.", body = crate::http::openapi::ErrorResponse)
     )
 )]
 pub async fn concrete_lines(
     State(state): State<AppState>,
     ValidatedJson(request): ValidatedJson<ConcreteLinesRequest>,
-) -> Result<Json<ConcreteLinesResponse>, HttpError> {
+) -> Result<Json<ApiResponse<ConcreteLinesPayload>>, HttpError> {
+    concrete_lines_impl(state, request).await
+}
+
+async fn concrete_lines_impl(
+    state: AppState,
+    request: ConcreteLinesRequest,
+) -> Result<Json<ApiResponse<ConcreteLinesPayload>>, HttpError> {
     let service = state.service;
-    run_blocking(move || {
+    let response = run_blocking(move || {
         let dimension = DimensionRef::new(request.strategy, request.player_count, request.depth_bb);
         service
             .get_concrete_lines(&dimension, &request.abstract_line)
-            .map(|lines| ConcreteLinesResponse { lines })
+            .map(|lines| ConcreteLinesPayload { lines })
     })
-    .await
-    .map(Json)
+    .await?;
+    Ok(Json(ApiResponse::ok(response)))
 }
 
 #[utoipa::path(
@@ -110,17 +117,24 @@ pub async fn concrete_lines(
     tag = "range",
     request_body(content = DrillScenarioLinesRequest, content_type = "application/json"),
     responses(
-        (status = 200, description = "Abstract lines for a drill scenario.", body = DrillScenarioLinesResponse),
-        (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::ErrorResponse),
-        (status = 500, description = "Internal service error.", body = crate::http::ErrorResponse)
+        (status = 200, description = "Abstract lines for a drill scenario.", body = crate::http::openapi::DrillScenarioLinesResponseEnvelope),
+        (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::openapi::ErrorResponse),
+        (status = 500, description = "Internal service error.", body = crate::http::openapi::ErrorResponse)
     )
 )]
 pub async fn drill_scenario_lines(
     State(state): State<AppState>,
     ValidatedJson(request): ValidatedJson<DrillScenarioLinesRequest>,
-) -> Result<Json<DrillScenarioLinesResponse>, HttpError> {
+) -> Result<Json<ApiResponse<DrillScenarioLinesPayload>>, HttpError> {
+    drill_scenario_lines_impl(state, request).await
+}
+
+async fn drill_scenario_lines_impl(
+    state: AppState,
+    request: DrillScenarioLinesRequest,
+) -> Result<Json<ApiResponse<DrillScenarioLinesPayload>>, HttpError> {
     let service = state.service;
-    run_blocking(move || {
+    let response = run_blocking(move || {
         service
             .get_drill_scenario_lines(
                 &request.strategy,
@@ -128,8 +142,8 @@ pub async fn drill_scenario_lines(
                 request.player_count,
                 request.drill_depth,
             )
-            .map(|abstract_lines| DrillScenarioLinesResponse { abstract_lines })
+            .map(|abstract_lines| DrillScenarioLinesPayload { abstract_lines })
     })
-    .await
-    .map(Json)
+    .await?;
+    Ok(Json(ApiResponse::ok(response)))
 }

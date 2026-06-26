@@ -3,6 +3,7 @@ use axum::Json;
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::http::ApiResponse;
 use crate::http::AppState;
 
 #[derive(Serialize, ToSchema)]
@@ -30,14 +31,14 @@ pub struct ReadyResponse {
     path = "/health",
     tag = "health",
     responses(
-        (status = 200, description = "Service liveness status.", body = HealthResponse)
+        (status = 200, description = "Service liveness status.", body = crate::http::openapi::HealthResponseEnvelope)
     )
 )]
-pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
-    Json(HealthResponse {
+pub async fn health(State(state): State<AppState>) -> Json<ApiResponse<HealthResponse>> {
+    Json(ApiResponse::ok(HealthResponse {
         status: "ok",
         uptime_secs: state.started_at.elapsed().as_secs_f64(),
-    })
+    }))
 }
 
 #[utoipa::path(
@@ -45,14 +46,14 @@ pub async fn health(State(state): State<AppState>) -> Json<HealthResponse> {
     path = "/ready",
     tag = "health",
     responses(
-        (status = 200, description = "Service readiness and loaded data summary.", body = ReadyResponse)
+        (status = 200, description = "Service readiness and loaded data summary.", body = crate::http::openapi::ReadyResponseEnvelope)
     )
 )]
-pub async fn ready(State(state): State<AppState>) -> Json<ReadyResponse> {
-    Json(ReadyResponse {
+pub async fn ready(State(state): State<AppState>) -> Json<ApiResponse<ReadyResponse>> {
+    Json(ApiResponse::ok(ReadyResponse {
         status: "ready",
         schema_count: state.service.schema_count(),
         handles_open: state.service.open_handle_count(),
         dimensions_known: state.service.known_dimensions(),
-    })
+    }))
 }
