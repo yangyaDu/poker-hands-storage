@@ -9,7 +9,9 @@ use crate::benchmark::report::{
 use crate::benchmark::types::{
     BatchBenchmarkItem, BenchmarkWorkload, HandBenchmarkItem, WorkloadOptions, WorkloadSource,
 };
-use crate::benchmark::workload::{create_benchmark_workload, read_workload_json};
+use crate::benchmark::workload::{
+    create_benchmark_workload, read_workload_json, write_workload_json,
+};
 use crate::domain::dimension::DimensionRef;
 use crate::errors::AppError;
 use crate::query::QueryService;
@@ -88,10 +90,7 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
         },
         workload,
         workload_source,
-        workload_path: command
-            .workload_path
-            .as_ref()
-            .map(|path| path.display().to_string()),
+        workload_path: benchmark_workload_path(command),
         cases,
         totals,
         memory,
@@ -111,20 +110,29 @@ fn load_or_create_workload(
     if let Some(path) = &command.workload_path {
         Ok((read_workload_json(path)?, WorkloadSource::Loaded))
     } else {
-        Ok((
-            create_benchmark_workload(&WorkloadOptions {
-                source_db_path: command.source.clone(),
-                requested_dimensions: command.requested_dimensions.clone(),
-                seed: command.seed,
-                hand_iterations: command.hand_iterations,
-                batch_iterations: command.batch_iterations,
-                batch_size: command.batch_size,
-                batch_sizes: command.batch_sizes.clone(),
-                workload_mode: command.workload_mode,
-            })?,
-            WorkloadSource::Generated,
-        ))
+        let workload = create_benchmark_workload(&WorkloadOptions {
+            source_db_path: command.source.clone(),
+            requested_dimensions: command.requested_dimensions.clone(),
+            seed: command.seed,
+            hand_iterations: command.hand_iterations,
+            batch_iterations: command.batch_iterations,
+            batch_size: command.batch_size,
+            batch_sizes: command.batch_sizes.clone(),
+            workload_mode: command.workload_mode,
+        })?;
+        if let Some(path) = &command.write_workload_path {
+            write_workload_json(path, &workload)?;
+        }
+        Ok((workload, WorkloadSource::Generated))
     }
+}
+
+fn benchmark_workload_path(command: &BenchmarkCommand) -> Option<String> {
+    command
+        .workload_path
+        .as_ref()
+        .or(command.write_workload_path.as_ref())
+        .map(|path| path.display().to_string())
 }
 
 fn prewarm_workload_dimensions(

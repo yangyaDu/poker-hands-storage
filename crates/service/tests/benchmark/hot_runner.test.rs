@@ -13,6 +13,7 @@ fn hot_runner_writes_reports_for_clean_fixture() {
     let (source_path, output_path) = build_verify_fixture(directory.path());
     let report_path = directory.path().join("benchmark.json");
     let markdown_path = directory.path().join("benchmark.md");
+    let workload_path = directory.path().join("workload.json");
 
     let command = BenchmarkCommand {
         source: source_path,
@@ -21,6 +22,7 @@ fn hot_runner_writes_reports_for_clean_fixture() {
         out_path: report_path.clone(),
         md_path: markdown_path.clone(),
         workload_path: None,
+        write_workload_path: Some(workload_path.clone()),
         seed: 11,
         hand_iterations: 3,
         batch_iterations: 2,
@@ -47,4 +49,9 @@ fn hot_runner_writes_reports_for_clean_fixture() {
     assert!(report.totals.result_count > 0);
     assert!(report_path.is_file());
     assert!(markdown_path.is_file());
+    assert!(workload_path.is_file());
+    assert_eq!(
+        report.workload_path,
+        Some(workload_path.display().to_string())
+    );
 }

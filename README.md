@@ -55,6 +55,9 @@ cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- quer
 
 SQLite is loaded dynamically. Set `PHS_SQLITE3_LIB` when it is not available as
 `sqlite3.dll`, `libsqlite3.so.0`, `libsqlite3.so`, or `libsqlite3.dylib`.
+On Windows release-validation runs, prefer pinning `PHS_SQLITE3_LIB` to a known
+64-bit `sqlite3.dll` so the dynamic loader does not pick an incompatible DLL
+from `PATH`.
 
 ## Verify Range Strata output
 
@@ -105,11 +108,17 @@ Useful workload controls:
 - `--dimension default:6:100` or `--dimension default_6max_100BB`
 - `--workload-mode random|abstract-local`
 - `--workload <workload.json>` to reuse a fixed workload
+- `--write-workload <workload.json>` to write the generated workload for
+  SQLite baseline and compare runs
 
 Reports default to `reports/benchmark-range-strata-binary.json/.md` and include
 QPS, avg, p50, p95, p99, max, error count, result action count, memory
 approximation, workload details, and result verification notes. The command
 exits non-zero when benchmark errors or `--verify-results` mismatches occur.
+
+For release comparison, run the binary benchmark with `--write-workload`, then
+reuse that file with `benchmark-sqlite`, and compare the two JSON reports with
+`benchmark-compare`.
 
 ## Run the HTTP service
 
@@ -178,6 +187,12 @@ standard JSON error shape:
 The default compose setup runs the HTTP service against the checked-in smoke
 fixture. It mounts `./data/smoke` as `/data:ro`, enables checksum verification,
 and prewarms `default:6:100`.
+
+For release validation, Docker is the authoritative Linux build and runtime
+gate. The multi-stage image builds the Rust service inside Linux and then runs
+it with a Debian-based runtime containing `libsqlite3.so.0`. WSL builds are
+useful for faster local Linux debugging or benchmark iteration, but they are
+not required when the Docker image build and container smoke pass.
 
 ```powershell
 docker compose up --build

@@ -5,9 +5,6 @@ services:
       dockerfile: .docker/Dockerfile
     image: poker-hands-storage:local
     init: true
-    read_only: true
-    tmpfs:
-      - /tmp
     ports:
       - "8080:8080"
     volumes:
@@ -20,9 +17,3 @@ services:
       PHS_VERIFY_CHECKSUMS: "true"
       PHS_PREWARM: default:6:100
       RUST_LOG: info
-    healthcheck:
-      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8080/ready >/dev/null || exit 1"]
-      interval: 30s
-      timeout: 3s
-      retries: 3
-      start_period: 5s

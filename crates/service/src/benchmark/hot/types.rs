@@ -11,6 +11,7 @@ pub struct BenchmarkCommand {
     pub out_path: PathBuf,
     pub md_path: PathBuf,
     pub workload_path: Option<PathBuf>,
+    pub write_workload_path: Option<PathBuf>,
     pub seed: u64,
     pub hand_iterations: usize,
     pub batch_iterations: usize,

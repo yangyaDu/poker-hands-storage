@@ -27,6 +27,8 @@ fn parse_benchmark_args_uses_defaults() {
     assert_eq!(command.batch_iterations, 200);
     assert_eq!(command.batch_size, 20);
     assert_eq!(command.batch_sizes, vec![1, 5, 10, 20, 50, 100]);
+    assert_eq!(command.workload_path, None);
+    assert_eq!(command.write_workload_path, None);
     assert_eq!(command.workload_mode, WorkloadMode::Random);
     assert!(!command.verify_checksums);
     assert!(!command.verify_results);
@@ -76,6 +78,7 @@ fn parse_benchmark_args_accepts_explicit_options() {
     assert_eq!(command.out_path, PathBuf::from("report.json"));
     assert_eq!(command.md_path, PathBuf::from("report.md"));
     assert_eq!(command.workload_path, Some(PathBuf::from("workload.json")));
+    assert_eq!(command.write_workload_path, None);
     assert_eq!(command.seed, 7);
     assert_eq!(command.hand_iterations, 11);
     assert_eq!(command.batch_iterations, 3);
@@ -86,6 +89,44 @@ fn parse_benchmark_args_accepts_explicit_options() {
     assert_eq!(command.warmup_iterations, 2);
     assert!(command.verify_checksums);
     assert!(command.verify_results);
+}
+
+#[test]
+fn parse_benchmark_args_accepts_write_workload() {
+    let command = parse_benchmark_args(args(&[
+        "--dir",
+        "out",
+        "--source",
+        "source.db",
+        "--write-workload",
+        "release-workload.json",
+    ]))
+    .unwrap();
+
+    assert_eq!(
+        command.write_workload_path,
+        Some(PathBuf::from("release-workload.json"))
+    );
+}
+
+#[test]
+fn parse_benchmark_args_rejects_read_and_write_workload_together() {
+    let error = parse_benchmark_args(args(&[
+        "--dir",
+        "out",
+        "--source",
+        "source.db",
+        "--workload",
+        "input.json",
+        "--write-workload",
+        "output.json",
+    ]))
+    .unwrap_err();
+
+    assert_eq!(error.code(), "INVALID_ARGUMENT");
+    assert!(error
+        .message()
+        .contains("--workload and --write-workload cannot be used together"));
 }
 
 #[test]

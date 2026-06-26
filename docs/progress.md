@@ -13,7 +13,7 @@
 | Phase 3 离线构建扩展 | 完成 | `build` 可从旧 SQLite DB 生成 `manifest.json + meta.db + .idx + .bin` |
 | Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
 | Phase 5 容器化 | 完成 | multi-stage Dockerfile、compose、只读 volume、healthcheck、启动预热配置和容器 smoke 已通过 |
-| Phase 6 完整验收 | 进行中 | 86 个测试、真实进程 HTTP smoke、容器 smoke、全量 9 维度构建、API 契约化、全量 standalone verifier、Rust verifier 7a/7b 和 hot benchmark 7c 已接入；cold/compare 待完成 |
+| Phase 6 完整验收 | 进行中 | 真实进程 HTTP smoke、容器 smoke、全量 9 维度构建、API 契约化、Rust verifier 7a/7b、hot benchmark 7c、cold benchmark 7d、SQLite baseline/compare 7e 已接入；Phase 8 release validation 待刷新全量报告 |
 
 ## 已实现模块
 
@@ -73,7 +73,7 @@ poker-hands-storage-service build
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings`
 - `cargo test --workspace --target x86_64-pc-windows-msvc`
-- 86 个测试通过，其中包含 SQLite → binary store → QueryService、benchmark hot runner
+- workspace 测试通过，其中包含 SQLite → binary store → QueryService、benchmark hot/sqlite/compare runner
   和 axum Router 端到端测试。
 - 真实 `range.db` smoke：`default:6:100`，2 packs。
 - smoke 输出：`.bin` 9818 bytes，`.idx` 60 bytes。
@@ -97,12 +97,15 @@ poker-hands-storage-service build
   `reports/range-strata-verify-standalone.md`。
 - Rust hot benchmark 7c 已接入 CLI：workload 生成/读取、random/abstract-local、
   hand-strategy、batch-hand-strategy、多 batch-size、warmup、QPS/avg/p50/p95/p99/max、
-  errorCount/resultCount、内存近似、JSON/Markdown report 和 `--verify-results`
-  action-count 对账。
+  errorCount/resultCount、内存近似、JSON/Markdown report、`--verify-results`
+  action-count 对账和 `--write-workload` release workload 写出。
 - 真实 `data/range-strata` benchmark smoke 通过：8 个 case、55 次迭代、0 error、
   result verification 20 match / 0 mismatch / 0 errors，报告写入
   `reports/benchmark-range-strata-binary-smoke.json` 和
   `reports/benchmark-range-strata-binary-smoke.md`。
+- Rust benchmark 7d/7e 已接入 CLI：`benchmark-cold` 输出 process/store/query
+  分层冷启动报告；`benchmark-sqlite` 复用 workload 跑 SQLite baseline；
+  `benchmark-compare` 默认拒绝 workload mismatch 并输出 JSON/Markdown 对比报告。
 
 ## 全量构建结果
 
@@ -123,15 +126,21 @@ poker-hands-storage-service build
 - Windows 默认 GNU target 会误用 32 位 `dlltool`，本机统一使用
   `x86_64-pc-windows-msvc`。
 - SQLite 通过 `libloading` 动态加载。容器需要提供 `libsqlite3.so.0`；
-  Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。
-- 全量 9 个维度数据已构建并通过上游 standalone verifier；Rust standalone/cross verifier
-  和 hot benchmark 已接入 CLI，真实全量报告需在发布验证链路中刷新。
-- 容器 smoke 已使用 `data/smoke` 验证；全量 `data/range-strata` 挂载仍需在 Phase 6 覆盖。
+  Windows 可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`。Phase 8 smoke 发现
+  默认 DLL 解析可能触发 SQLite `disk I/O error`，发布验证应固定到已知 64-bit DLL。
+- 全量 9 个维度数据已构建并通过上游 standalone verifier；Rust standalone/cross verifier、
+  hot/sqlite/compare/cold benchmark 已接入 CLI，真实全量报告需在 Phase 8 发布验证链路中刷新。
+- Phase 8 已完成本机 smoke：workspace test gate 通过；standalone verifier 覆盖
+  `data/range-strata` 9 个维度；binary/sqlite/compare/cold smoke 报告已刷新到
+  `reports/*phase8-smoke*`。尚未执行 full cross verifier、全量 cold runs 和全量容器挂载验收。
+- 容器 smoke 已使用 `data/smoke` 验证；全量 `data/range-strata` 挂载仍需在 Phase 8 覆盖。
 
 ## 容器化配置
 
 - `Dockerfile` 使用 multi-stage 构建 release binary，runtime 基于 Debian slim。
 - runtime 安装 `libsqlite3-0`，提供动态加载所需的 `libsqlite3.so.0`。
+- Linux 发布验收以 Docker build/run 为准；WSL `/home/ubuntu2204` 可作为本机 Linux
+  调试和 benchmark 环境，但不是 Docker 发布的必需前置步骤。
 - 容器默认执行 `poker-hands-storage-service serve`，监听 `0.0.0.0:8080`。
 - `docker-compose.yml` 将 `./data/smoke` 挂载为 `/data:ro`，开启 checksum，并预热
   `default:6:100`。
@@ -148,7 +157,8 @@ poker-hands-storage-service build
 
 ## 下一步
 
-1. 刷新 Rust verifier standalone/cross 和 benchmark 默认参数报告。
-2. 迁移 Rust `benchmark-cold`。
-3. 迁移 Rust `benchmark compare`。
-4. 使用全量 `data/range-strata` 挂载运行容器验收。
+1. 按 `docs/superpowers/specs/2026-06-26-release-validation-8-design.md` 执行 Phase 8 release validation。
+2. 刷新 Rust standalone/cross verifier 报告。
+3. 使用 `--write-workload` 刷新 binary/sqlite/compare benchmark 报告。
+4. 刷新 9 维度 `benchmark-cold` 报告。
+5. 使用全量 `data/range-strata` 挂载运行容器验收。

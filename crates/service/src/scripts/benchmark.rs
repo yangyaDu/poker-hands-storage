@@ -12,6 +12,7 @@ pub fn parse_benchmark_args(args: Vec<String>) -> Result<BenchmarkCommand, AppEr
     let mut out_path = PathBuf::from("reports/benchmark-range-strata-binary.json");
     let mut md_path = PathBuf::from("reports/benchmark-range-strata-binary.md");
     let mut workload_path = None;
+    let mut write_workload_path = None;
     let mut seed = 42_u64;
     let mut iterations = 1000_usize;
     let mut hand_iterations = None;
@@ -34,6 +35,9 @@ pub fn parse_benchmark_args(args: Vec<String>) -> Result<BenchmarkCommand, AppEr
             "--out" => out_path = PathBuf::from(next_value(&args, &mut index)?),
             "--md" => md_path = PathBuf::from(next_value(&args, &mut index)?),
             "--workload" => workload_path = Some(PathBuf::from(next_value(&args, &mut index)?)),
+            "--write-workload" => {
+                write_workload_path = Some(PathBuf::from(next_value(&args, &mut index)?))
+            }
             "--seed" => seed = parse_u64("--seed", next_value(&args, &mut index)?)?,
             "--iterations" => {
                 iterations = parse_usize("--iterations", next_value(&args, &mut index)?)?
@@ -85,6 +89,11 @@ pub fn parse_benchmark_args(args: Vec<String>) -> Result<BenchmarkCommand, AppEr
     let hand_iterations = hand_iterations.unwrap_or(iterations);
     let batch_iterations = batch_iterations.unwrap_or(iterations.min(200));
     let batch_sizes = normalize_batch_sizes(batch_size, &batch_sizes);
+    if workload_path.is_some() && write_workload_path.is_some() {
+        return Err(AppError::invalid_argument(
+            "--workload and --write-workload cannot be used together",
+        ));
+    }
 
     Ok(BenchmarkCommand {
         source,
@@ -93,6 +102,7 @@ pub fn parse_benchmark_args(args: Vec<String>) -> Result<BenchmarkCommand, AppEr
         out_path,
         md_path,
         workload_path,
+        write_workload_path,
         seed,
         hand_iterations,
         batch_iterations,

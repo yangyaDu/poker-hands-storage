@@ -414,6 +414,7 @@ Commands:
         [--batch-size <count>] [--batch-sizes <csv>]
         [--dimension <strategy:players:bb>]
         [--workload-mode <random|abstract-local>]
+        [--write-workload <workload.json>]
         [--warmup-iterations <count>] [--verify-checksum]
         [--verify-results] [--out <report.json>] [--md <report.md>]
 
