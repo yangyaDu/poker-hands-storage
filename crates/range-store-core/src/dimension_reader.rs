@@ -97,6 +97,75 @@ impl DimensionReader {
             cells,
         }))
     }
+
+    /// Query all hands for a concrete line, fully decoding the pack.
+    ///
+    /// Returns `None` if the concrete_line_id is not found in the index.
+    pub fn query_all(
+        &self,
+        concrete_line_id: u32,
+        verify_checksum: bool,
+    ) -> io::Result<Option<crate::types::FullRangeDecodeResult>> {
+        let record: IdxRecord = match self.idx.find(concrete_line_id) {
+            Some(record) => record,
+            None => return Ok(None),
+        };
+
+        if record.hand_count == 0 {
+            return Err(invalid_data(format!(
+                "Invalid .idx record for concrete_line_id {}: hand_count must be > 0",
+                concrete_line_id
+            )));
+        }
+
+        let pack = self
+            .bin
+            .read_pack(record.offset, record.byte_length)
+            .map_err(|e| {
+                invalid_data(format!(
+                    "Invalid .bin pack range for concrete_line_id {}: {}",
+                    concrete_line_id, e
+                ))
+            })?;
+
+        let action_count = action_count_from_pack(record.hand_count, record.byte_length);
+        let expected_len = pack_byte_length(record.hand_count, action_count);
+        if expected_len != record.byte_length {
+            return Err(invalid_data(format!(
+                "Invalid pack length for concrete_line_id {}: byte_length {} is incompatible with hand_count {}",
+                concrete_line_id, record.byte_length, record.hand_count
+            )));
+        }
+
+        if action_count > 32 {
+            return Err(invalid_data(format!(
+                "Invalid pack action count for concrete_line_id {}: {}, expected <= 32",
+                concrete_line_id, action_count
+            )));
+        }
+
+        if verify_checksum {
+            assert_crc32c(pack, record.checksum).map_err(|reason| {
+                invalid_data(format!(
+                    "{}; concrete_line_id {}, expected_checksum {}",
+                    reason, concrete_line_id, record.checksum
+                ))
+            })?;
+        }
+
+        let decoded = crate::pack_codec::decode_pack(pack, record.hand_count, action_count)
+            .map_err(|e| {
+                invalid_data(format!(
+                    "Failed to decode pack for concrete_line_id {}: {}",
+                    concrete_line_id, e
+                ))
+            })?;
+
+        Ok(Some(crate::types::FullRangeDecodeResult {
+            action_schema_id: record.action_schema_id,
+            pack: decoded,
+        }))
+    }
 }
 
 pub fn validate_hand_id(hand_id: u32) -> io::Result<u8> {

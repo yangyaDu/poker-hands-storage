@@ -145,6 +145,24 @@ fn hand_id_for_offsuit(high_idx: usize, low_idx: usize) -> u8 {
     (low_idx * 13 + high_idx) as u8
 }
 
+/// Convert a hand_id (0..=168) back to its 169-hand code.
+///
+/// The 13×13 matrix is laid out as:
+///   - diagonal (row == col): pair, e.g. `AA`
+///   - upper triangle (row < col): suited, e.g. `AKs`
+///   - lower triangle (row > col): offsuit, e.g. `AKo`
+pub fn hand_code_from_id(hand_id: u8) -> String {
+    let row = hand_id as usize / 13;
+    let col = hand_id as usize % 13;
+    if row == col {
+        format!("{}{}", RANKS[row], RANKS[col])
+    } else if row < col {
+        format!("{}{}s", RANKS[row], RANKS[col])
+    } else {
+        format!("{}{}o", RANKS[col], RANKS[row])
+    }
+}
+
 impl std::fmt::Display for HandDictError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {

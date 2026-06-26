@@ -29,7 +29,8 @@ async fn serves_query_and_metadata_workflows() {
     let (status, openapi) = call_json(&app, Method::GET, "/api-docs/openapi.json", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(openapi["info"]["title"], "Poker Hands Storage API");
-    assert!(openapi["paths"].get("/query").is_some());
+    assert!(openapi["paths"].get("/range/hand-strategy").is_some());
+    assert!(openapi["paths"].get("/range/hands-by-actions").is_some());
     assert!(openapi["components"]["schemas"]
         .get("QueryRequest")
         .is_some());
@@ -46,7 +47,7 @@ async fn serves_query_and_metadata_workflows() {
         "concrete_line_id": 1,
         "hole_cards": "AsAh"
     });
-    let (status, result) = call_json(&app, Method::POST, "/query", Some(query)).await;
+    let (status, result) = call_json(&app, Method::POST, "/range/hand-strategy", Some(query)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["hand_code"], "AA");
     assert_eq!(result["exists"], true);
@@ -59,7 +60,13 @@ async fn serves_query_and_metadata_workflows() {
         "concrete_line_id": 0,
         "hole_cards": ""
     });
-    let (status, error) = call_json(&app, Method::POST, "/query", Some(invalid_payload)).await;
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/hand-strategy",
+        Some(invalid_payload),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error["code"], "INVALID_ARGUMENT");
     assert_eq!(error["message"], "request validation failed");
@@ -76,7 +83,13 @@ async fn serves_query_and_metadata_workflows() {
         "concrete_line_id": 1,
         "hole_cards": "AsXx"
     });
-    let (status, error) = call_json(&app, Method::POST, "/query", Some(invalid_query)).await;
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/hand-strategy",
+        Some(invalid_query),
+    )
+    .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert_eq!(error["code"], "UNKNOWN_HAND");
 
@@ -89,7 +102,13 @@ async fn serves_query_and_metadata_workflows() {
             { "concrete_line_id": 1, "hole_cards": "AsXx" }
         ]
     });
-    let (status, result) = call_json(&app, Method::POST, "/batch", Some(batch)).await;
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/hand-strategy/batch",
+        Some(batch),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["results"][0]["strategy"]["exists"], true);
     assert!(result["results"][0]["strategy"].get("hand_code").is_none());
@@ -100,7 +119,7 @@ async fn serves_query_and_metadata_workflows() {
             { "strategy": "default", "player_count": 6, "depth_bb": 100 }
         ]
     });
-    let (status, result) = call_json(&app, Method::POST, "/prewarm", Some(prewarm)).await;
+    let (status, result) = call_json(&app, Method::POST, "/range/prewarm", Some(prewarm)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["prewarmed"], 1);
     assert_eq!(result["total_open"], 1);
@@ -111,8 +130,13 @@ async fn serves_query_and_metadata_workflows() {
         "depth_bb": 100,
         "abstract_line": "F-F-F"
     });
-    let (status, result) =
-        call_json(&app, Method::POST, "/concrete-lines", Some(concrete_lines)).await;
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(concrete_lines),
+    )
+    .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["lines"][0]["concrete_line_id"], 1);
 
@@ -125,12 +149,36 @@ async fn serves_query_and_metadata_workflows() {
     let (status, result) = call_json(
         &app,
         Method::POST,
-        "/drill-scenario-lines",
+        "/range/drill-scenarios",
         Some(drill_lines),
     )
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["abstract_lines"], json!(["F-F-F"]));
+
+    // hands-by-actions: query all hands grouped by action
+    let hands_by_actions = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "concrete_line_id": 1
+    });
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/hands-by-actions",
+        Some(hands_by_actions),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["concrete_line_id"], 1);
+    let actions = result["actions"].as_array().unwrap();
+    assert_eq!(actions.len(), 2);
+    // Each action should have a hands array with "AA"
+    for action in actions {
+        assert!(action["action_name"].is_string());
+        assert!(action["hands"].as_array().unwrap().contains(&json!("AA")));
+    }
 }
 
 async fn call_json(

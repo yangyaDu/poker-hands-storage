@@ -38,15 +38,25 @@ pub fn router(service: Arc<QueryService>) -> Router {
         .route("/api-docs/openapi.json", get(openapi_json))
         .route("/health", get(routes::health_routes::health))
         .route("/ready", get(routes::health_routes::ready))
-        .route("/query", post(routes::hand_query_routes::query))
-        .route("/batch", post(routes::hand_query_routes::batch))
-        .route("/prewarm", post(routes::hand_query_routes::prewarm))
         .route(
-            "/concrete-lines",
+            "/range/hand-strategy",
+            post(routes::hand_query_routes::query),
+        )
+        .route(
+            "/range/hand-strategy/batch",
+            post(routes::hand_query_routes::batch),
+        )
+        .route(
+            "/range/hands-by-actions",
+            post(routes::hand_query_routes::hands_by_actions),
+        )
+        .route("/range/prewarm", post(routes::hand_query_routes::prewarm))
+        .route(
+            "/range/concrete-lines",
             post(routes::metadata_routes::concrete_lines),
         )
         .route(
-            "/drill-scenario-lines",
+            "/range/drill-scenarios",
             post(routes::metadata_routes::drill_scenario_lines),
         )
         .with_state(state)

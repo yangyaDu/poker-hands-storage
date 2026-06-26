@@ -80,8 +80,8 @@ impl ValidateRequest for DrillScenarioLinesRequest {
 
 #[utoipa::path(
     post,
-    path = "/concrete-lines",
-    tag = "metadata",
+    path = "/range/concrete-lines",
+    tag = "range",
     request_body(content = ConcreteLinesRequest, content_type = "application/json"),
     responses(
         (status = 200, description = "Concrete lines for an abstract action line.", body = ConcreteLinesResponse),
@@ -106,8 +106,8 @@ pub async fn concrete_lines(
 
 #[utoipa::path(
     post,
-    path = "/drill-scenario-lines",
-    tag = "metadata",
+    path = "/range/drill-scenarios",
+    tag = "range",
     request_body(content = DrillScenarioLinesRequest, content_type = "application/json"),
     responses(
         (status = 200, description = "Abstract lines for a drill scenario.", body = DrillScenarioLinesResponse),

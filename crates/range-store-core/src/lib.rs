@@ -7,5 +7,6 @@ pub mod types;
 
 pub use dimension_reader::{validate_hand_id, DimensionReader};
 pub use types::{
-    BatchQueryRequest, DecodedCellResult, DecodedPack, DecodedPackCell, IdxRecord, PackDecodeResult,
+    BatchQueryRequest, DecodedCellResult, DecodedPack, DecodedPackCell, FullRangeDecodeResult,
+    IdxRecord, PackDecodeResult,
 };

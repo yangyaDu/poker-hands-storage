@@ -9,7 +9,7 @@ use crate::http::request_validation::{
     ValidationErrorDetails, MAX_BATCH_REQUESTS, MAX_PREWARM_DIMENSIONS,
 };
 use crate::http::{AppState, HttpError};
-use crate::query::{BatchItemResult, QueryResult};
+use crate::query::{BatchItemResult, HandsByActionsResult, QueryResult};
 
 use super::{run_blocking, run_infallible_blocking};
 
@@ -62,6 +62,22 @@ pub struct BatchQueryItem {
 pub struct BatchResponse {
     /// Per-item query result. Invalid hand inputs are reported on their individual item.
     results: Vec<BatchItemResult>,
+}
+
+#[derive(Deserialize, ToSchema)]
+pub struct HandsByActionsRequest {
+    /// Strategy name. The current data set uses `default`.
+    #[schema(example = "default")]
+    strategy: String,
+    /// Number of players for the target game tree.
+    #[schema(example = 6, minimum = 1)]
+    player_count: u32,
+    /// Stack depth in big blinds.
+    #[schema(example = 100, minimum = 1)]
+    depth_bb: u32,
+    /// Concrete line id from the selected dimension.
+    #[schema(example = 1, minimum = 1)]
+    concrete_line_id: u32,
 }
 
 #[derive(Deserialize, ToSchema)]
@@ -138,6 +154,23 @@ impl ValidateRequest for BatchRequest {
     }
 }
 
+impl ValidateRequest for HandsByActionsRequest {
+    fn validate(&self) -> Result<(), ValidationErrorDetails> {
+        let mut errors = ValidationErrorDetails::new();
+        validate_dimension_fields(
+            &mut errors,
+            "strategy",
+            &self.strategy,
+            "player_count",
+            self.player_count,
+            "depth_bb",
+            self.depth_bb,
+        );
+        validate_positive_u32(&mut errors, "concrete_line_id", self.concrete_line_id);
+        errors.finish()
+    }
+}
+
 impl ValidateRequest for PrewarmRequest {
     fn validate(&self) -> Result<(), ValidationErrorDetails> {
         let mut errors = ValidationErrorDetails::new();
@@ -194,8 +227,8 @@ fn validate_batch_item(errors: &mut ValidationErrorDetails, index: usize, item: 
 
 #[utoipa::path(
     post,
-    path = "/query",
-    tag = "query",
+    path = "/range/hand-strategy",
+    tag = "range",
     request_body(content = QueryRequest, content_type = "application/json"),
     responses(
         (status = 200, description = "Single hand query result.", body = QueryResult),
@@ -222,8 +255,8 @@ pub async fn query(
 
 #[utoipa::path(
     post,
-    path = "/batch",
-    tag = "query",
+    path = "/range/hand-strategy/batch",
+    tag = "range",
     request_body(content = BatchRequest, content_type = "application/json"),
     responses(
         (status = 200, description = "Per-item batch query results.", body = BatchResponse),
@@ -249,8 +282,35 @@ pub async fn batch(
 
 #[utoipa::path(
     post,
-    path = "/prewarm",
-    tag = "query",
+    path = "/range/hands-by-actions",
+    tag = "range",
+    request_body(content = HandsByActionsRequest, content_type = "application/json"),
+    responses(
+        (status = 200, description = "Hands grouped by action for a concrete line.", body = HandsByActionsResult),
+        (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::ErrorResponse),
+        (status = 404, description = "Dimension or pack not found.", body = crate::http::ErrorResponse),
+        (status = 500, description = "Internal service error.", body = crate::http::ErrorResponse)
+    )
+)]
+pub async fn hands_by_actions(
+    State(state): State<AppState>,
+    ValidatedJson(request): ValidatedJson<HandsByActionsRequest>,
+) -> Result<Json<HandsByActionsResult>, HttpError> {
+    let service = state.service;
+    run_blocking(move || {
+        service.query_hands_by_actions(
+            &DimensionRef::new(request.strategy, request.player_count, request.depth_bb),
+            request.concrete_line_id,
+        )
+    })
+    .await
+    .map(Json)
+}
+
+#[utoipa::path(
+    post,
+    path = "/range/prewarm",
+    tag = "range",
     request_body(content = PrewarmRequest, content_type = "application/json"),
     responses(
         (status = 200, description = "Prewarm summary.", body = PrewarmResponse),

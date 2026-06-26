@@ -84,3 +84,10 @@ pub struct BatchQueryRequest {
     pub concrete_line_id: u32,
     pub hand_id: u32,
 }
+
+/// Result of querying all hands in a pack for a concrete line.
+#[derive(Debug, Clone)]
+pub struct FullRangeDecodeResult {
+    pub action_schema_id: u32,
+    pub pack: DecodedPack,
+}

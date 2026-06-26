@@ -7,7 +7,7 @@ use utoipa::ToSchema;
 
 use crate::domain::action_schema::ActionDef;
 use crate::domain::dimension::DimensionRef;
-use crate::domain::hole_cards::{parse_hole_cards, ParsedHand};
+use crate::domain::hole_cards::{hand_code_from_id, parse_hole_cards, ParsedHand};
 use crate::errors::AppError;
 use crate::query::dimension_handle_pool::HandlePool;
 use crate::storage::manifest::{load_manifest, queryable_dimensions};
@@ -74,6 +74,24 @@ pub struct ErrorInfo {
     pub code: String,
     /// Human-readable error message.
     pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ActionHandsEntry {
+    /// Action name, for example `fold`, `call`, or `raise`.
+    pub action_name: String,
+    /// Abstract action size from the source range data.
+    pub action_size: f32,
+    /// Hand codes belonging to this action.
+    pub hands: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct HandsByActionsResult {
+    /// Concrete line id.
+    pub concrete_line_id: u32,
+    /// Actions with their associated hand lists.
+    pub actions: Vec<ActionHandsEntry>,
 }
 
 impl QueryService {
@@ -290,6 +308,70 @@ impl QueryService {
     ) -> Result<Vec<String>, AppError> {
         self.metadata
             .get_drill_scenario_lines(strategy, drill_name, player_count, drill_depth)
+    }
+
+    pub fn query_hands_by_actions(
+        &self,
+        dimension: &DimensionRef,
+        concrete_line_id: u32,
+    ) -> Result<HandsByActionsResult, AppError> {
+        let reader = self.pool.get_or_open(dimension)?;
+        let result = reader
+            .query_all(concrete_line_id, self.verify_checksums)
+            .map_err(AppError::from)?;
+
+        let Some(result) = result else {
+            return Ok(HandsByActionsResult {
+                concrete_line_id,
+                actions: Vec::new(),
+            });
+        };
+
+        let action_schema = self
+            .action_schemas
+            .get(&result.action_schema_id)
+            .ok_or_else(|| AppError::action_schema_not_found(result.action_schema_id))?;
+
+        // Build action_id → Vec<hand_code> mapping
+        let mut action_hands: HashMap<u32, Vec<String>> = HashMap::new();
+        for cell in &result.pack.cells {
+            if !cell.exists {
+                continue;
+            }
+            action_hands
+                .entry(cell.action_id)
+                .or_default()
+                .push(hand_code_from_id(cell.hand_id));
+        }
+
+        // Convert to response, ordered by action_id
+        let mut actions: Vec<ActionHandsEntry> = Vec::with_capacity(action_hands.len());
+        for (action_id, hands) in &action_hands {
+            let action = action_schema.get(*action_id as usize).ok_or_else(|| {
+                AppError::invalid_format(format!(
+                    "Action id {} is outside schema {}",
+                    action_id, result.action_schema_id
+                ))
+            })?;
+            actions.push(ActionHandsEntry {
+                action_name: action.action_name.as_str().to_owned(),
+                action_size: action.action_size,
+                hands: hands.clone(),
+            });
+        }
+        actions.sort_by_key(|a| {
+            action_schema
+                .iter()
+                .position(|def| {
+                    def.action_name.as_str() == a.action_name && def.action_size == a.action_size
+                })
+                .unwrap_or(usize::MAX)
+        });
+
+        Ok(HandsByActionsResult {
+            concrete_line_id,
+            actions,
+        })
     }
 
     pub fn schema_count(&self) -> usize {
