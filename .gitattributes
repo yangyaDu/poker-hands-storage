@@ -1,0 +1,2 @@
+data/sqlite/* filter=lfs diff=lfs merge=lfs -text
+data/range-strata/* filter=lfs diff=lfs merge=lfs -text
