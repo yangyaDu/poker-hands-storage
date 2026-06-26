@@ -4,10 +4,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
-use crate::benchmark::benchmark_models::{BenchmarkWorkload, WorkloadMode, WorkloadSource};
+use crate::benchmark::hot::result_verifier::ResultVerificationSummary;
 use crate::benchmark::memory_snapshot::BenchmarkMemoryReport;
 use crate::benchmark::metrics::{BenchmarkCaseResult, BenchmarkTotals};
-use crate::benchmark::result_verifier::ResultVerificationSummary;
+use crate::benchmark::types::{BenchmarkWorkload, WorkloadMode, WorkloadSource};
 use crate::errors::AppError;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -80,9 +80,13 @@ pub struct ReportInput {
 }
 
 pub fn build_benchmark_report(input: ReportInput) -> BenchmarkRunReport {
+    build_benchmark_report_for_engine(input, "binary")
+}
+
+pub fn build_benchmark_report_for_engine(input: ReportInput, engine: &str) -> BenchmarkRunReport {
     BenchmarkRunReport {
         generated_at: generated_at_utc(),
-        engine: "binary".to_owned(),
+        engine: engine.to_owned(),
         source_db_path: input.source_db_path,
         binary_dir: input.binary_dir,
         meta_db_path: input.meta_db_path,
@@ -124,13 +128,19 @@ pub fn write_benchmark_markdown(path: &Path, report: &BenchmarkRunReport) -> Res
 
 pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     let mut markdown = String::new();
-    markdown.push_str("# Range Strata Binary Benchmark Report\n\n");
+    if report.engine == "sqlite" {
+        markdown.push_str("# SQLite Baseline Benchmark Report\n\n");
+    } else {
+        markdown.push_str("# Range Strata Binary Benchmark Report\n\n");
+    }
     markdown.push_str(&format!("Generated at: {}\n\n", report.generated_at));
     markdown.push_str("## Summary\n\n");
     markdown.push_str(&format!("- Engine: {}\n", report.engine));
     markdown.push_str(&format!("- Source SQLite: `{}`\n", report.source_db_path));
-    markdown.push_str(&format!("- Binary directory: `{}`\n", report.binary_dir));
-    markdown.push_str(&format!("- meta.db: `{}`\n", report.meta_db_path));
+    if report.engine != "sqlite" {
+        markdown.push_str(&format!("- Binary directory: `{}`\n", report.binary_dir));
+        markdown.push_str(&format!("- meta.db: `{}`\n", report.meta_db_path));
+    }
     markdown.push_str(&format!(
         "- Dimensions: {}\n",
         report.workload.dimensions.join(", ")
@@ -150,7 +160,11 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
         "- Result action count: {}\n",
         report.totals.result_count
     ));
-    markdown.push_str("- Cold start: not measured by this command; use `benchmark-cold`\n\n");
+    if report.engine == "sqlite" {
+        markdown.push_str("- Cold start: not measured by this command\n\n");
+    } else {
+        markdown.push_str("- Cold start: not measured by this command; use `benchmark-cold`\n\n");
+    }
 
     markdown.push_str("## Workload\n\n");
     markdown.push_str(&format!("- Source: {}\n", report.workload_source));

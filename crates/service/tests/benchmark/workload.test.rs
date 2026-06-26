@@ -1,7 +1,7 @@
 #[path = "../support/verify_store_fixture.rs"]
 mod verify_store_fixture;
 
-use poker_hands_storage_service::benchmark::benchmark_models::{
+use poker_hands_storage_service::benchmark::types::{
     BenchmarkWorkload, WorkloadMode, WorkloadOptions,
 };
 use poker_hands_storage_service::benchmark::workload::{

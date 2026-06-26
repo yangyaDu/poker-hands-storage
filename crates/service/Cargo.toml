@@ -29,6 +29,10 @@ name = "scripts_benchmark_test"
 path = "tests/scripts/benchmark.test.rs"
 
 [[test]]
+name = "scripts_benchmark_7e_test"
+path = "tests/scripts/benchmark_7e.test.rs"
+
+[[test]]
 name = "benchmark_metrics_test"
 path = "tests/benchmark/metrics.test.rs"
 
@@ -47,6 +51,14 @@ path = "tests/benchmark/result_verifier.test.rs"
 [[test]]
 name = "benchmark_hot_runner_test"
 path = "tests/benchmark/hot_runner.test.rs"
+
+[[test]]
+name = "benchmark_sqlite_runner_test"
+path = "tests/benchmark/sqlite_runner.test.rs"
+
+[[test]]
+name = "benchmark_compare_test"
+path = "tests/benchmark/compare.test.rs"
 
 [[test]]
 name = "verification_float32_precision_test"

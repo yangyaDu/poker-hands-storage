@@ -1,8 +1,10 @@
 use std::env;
 use std::path::PathBuf;
 
+use poker_hands_storage_service::benchmark::compare::run_benchmark_compare;
 use poker_hands_storage_service::benchmark::run_cold_benchmark;
 use poker_hands_storage_service::benchmark::run_hot_benchmark;
+use poker_hands_storage_service::benchmark::sqlite::run_sqlite_benchmark;
 use poker_hands_storage_service::config::ServiceConfig;
 use poker_hands_storage_service::domain::dimension::DimensionRef;
 use poker_hands_storage_service::errors::AppError;
@@ -11,6 +13,8 @@ use poker_hands_storage_service::query::QueryService;
 use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_service::scripts::benchmark::parse_benchmark_args;
 use poker_hands_storage_service::scripts::benchmark_cold::parse_benchmark_cold_args;
+use poker_hands_storage_service::scripts::benchmark_compare::parse_benchmark_compare_args;
+use poker_hands_storage_service::scripts::benchmark_sqlite::parse_benchmark_sqlite_args;
 use poker_hands_storage_service::scripts::verify_store::parse_verify_args;
 use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
 use poker_hands_storage_service::verification::report::{RangeStrataVerifyReport, VerifyMode};
@@ -35,6 +39,8 @@ async fn run() -> Result<(), AppError> {
         Some("query") => run_query(args.collect()),
         Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
+        Some("benchmark-sqlite") => run_benchmark_sqlite(args.collect()),
+        Some("benchmark-compare") => run_benchmark_compare_cmd(args.collect()),
         Some("benchmark-cold") => run_benchmark_cold(args.collect()),
         Some("cold-worker") => run_cold_worker_cmd(args.collect()),
         Some("serve") => {
@@ -92,6 +98,41 @@ fn run_benchmark_cold(args: Vec<String>) -> Result<(), AppError> {
     Ok(())
 }
 
+fn run_benchmark_sqlite(args: Vec<String>) -> Result<(), AppError> {
+    let command = parse_benchmark_sqlite_args(args)?;
+    let report = run_sqlite_benchmark(&command)?;
+    println!("SQLite benchmark complete.");
+    println!("  Cases: {}", report.cases.len());
+    println!("  Total iterations: {}", report.totals.iterations);
+    println!("  Aggregate QPS: {:.2}", report.totals.avg_qps);
+    println!("  Error count: {}", report.totals.error_count);
+    println!("  Result action count: {}", report.totals.result_count);
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(AppError::new(
+            "BENCHMARK_SQLITE_FAILED",
+            "SQLite benchmark failed",
+        ));
+    }
+    Ok(())
+}
+
+fn run_benchmark_compare_cmd(args: Vec<String>) -> Result<(), AppError> {
+    let command = parse_benchmark_compare_args(args)?;
+    let report = run_benchmark_compare(&command)?;
+    println!("Benchmark comparison complete.");
+    println!("  Cases: {}", report.cases.len());
+    println!("  Compatible workload: {}", report.compatible_workload);
+    println!(
+        "  Compatibility notes: {}",
+        report.compatibility_notes.len()
+    );
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    Ok(())
+}
+
 fn run_cold_worker_cmd(args: Vec<String>) -> Result<(), AppError> {
     // Parse minimal args for the cold worker subprocess.
     let mut dir = None;
@@ -136,8 +177,8 @@ fn run_cold_worker_cmd(args: Vec<String>) -> Result<(), AppError> {
     let hand = hand.ok_or_else(|| AppError::invalid_argument("--hand is required"))?;
 
     // Suppress tracing output in worker — only stdout JSON matters.
-    let output = poker_hands_storage_service::benchmark::cold_worker::run_cold_worker(
-        &poker_hands_storage_service::benchmark::cold_worker::ColdWorkerParams {
+    let output = poker_hands_storage_service::benchmark::cold::worker::run_cold_worker(
+        &poker_hands_storage_service::benchmark::cold::worker::ColdWorkerParams {
             dir: &dir,
             meta: &meta,
             strategy: &strategy,
@@ -375,6 +416,17 @@ Commands:
         [--workload-mode <random|abstract-local>]
         [--warmup-iterations <count>] [--verify-checksum]
         [--verify-results] [--out <report.json>] [--md <report.md>]
+
+  benchmark-sqlite --source <range.db>
+        [--workload <workload.json>] [--seed <number>]
+        [--iterations <count>] [--hand-iterations <count>]
+        [--batch-iterations <count>] [--batch-size <count>]
+        [--batch-sizes <csv>] [--dimension <strategy:players:bb>]
+        [--workload-mode <random|abstract-local>]
+        [--warmup-iterations <count>] [--out <report.json>] [--md <report.md>]
+
+  benchmark-compare --binary <binary-report.json> --sqlite <sqlite-report.json>
+        [--allow-mismatch] [--out <report.json>] [--md <report.md>]
 
   benchmark-cold --dir <dir> --source <range.db>
         [--meta <meta.db>] [--mode <process-cold|os-best-effort|linux-drop-cache>]

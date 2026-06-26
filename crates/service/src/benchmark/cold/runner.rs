@@ -6,13 +6,14 @@ use crate::domain::dimension::{dimension_key, DimensionRef};
 use crate::errors::AppError;
 use crate::storage::manifest::load_manifest;
 
+use crate::benchmark::memory_snapshot::MemorySnapshot;
+
 use super::cache_eviction::{compute_dataset_size, evict_cache};
-use super::cold_types::{
+use super::types::{
     AggregateReport, BenchmarkColdCommand, ColdStartBenchmarkReport, ColdStartPhaseSummaries,
     ColdStartRunFailure, ColdStartRunResult, ColdWorkerOutput, ColdWorkerTimings,
     DimensionColdStartReport, DimensionQuery, LatencySummary, PhaseAccounting, QueryPolicy,
 };
-use super::memory_snapshot::MemorySnapshot;
 
 /// Run the complete cold-start benchmark.
 pub fn run_cold_benchmark(
@@ -192,7 +193,7 @@ fn run_worker(
     command: &BenchmarkColdCommand,
     query: &DimensionQuery,
     run_index: usize,
-    eviction: super::cold_types::EvictionResult,
+    eviction: super::types::EvictionResult,
 ) -> ColdStartRunResult {
     let start = Instant::now();
 
@@ -275,7 +276,7 @@ fn run_worker(
 
 fn failed_run(
     run_index: usize,
-    eviction: super::cold_types::EvictionResult,
+    eviction: super::types::EvictionResult,
     exit_code: i32,
     error: &str,
 ) -> ColdStartRunResult {
@@ -488,7 +489,7 @@ fn build_report(
     let notes = build_notes(command, dataset_size_bytes, filler_size_bytes);
 
     ColdStartBenchmarkReport {
-        generated_at: super::benchmark_report::generated_at_utc(),
+        generated_at: crate::benchmark::report::generated_at_utc(),
         mode: command.mode.to_string(),
         platform: std::env::consts::OS.to_owned(),
         runs_per_dimension: command.runs_per_dimension,
@@ -528,16 +529,16 @@ fn build_notes(
     ];
 
     match command.mode {
-        super::cold_types::ColdStartMode::ProcessCold => {
+        super::types::ColdStartMode::ProcessCold => {
             notes.push("process-cold does not attempt OS page cache eviction; it measures fresh process/open/query cost with whatever cache state the OS currently has.".to_owned());
         }
-        super::cold_types::ColdStartMode::OsBestEffort => {
+        super::types::ColdStartMode::OsBestEffort => {
             notes.push(format!(
                 "os-best-effort writes and reads a {:.1} MB non-zero filler file to perturb OS page cache. This is best-effort, not a guaranteed cold cache.",
                 filler_size_bytes as f64 / (1024.0 * 1024.0)
             ));
         }
-        super::cold_types::ColdStartMode::LinuxDropCache => {
+        super::types::ColdStartMode::LinuxDropCache => {
             notes.push("linux-drop-cache attempts sync + /proc/sys/vm/drop_caches and requires Linux with sufficient privileges.".to_owned());
         }
     }
@@ -549,7 +550,7 @@ fn write_report(
     command: &BenchmarkColdCommand,
     report: &ColdStartBenchmarkReport,
 ) -> Result<(), AppError> {
-    super::cold_report::write_cold_start_json(&command.out_path, report)?;
-    super::cold_report::write_cold_start_markdown(&command.md_path, report)?;
+    super::report::write_cold_start_json(&command.out_path, report)?;
+    super::report::write_cold_start_markdown(&command.md_path, report)?;
     Ok(())
 }

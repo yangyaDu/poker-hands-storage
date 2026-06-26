@@ -1,6 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use super::memory_snapshot::MemorySnapshot;
+use crate::benchmark::memory_snapshot::MemorySnapshot;
+use crate::benchmark::metrics;
 
 // ---------------------------------------------------------------------------
 // Cold-worker output (stdout JSON)
@@ -196,8 +197,8 @@ impl LatencySummary {
         let total: f64 = sorted.iter().sum();
         Self {
             min_ms: sorted[0],
-            p50_ms: super::metrics::percentile(&sorted, 50.0),
-            p95_ms: super::metrics::percentile(&sorted, 95.0),
+            p50_ms: metrics::percentile(&sorted, 50.0),
+            p95_ms: metrics::percentile(&sorted, 95.0),
             max_ms: sorted[sorted.len() - 1],
             avg_ms: total / sorted.len() as f64,
         }

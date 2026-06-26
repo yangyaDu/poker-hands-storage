@@ -1,8 +1,8 @@
 #[path = "../support/verify_store_fixture.rs"]
 mod verify_store_fixture;
 
-use poker_hands_storage_service::benchmark::benchmark_models::HandBenchmarkItem;
-use poker_hands_storage_service::benchmark::result_verifier::verify_benchmark_results;
+use poker_hands_storage_service::benchmark::hot::result_verifier::verify_benchmark_results;
+use poker_hands_storage_service::benchmark::types::HandBenchmarkItem;
 use poker_hands_storage_service::query::QueryService;
 use poker_hands_storage_service::storage::sqlite::Connection;
 use tempfile::tempdir;

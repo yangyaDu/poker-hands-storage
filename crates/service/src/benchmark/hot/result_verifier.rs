@@ -2,7 +2,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::benchmark::benchmark_models::{range_table_name, HandBenchmarkItem};
+use crate::benchmark::types::{range_table_name, HandBenchmarkItem};
 use crate::domain::dimension::quote_identifier;
 use crate::errors::AppError;
 use crate::query::QueryService;

@@ -21,3 +21,5 @@ data/sqlite/*.shm
 # Environment
 .env
 .env.local
+
+nul

@@ -4,7 +4,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-use crate::benchmark::benchmark_models::{
+use crate::benchmark::types::{
     concrete_lines_table_name, dimension_matches_requested, normalize_batch_sizes,
     range_table_name, BatchBenchmarkItem, BatchBenchmarkRequest, BatchQueriesBySize,
     BenchmarkWorkload, HandBenchmarkItem, WorkloadMode, WorkloadOptions,

@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::Instant;
 
-use super::cold_types::{ColdStartMode, EvictionResult};
+use super::types::{ColdStartMode, EvictionResult};
 
 /// Compute the default filler size: max(512 MB, dataset_size * 2).
 pub fn default_filler_size(dataset_size_bytes: u64) -> u64 {

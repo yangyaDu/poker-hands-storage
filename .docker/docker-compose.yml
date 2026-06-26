@@ -1,8 +1,8 @@
 services:
   poker-hands-storage:
     build:
-      context: .
-      dockerfile: Dockerfile
+      context: ..
+      dockerfile: .docker/Dockerfile
     image: poker-hands-storage:local
     init: true
     read_only: true
@@ -11,7 +11,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./data/smoke:/data:ro
+      - ../data/range-strata:/data:ro
     environment:
       PHS_BIND: 0.0.0.0:8080
       PHS_DATA_DIR: /data

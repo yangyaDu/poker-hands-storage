@@ -1,23 +1,21 @@
 #[path = "../support/verify_store_fixture.rs"]
 mod verify_store_fixture;
 
-use poker_hands_storage_service::benchmark::hot::types::BenchmarkCommand;
-use poker_hands_storage_service::benchmark::run_hot_benchmark;
+use poker_hands_storage_service::benchmark::sqlite::run_sqlite_benchmark;
+use poker_hands_storage_service::benchmark::sqlite::types::BenchmarkSqliteCommand;
 use poker_hands_storage_service::benchmark::types::WorkloadMode;
 use tempfile::tempdir;
 use verify_store_fixture::build_verify_fixture;
 
 #[test]
-fn hot_runner_writes_reports_for_clean_fixture() {
+fn sqlite_runner_writes_reports_for_clean_fixture() {
     let directory = tempdir().unwrap();
-    let (source_path, output_path) = build_verify_fixture(directory.path());
-    let report_path = directory.path().join("benchmark.json");
-    let markdown_path = directory.path().join("benchmark.md");
+    let (source_path, _output_path) = build_verify_fixture(directory.path());
+    let report_path = directory.path().join("benchmark-sqlite.json");
+    let markdown_path = directory.path().join("benchmark-sqlite.md");
 
-    let command = BenchmarkCommand {
+    let command = BenchmarkSqliteCommand {
         source: source_path,
-        dir: output_path.clone(),
-        meta: output_path.join("meta.db"),
         out_path: report_path.clone(),
         md_path: markdown_path.clone(),
         workload_path: None,
@@ -30,12 +28,11 @@ fn hot_runner_writes_reports_for_clean_fixture() {
         requested_dimension_values: Vec::new(),
         workload_mode: WorkloadMode::Random,
         warmup_iterations: 1,
-        verify_checksums: true,
-        verify_results: true,
     };
 
-    let report = run_hot_benchmark(&command).unwrap();
+    let report = run_sqlite_benchmark(&command).unwrap();
 
+    assert_eq!(report.engine, "sqlite");
     assert!(!report.has_errors());
     assert_eq!(report.cases.len(), 3);
     assert!(report.cases.iter().any(|case| case.name == "hand-strategy"));

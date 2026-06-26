@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use poker_hands_storage_service::benchmark::benchmark_models::WorkloadMode;
+use poker_hands_storage_service::benchmark::types::WorkloadMode;
 use poker_hands_storage_service::scripts::benchmark::{
     parse_benchmark_args, parse_requested_dimension,
 };

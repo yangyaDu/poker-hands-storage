@@ -1,14 +1,14 @@
-use poker_hands_storage_service::benchmark::benchmark_models::{
-    BenchmarkWorkload, WorkloadMode, WorkloadSource,
-};
-use poker_hands_storage_service::benchmark::benchmark_report::{
-    build_benchmark_report, render_benchmark_markdown, BenchmarkOptionsSummary, ReportInput,
-};
+use poker_hands_storage_service::benchmark::hot::result_verifier::ResultVerificationSummary;
 use poker_hands_storage_service::benchmark::memory_snapshot::{
     BenchmarkMemoryReport, MemorySnapshot,
 };
 use poker_hands_storage_service::benchmark::metrics::{BenchmarkCaseResult, BenchmarkTotals};
-use poker_hands_storage_service::benchmark::result_verifier::ResultVerificationSummary;
+use poker_hands_storage_service::benchmark::report::{
+    build_benchmark_report, render_benchmark_markdown, BenchmarkOptionsSummary, ReportInput,
+};
+use poker_hands_storage_service::benchmark::types::{
+    BenchmarkWorkload, WorkloadMode, WorkloadSource,
+};
 
 #[test]
 fn benchmark_report_renders_latency_memory_and_verification() {

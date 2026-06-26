@@ -3,7 +3,7 @@ use std::path::Path;
 
 use crate::errors::AppError;
 
-use super::cold_types::{ColdStartBenchmarkReport, ColdStartPhaseSummaries, LatencySummary};
+use super::types::{ColdStartBenchmarkReport, ColdStartPhaseSummaries, LatencySummary};
 
 pub fn write_cold_start_json(
     path: &Path,
@@ -263,7 +263,7 @@ fn markdown_table(headers: &[&str], rows: &[Vec<String>]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::benchmark::cold_types::*;
+    use crate::benchmark::cold::types::*;
 
     fn empty_latency() -> LatencySummary {
         LatencySummary::from_values(&[])

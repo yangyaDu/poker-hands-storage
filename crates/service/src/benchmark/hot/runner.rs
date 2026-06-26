@@ -1,14 +1,14 @@
-use crate::benchmark::benchmark_models::{
-    BatchBenchmarkItem, BenchmarkCommand, BenchmarkWorkload, HandBenchmarkItem, WorkloadOptions,
-    WorkloadSource,
-};
-use crate::benchmark::benchmark_report::{
+use crate::benchmark::hot::result_verifier::verify_benchmark_results;
+use crate::benchmark::hot::types::BenchmarkCommand;
+use crate::benchmark::memory_snapshot::{get_memory_snapshot, BenchmarkMemoryReport};
+use crate::benchmark::metrics::{build_totals, measure_benchmark_case, BenchmarkCaseResult};
+use crate::benchmark::report::{
     build_benchmark_report, write_benchmark_json, write_benchmark_markdown,
     BenchmarkOptionsSummary, BenchmarkRunReport, ReportInput,
 };
-use crate::benchmark::memory_snapshot::{get_memory_snapshot, BenchmarkMemoryReport};
-use crate::benchmark::metrics::{build_totals, measure_benchmark_case, BenchmarkCaseResult};
-use crate::benchmark::result_verifier::verify_benchmark_results;
+use crate::benchmark::types::{
+    BatchBenchmarkItem, BenchmarkWorkload, HandBenchmarkItem, WorkloadOptions, WorkloadSource,
+};
 use crate::benchmark::workload::{create_benchmark_workload, read_workload_json};
 use crate::domain::dimension::DimensionRef;
 use crate::errors::AppError;

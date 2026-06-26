@@ -1,7 +1,7 @@
 use std::path::Path;
 use std::time::Instant;
 
-use crate::benchmark::cold_types::{ColdWorkerOutput, ColdWorkerTimings};
+use crate::benchmark::cold::types::{ColdWorkerOutput, ColdWorkerTimings};
 use crate::benchmark::memory_snapshot::{get_memory_snapshot, MemorySnapshot};
 use crate::domain::dimension::DimensionRef;
 use crate::errors::AppError;

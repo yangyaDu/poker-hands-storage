@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use crate::benchmark::cache_eviction::default_filler_size;
-use crate::benchmark::cold_types::{BenchmarkColdCommand, ColdStartMode, QueryPolicy};
+use crate::benchmark::cold::cache_eviction::default_filler_size;
+use crate::benchmark::cold::types::{BenchmarkColdCommand, ColdStartMode, QueryPolicy};
 use crate::errors::AppError;
 use crate::scripts::benchmark::parse_requested_dimension;
 
@@ -85,7 +85,7 @@ pub fn parse_benchmark_cold_args(args: Vec<String>) -> Result<BenchmarkColdComma
 
     // Default cache filler MB based on platform if not specified.
     let cache_filler_mb = cache_filler_mb.unwrap_or_else(|| {
-        let dataset_size = crate::benchmark::cache_eviction::compute_dataset_size(&dir);
+        let dataset_size = crate::benchmark::cold::cache_eviction::compute_dataset_size(&dir);
         default_filler_size(dataset_size) / (1024 * 1024)
     });
 
