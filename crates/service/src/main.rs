@@ -1,16 +1,16 @@
 use std::env;
 use std::path::PathBuf;
 
-use poker_hands_storage_service::builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_service::config::ServiceConfig;
-use poker_hands_storage_service::error::AppError;
+use poker_hands_storage_service::domain::dimension::DimensionRef;
+use poker_hands_storage_service::errors::AppError;
 use poker_hands_storage_service::http;
-use poker_hands_storage_service::naming::DimensionRef;
-use poker_hands_storage_service::query_service::QueryService;
-use poker_hands_storage_service::verifier::cli_args::parse_verify_args;
-use poker_hands_storage_service::verifier::report::{RangeStrataVerifyReport, VerifyMode};
-use poker_hands_storage_service::verifier::source_cross::{run_cross_verify, CrossVerifyOptions};
-use poker_hands_storage_service::verifier::standalone::{
+use poker_hands_storage_service::query::QueryService;
+use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
+use poker_hands_storage_service::scripts::verify_store::parse_verify_args;
+use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
+use poker_hands_storage_service::verification::report::{RangeStrataVerifyReport, VerifyMode};
+use poker_hands_storage_service::verification::standalone::{
     run_standalone_verify, StandaloneVerifyOptions,
 };
 use tracing_subscriber::EnvFilter;

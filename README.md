@@ -12,6 +12,21 @@ V1 follows the current `preflop-storage` Range Strata Binary contract:
 The HTTP runtime remains read-only. The same binary also provides an offline
 `build` command that converts the legacy SQLite range DB into the V1 files.
 
+## Service module layout
+
+`crates/service/src` is organized by business area:
+
+- `domain`: action schemas, dimensions, and hole-card parsing.
+- `storage`: manifest, metadata DB, and dynamically loaded SQLite access.
+- `range_store_builder`: SQLite source to PFSP/PFXI binary store build flow.
+- `query`: hand query service and dimension handle pool.
+- `http` and `routes`: Axum server setup, OpenAPI, validation, and handlers.
+- `scripts`: CLI command parsing and command entry points.
+- `verification`: standalone and source-cross verification reports.
+
+Service integration tests live under `crates/service/tests` and use explicit
+Cargo targets with `<source-file>.test.rs` filenames.
+
 ## Build data
 
 ```powershell
