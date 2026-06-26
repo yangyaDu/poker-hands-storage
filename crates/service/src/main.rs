@@ -1,6 +1,7 @@
 use std::env;
 use std::path::PathBuf;
 
+use poker_hands_storage_service::benchmark::run_cold_benchmark;
 use poker_hands_storage_service::benchmark::run_hot_benchmark;
 use poker_hands_storage_service::config::ServiceConfig;
 use poker_hands_storage_service::domain::dimension::DimensionRef;
@@ -9,6 +10,7 @@ use poker_hands_storage_service::http;
 use poker_hands_storage_service::query::QueryService;
 use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_service::scripts::benchmark::parse_benchmark_args;
+use poker_hands_storage_service::scripts::benchmark_cold::parse_benchmark_cold_args;
 use poker_hands_storage_service::scripts::verify_store::parse_verify_args;
 use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
 use poker_hands_storage_service::verification::report::{RangeStrataVerifyReport, VerifyMode};
@@ -33,6 +35,8 @@ async fn run() -> Result<(), AppError> {
         Some("query") => run_query(args.collect()),
         Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
+        Some("benchmark-cold") => run_benchmark_cold(args.collect()),
+        Some("cold-worker") => run_cold_worker_cmd(args.collect()),
         Some("serve") => {
             let remaining: Vec<_> = args.collect();
             if !remaining.is_empty() {
@@ -66,6 +70,91 @@ fn run_benchmark(args: Vec<String>) -> Result<(), AppError> {
     println!("  Markdown report: {}", command.md_path.display());
     if report.has_errors() {
         return Err(AppError::new("BENCHMARK_FAILED", "benchmark failed"));
+    }
+    Ok(())
+}
+
+fn run_benchmark_cold(args: Vec<String>) -> Result<(), AppError> {
+    let command = parse_benchmark_cold_args(args)?;
+    let report = run_cold_benchmark(&command)?;
+    println!("Range Strata Binary cold-start benchmark complete.");
+    println!("  Dimensions: {}", report.aggregate.dimensions);
+    println!("  Total runs: {}", report.aggregate.runs);
+    println!("  Errors: {}", report.aggregate.error_count);
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(AppError::new(
+            "BENCHMARK_COLD_FAILED",
+            "cold-start benchmark had errors",
+        ));
+    }
+    Ok(())
+}
+
+fn run_cold_worker_cmd(args: Vec<String>) -> Result<(), AppError> {
+    // Parse minimal args for the cold worker subprocess.
+    let mut dir = None;
+    let mut meta = None;
+    let mut strategy = "default".to_owned();
+    let mut player_count = None;
+    let mut depth_bb = None;
+    let mut concrete_line_id = None;
+    let mut hand = None;
+    let mut verify_checksum = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--dir" => dir = Some(std::path::PathBuf::from(next_value(&args, &mut index)?)),
+            "--meta" => meta = Some(std::path::PathBuf::from(next_value(&args, &mut index)?)),
+            "--strategy" => strategy = next_value(&args, &mut index)?.to_owned(),
+            "--player-count" => {
+                player_count = Some(parse_u32("--player-count", next_value(&args, &mut index)?)?)
+            }
+            "--depth-bb" => {
+                depth_bb = Some(parse_u32("--depth-bb", next_value(&args, &mut index)?)?)
+            }
+            "--concrete-line-id" => {
+                concrete_line_id = Some(parse_u32(
+                    "--concrete-line-id",
+                    next_value(&args, &mut index)?,
+                )?)
+            }
+            "--hand" => hand = Some(next_value(&args, &mut index)?.to_owned()),
+            "--verify-checksum" => verify_checksum = true,
+            _ => {} // Ignore unknown args silently in worker
+        }
+        index += 1;
+    }
+    let dir = dir.ok_or_else(|| AppError::invalid_argument("--dir is required"))?;
+    let meta = meta.unwrap_or_else(|| dir.join("meta.db"));
+    let player_count =
+        player_count.ok_or_else(|| AppError::invalid_argument("--player-count is required"))?;
+    let depth_bb = depth_bb.ok_or_else(|| AppError::invalid_argument("--depth-bb is required"))?;
+    let concrete_line_id = concrete_line_id
+        .ok_or_else(|| AppError::invalid_argument("--concrete-line-id is required"))?;
+    let hand = hand.ok_or_else(|| AppError::invalid_argument("--hand is required"))?;
+
+    // Suppress tracing output in worker — only stdout JSON matters.
+    let output = poker_hands_storage_service::benchmark::cold_worker::run_cold_worker(
+        &poker_hands_storage_service::benchmark::cold_worker::ColdWorkerParams {
+            dir: &dir,
+            meta: &meta,
+            strategy: &strategy,
+            player_count,
+            depth_bb,
+            concrete_line_id,
+            hand: &hand,
+            verify_checksums: verify_checksum,
+        },
+    );
+    // Output JSON to stdout — this is what the parent process reads.
+    println!(
+        "{}",
+        serde_json::to_string(&output).map_err(|e| AppError::invalid_format(e.to_string()))?
+    );
+    if !output.ok {
+        std::process::exit(1);
     }
     Ok(())
 }
@@ -286,6 +375,14 @@ Commands:
         [--workload-mode <random|abstract-local>]
         [--warmup-iterations <count>] [--verify-checksum]
         [--verify-results] [--out <report.json>] [--md <report.md>]
+
+  benchmark-cold --dir <dir> --source <range.db>
+        [--meta <meta.db>] [--mode <process-cold|os-best-effort|linux-drop-cache>]
+        [--runs <count>] [--dimension <strategy:players:bb>]
+        [--query-policy <first|fixed>] [--concrete-line-id <id>] [--hand <hand>]
+        [--cache-filler-mb <mb>] [--max-errors-per-dimension <count>]
+        [--fail-fast] [--verify-checksum]
+        [--out <report.json>] [--md <report.md>]
 
   serve
         Environment: PHS_BIND, PHS_DATA_DIR, PHS_META_DB,

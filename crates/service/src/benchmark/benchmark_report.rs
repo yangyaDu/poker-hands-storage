@@ -294,7 +294,7 @@ fn format_bytes(value: u64) -> String {
     }
 }
 
-fn generated_at_utc() -> String {
+pub fn generated_at_utc() -> String {
     let duration = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
