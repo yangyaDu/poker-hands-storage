@@ -323,6 +323,7 @@ pub struct AggregateReport {
 #[serde(rename_all = "camelCase")]
 pub struct ColdStartBenchmarkReport {
     pub generated_at: String,
+    pub engine: String,
     pub mode: String,
     pub platform: String,
     pub runs_per_dimension: usize,
@@ -363,6 +364,75 @@ pub struct BenchmarkColdCommand {
     pub max_errors_per_dimension: usize,
     pub fail_fast: bool,
     pub verify_checksums: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkSqliteColdCommand {
+    pub source: std::path::PathBuf,
+    pub dir: std::path::PathBuf,
+    pub out_path: std::path::PathBuf,
+    pub md_path: std::path::PathBuf,
+    pub mode: ColdStartMode,
+    pub runs_per_dimension: usize,
+    pub requested_dimensions: Vec<crate::domain::dimension::DimensionRef>,
+    pub query_policy: QueryPolicy,
+    pub fixed_concrete_line_id: Option<u32>,
+    pub fixed_hand: Option<String>,
+    pub cache_filler_mb: u64,
+    pub max_errors_per_dimension: usize,
+    pub fail_fast: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BenchmarkColdCompareCommand {
+    pub binary_report: std::path::PathBuf,
+    pub sqlite_report: std::path::PathBuf,
+    pub out_path: std::path::PathBuf,
+    pub md_path: std::path::PathBuf,
+    pub allow_mismatch: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ColdStartCompareReport {
+    pub generated_at: String,
+    pub binary_report_path: String,
+    pub sqlite_report_path: String,
+    pub compatible: bool,
+    pub compatibility_notes: Vec<String>,
+    pub aggregate: ColdStartComparison,
+    pub dimensions: Vec<ColdStartComparison>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ColdStartComparison {
+    pub name: String,
+    pub binary: ColdStartComparisonSide,
+    pub sqlite: ColdStartComparisonSide,
+    pub process_elapsed_p50_ratio: f64,
+    pub process_elapsed_p95_ratio: f64,
+    pub store_open_and_first_query_p50_ratio: f64,
+    pub store_open_and_first_query_p95_ratio: f64,
+    pub first_query_p50_ratio: f64,
+    pub first_query_p95_ratio: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ColdStartComparisonSide {
+    pub runs: usize,
+    pub successful_runs: usize,
+    pub error_count: usize,
+    pub process_elapsed_p50_ms: f64,
+    pub process_elapsed_p95_ms: f64,
+    pub store_open_and_first_query_p50_ms: f64,
+    pub store_open_and_first_query_p95_ms: f64,
+    pub worker_total_p50_ms: f64,
+    pub worker_total_p95_ms: f64,
+    pub first_query_p50_ms: f64,
+    pub first_query_p95_ms: f64,
 }
 
 #[cfg(test)]

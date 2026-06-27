@@ -166,7 +166,7 @@ fn query_batch_count(connection: &Connection, item: &BatchBenchmarkItem) -> Resu
     Ok(total)
 }
 
-fn sqlite_action_count(
+pub(crate) fn sqlite_action_count(
     connection: &Connection,
     dimension: &crate::domain::dimension::DimensionRef,
     concrete_line_id: u32,

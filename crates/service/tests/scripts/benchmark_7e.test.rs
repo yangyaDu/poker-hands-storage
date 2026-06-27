@@ -1,8 +1,11 @@
 use std::path::PathBuf;
 
+use poker_hands_storage_service::benchmark::cold::types::ColdStartMode;
 use poker_hands_storage_service::benchmark::types::WorkloadMode;
+use poker_hands_storage_service::scripts::benchmark_cold_compare::parse_benchmark_cold_compare_args;
 use poker_hands_storage_service::scripts::benchmark_compare::parse_benchmark_compare_args;
 use poker_hands_storage_service::scripts::benchmark_sqlite::parse_benchmark_sqlite_args;
+use poker_hands_storage_service::scripts::benchmark_sqlite_cold::parse_benchmark_sqlite_cold_args;
 
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()
@@ -122,4 +125,63 @@ fn parse_benchmark_compare_args_accepts_explicit_options() {
     assert_eq!(command.out_path, PathBuf::from("compare.json"));
     assert_eq!(command.md_path, PathBuf::from("compare.md"));
     assert!(command.allow_mismatch);
+}
+
+#[test]
+fn parse_benchmark_sqlite_cold_args_uses_defaults() {
+    let command = parse_benchmark_sqlite_cold_args(args(&[
+        "--source",
+        "data/sqlite/range.db",
+        "--dir",
+        "data/range-strata",
+    ]))
+    .unwrap();
+
+    assert_eq!(command.source, PathBuf::from("data/sqlite/range.db"));
+    assert_eq!(command.dir, PathBuf::from("data/range-strata"));
+    assert_eq!(
+        command.out_path,
+        PathBuf::from("reports/benchmark-sqlite-cold-start.json")
+    );
+    assert_eq!(
+        command.md_path,
+        PathBuf::from("reports/benchmark-sqlite-cold-start.md")
+    );
+    assert_eq!(command.mode, ColdStartMode::ProcessCold);
+    assert_eq!(command.runs_per_dimension, 10);
+}
+
+#[test]
+fn parse_benchmark_sqlite_cold_args_requires_source_and_dir() {
+    let error = parse_benchmark_sqlite_cold_args(args(&[])).unwrap_err();
+    assert_eq!(error.code(), "INVALID_ARGUMENT");
+    assert!(error.message().contains("--source is required"));
+
+    let error =
+        parse_benchmark_sqlite_cold_args(args(&["--source", "data/sqlite/range.db"])).unwrap_err();
+    assert_eq!(error.code(), "INVALID_ARGUMENT");
+    assert!(error.message().contains("--dir is required"));
+}
+
+#[test]
+fn parse_benchmark_cold_compare_args_uses_defaults() {
+    let command = parse_benchmark_cold_compare_args(args(&[
+        "--binary",
+        "binary-cold.json",
+        "--sqlite",
+        "sqlite-cold.json",
+    ]))
+    .unwrap();
+
+    assert_eq!(command.binary_report, PathBuf::from("binary-cold.json"));
+    assert_eq!(command.sqlite_report, PathBuf::from("sqlite-cold.json"));
+    assert_eq!(
+        command.out_path,
+        PathBuf::from("reports/benchmark-cold-compare.json")
+    );
+    assert_eq!(
+        command.md_path,
+        PathBuf::from("reports/benchmark-cold-compare.md")
+    );
+    assert!(!command.allow_mismatch);
 }

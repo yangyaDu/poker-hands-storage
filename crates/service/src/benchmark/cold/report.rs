@@ -38,16 +38,22 @@ fn render_cold_start_markdown(report: &ColdStartBenchmarkReport) -> String {
     let mut out = String::new();
 
     // Header
-    out.push_str("# Range Strata Binary Cold-Start Benchmark\n\n");
+    out.push_str(&format!(
+        "# {} Cold-Start Benchmark\n\n",
+        engine_title(&report.engine)
+    ));
     out.push_str(&format!("Generated: {}\n\n", report.generated_at));
 
     // Summary
     out.push_str("## Summary\n\n");
+    out.push_str(&format!("- Engine: {}\n", report.engine));
     out.push_str(&format!("- Mode: {}\n", report.mode));
     out.push_str(&format!("- Platform: {}\n", report.platform));
     out.push_str(&format!("- Source DB: `{}`\n", report.source_db_path));
-    out.push_str(&format!("- Binary dir: `{}`\n", report.binary_dir));
-    out.push_str(&format!("- meta.db: `{}`\n", report.meta_db_path));
+    if report.engine == "binary" {
+        out.push_str(&format!("- Binary dir: `{}`\n", report.binary_dir));
+        out.push_str(&format!("- meta.db: `{}`\n", report.meta_db_path));
+    }
     out.push_str(&format!("- Dimensions: {}\n", report.aggregate.dimensions));
     out.push_str(&format!(
         "- Runs per dimension: {}\n",
@@ -210,6 +216,14 @@ fn phase_summary_rows(summary: &ColdStartPhaseSummaries) -> Vec<Vec<String>> {
         .collect()
 }
 
+fn engine_title(engine: &str) -> &str {
+    match engine {
+        "binary" => "Range Strata Binary",
+        "sqlite" => "SQLite",
+        _ => engine,
+    }
+}
+
 fn format_ms(value: f64) -> String {
     if !value.is_finite() {
         return "unknown".to_owned();
@@ -284,6 +298,7 @@ mod tests {
     fn markdown_contains_sections() {
         let report = ColdStartBenchmarkReport {
             generated_at: "2026-01-01T00:00:00Z".to_owned(),
+            engine: "binary".to_owned(),
             mode: "process-cold".to_owned(),
             platform: "windows".to_owned(),
             runs_per_dimension: 3,

@@ -1,6 +1,9 @@
 use std::env;
 use std::path::PathBuf;
 
+use poker_hands_storage_service::benchmark::cold::{
+    run_cold_start_compare, run_sqlite_cold_benchmark,
+};
 use poker_hands_storage_service::benchmark::compare::run_benchmark_compare;
 use poker_hands_storage_service::benchmark::run_cold_benchmark;
 use poker_hands_storage_service::benchmark::run_hot_benchmark;
@@ -16,8 +19,10 @@ use poker_hands_storage_service::query::QueryService;
 use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_service::scripts::benchmark::parse_benchmark_args;
 use poker_hands_storage_service::scripts::benchmark_cold::parse_benchmark_cold_args;
+use poker_hands_storage_service::scripts::benchmark_cold_compare::parse_benchmark_cold_compare_args;
 use poker_hands_storage_service::scripts::benchmark_compare::parse_benchmark_compare_args;
 use poker_hands_storage_service::scripts::benchmark_sqlite::parse_benchmark_sqlite_args;
+use poker_hands_storage_service::scripts::benchmark_sqlite_cold::parse_benchmark_sqlite_cold_args;
 use poker_hands_storage_service::scripts::verify_store::parse_verify_args;
 use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
 use poker_hands_storage_service::verification::report::{RangeStrataVerifyReport, VerifyMode};
@@ -45,7 +50,10 @@ async fn run() -> Result<(), AppError> {
         Some("benchmark-sqlite") => run_benchmark_sqlite(args.collect()),
         Some("benchmark-compare") => run_benchmark_compare_cmd(args.collect()),
         Some("benchmark-cold") => run_benchmark_cold(args.collect()),
+        Some("benchmark-sqlite-cold") => run_benchmark_sqlite_cold(args.collect()),
+        Some("benchmark-cold-compare") => run_benchmark_cold_compare_cmd(args.collect()),
         Some("cold-worker") => run_cold_worker_cmd(args.collect()),
+        Some("sqlite-cold-worker") => run_sqlite_cold_worker_cmd(args.collect()),
         Some("healthcheck") => run_healthcheck(args.collect()),
         Some("serve") => {
             let remaining: Vec<_> = args.collect();
@@ -102,6 +110,24 @@ fn run_benchmark_cold(args: Vec<String>) -> Result<(), AppError> {
     Ok(())
 }
 
+fn run_benchmark_sqlite_cold(args: Vec<String>) -> Result<(), AppError> {
+    let command = parse_benchmark_sqlite_cold_args(args)?;
+    let report = run_sqlite_cold_benchmark(&command)?;
+    println!("SQLite cold-start benchmark complete.");
+    println!("  Dimensions: {}", report.aggregate.dimensions);
+    println!("  Total runs: {}", report.aggregate.runs);
+    println!("  Errors: {}", report.aggregate.error_count);
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(AppError::new(
+            "BENCHMARK_SQLITE_COLD_FAILED",
+            "SQLite cold-start benchmark had errors",
+        ));
+    }
+    Ok(())
+}
+
 fn run_benchmark_sqlite(args: Vec<String>) -> Result<(), AppError> {
     let command = parse_benchmark_sqlite_args(args)?;
     let report = run_sqlite_benchmark(&command)?;
@@ -128,6 +154,21 @@ fn run_benchmark_compare_cmd(args: Vec<String>) -> Result<(), AppError> {
     println!("Benchmark comparison complete.");
     println!("  Cases: {}", report.cases.len());
     println!("  Compatible workload: {}", report.compatible_workload);
+    println!(
+        "  Compatibility notes: {}",
+        report.compatibility_notes.len()
+    );
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    Ok(())
+}
+
+fn run_benchmark_cold_compare_cmd(args: Vec<String>) -> Result<(), AppError> {
+    let command = parse_benchmark_cold_compare_args(args)?;
+    let report = run_cold_start_compare(&command)?;
+    println!("Cold-start benchmark comparison complete.");
+    println!("  Dimensions: {}", report.dimensions.len());
+    println!("  Compatible: {}", report.compatible);
     println!(
         "  Compatibility notes: {}",
         report.compatibility_notes.len()
@@ -194,6 +235,64 @@ fn run_cold_worker_cmd(args: Vec<String>) -> Result<(), AppError> {
         },
     );
     // Output JSON to stdout — this is what the parent process reads.
+    println!(
+        "{}",
+        serde_json::to_string(&output).map_err(|e| AppError::invalid_format(e.to_string()))?
+    );
+    if !output.ok {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+fn run_sqlite_cold_worker_cmd(args: Vec<String>) -> Result<(), AppError> {
+    let mut source = None;
+    let mut strategy = "default".to_owned();
+    let mut player_count = None;
+    let mut depth_bb = None;
+    let mut concrete_line_id = None;
+    let mut hand = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--source" => source = Some(std::path::PathBuf::from(next_value(&args, &mut index)?)),
+            "--strategy" => strategy = next_value(&args, &mut index)?.to_owned(),
+            "--player-count" => {
+                player_count = Some(parse_u32("--player-count", next_value(&args, &mut index)?)?)
+            }
+            "--depth-bb" => {
+                depth_bb = Some(parse_u32("--depth-bb", next_value(&args, &mut index)?)?)
+            }
+            "--concrete-line-id" => {
+                concrete_line_id = Some(parse_u32(
+                    "--concrete-line-id",
+                    next_value(&args, &mut index)?,
+                )?)
+            }
+            "--hand" => hand = Some(next_value(&args, &mut index)?.to_owned()),
+            _ => {}
+        }
+        index += 1;
+    }
+    let source = source.ok_or_else(|| AppError::invalid_argument("--source is required"))?;
+    let player_count =
+        player_count.ok_or_else(|| AppError::invalid_argument("--player-count is required"))?;
+    let depth_bb = depth_bb.ok_or_else(|| AppError::invalid_argument("--depth-bb is required"))?;
+    let concrete_line_id = concrete_line_id
+        .ok_or_else(|| AppError::invalid_argument("--concrete-line-id is required"))?;
+    let hand = hand.ok_or_else(|| AppError::invalid_argument("--hand is required"))?;
+
+    let output =
+        poker_hands_storage_service::benchmark::cold::sqlite_worker::run_sqlite_cold_worker(
+            &poker_hands_storage_service::benchmark::cold::sqlite_worker::SqliteColdWorkerParams {
+                source: &source,
+                strategy: &strategy,
+                player_count,
+                depth_bb,
+                concrete_line_id,
+                hand: &hand,
+            },
+        );
     println!(
         "{}",
         serde_json::to_string(&output).map_err(|e| AppError::invalid_format(e.to_string()))?
@@ -468,6 +567,16 @@ Commands:
         [--cache-filler-mb <mb>] [--max-errors-per-dimension <count>]
         [--fail-fast] [--verify-checksum]
         [--out <report.json>] [--md <report.md>]
+
+  benchmark-sqlite-cold --dir <dir> --source <range.db>
+        [--mode <process-cold|os-best-effort|linux-drop-cache>]
+        [--runs <count>] [--dimension <strategy:players:bb>]
+        [--query-policy <first|fixed>] [--concrete-line-id <id>] [--hand <hand>]
+        [--cache-filler-mb <mb>] [--max-errors-per-dimension <count>]
+        [--fail-fast] [--out <report.json>] [--md <report.md>]
+
+  benchmark-cold-compare --binary <binary-cold-report.json> --sqlite <sqlite-cold-report.json>
+        [--allow-mismatch] [--out <report.json>] [--md <report.md>]
 
   healthcheck [--url <http-url>] [--timeout-ms <milliseconds>]
 
