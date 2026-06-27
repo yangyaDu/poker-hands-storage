@@ -5,8 +5,9 @@ use utoipa::ToSchema;
 
 use crate::domain::dimension::DimensionRef;
 use crate::http::request_validation::{
-    validate_positive_u32, validate_required_string, ValidateRequest, ValidatedJson,
-    ValidationErrorDetails,
+    validate_allowed_str, validate_allowed_u32, validate_required_string, ValidateRequest,
+    ValidatedJson, ValidationErrorDetails, ALLOWED_DEPTH_BB, ALLOWED_PLAYER_COUNTS,
+    ALLOWED_STRATEGIES,
 };
 use crate::http::{ApiResponse, AppState, HttpError};
 use crate::storage::metadata::ConcreteLineRow;
@@ -17,15 +18,19 @@ use super::run_blocking;
 pub struct ConcreteLinesRequest {
     /// Strategy name. The current data set uses `default`.
     #[schema(example = "default")]
+    #[serde(default = "default_strategy")]
     strategy: String,
     /// Number of players for the target game tree.
     #[schema(example = 6, minimum = 1)]
+    #[serde(default = "default_player_count")]
     player_count: u32,
     /// Stack depth in big blinds.
     #[schema(example = 100, minimum = 1)]
+    #[serde(default = "default_depth_bb")]
     depth_bb: u32,
     /// Abstract action line used to find concrete lines.
     #[schema(example = "F-F-F")]
+    #[serde(default)]
     abstract_line: String,
 }
 
@@ -39,15 +44,19 @@ pub struct ConcreteLinesPayload {
 pub struct DrillScenarioLinesRequest {
     /// Strategy name. The current data set uses `default`.
     #[schema(example = "default")]
+    #[serde(default = "default_strategy")]
     strategy: String,
     /// Drill scenario name.
-    #[schema(example = "UTG")]
+    #[schema(example = "rfi", default = "rfi")]
+    #[serde(default = "default_drill_name")]
     drill_name: String,
     /// Number of players for the target drill.
     #[schema(example = 6, minimum = 1)]
+    #[serde(default = "default_player_count")]
     player_count: u32,
     /// Drill depth bucket.
-    #[schema(example = 0)]
+    #[schema(example = 100)]
+    #[serde(default = "default_depth_bb")]
     drill_depth: u32,
 }
 
@@ -60,9 +69,27 @@ pub struct DrillScenarioLinesPayload {
 impl ValidateRequest for ConcreteLinesRequest {
     fn validate(&self) -> Result<(), ValidationErrorDetails> {
         let mut errors = ValidationErrorDetails::new();
-        validate_required_string(&mut errors, "strategy", &self.strategy);
-        validate_positive_u32(&mut errors, "player_count", self.player_count);
-        validate_positive_u32(&mut errors, "depth_bb", self.depth_bb);
+        validate_allowed_str(
+            &mut errors,
+            "strategy",
+            &self.strategy,
+            ALLOWED_STRATEGIES,
+            "must be one of \"default\"",
+        );
+        validate_allowed_u32(
+            &mut errors,
+            "player_count",
+            self.player_count,
+            ALLOWED_PLAYER_COUNTS,
+            "must be one of 6, 8, 9",
+        );
+        validate_allowed_u32(
+            &mut errors,
+            "depth_bb",
+            self.depth_bb,
+            ALLOWED_DEPTH_BB,
+            "must be one of 100, 200, 300",
+        );
         validate_required_string(&mut errors, "abstract_line", &self.abstract_line);
         errors.finish()
     }
@@ -71,11 +98,73 @@ impl ValidateRequest for ConcreteLinesRequest {
 impl ValidateRequest for DrillScenarioLinesRequest {
     fn validate(&self) -> Result<(), ValidationErrorDetails> {
         let mut errors = ValidationErrorDetails::new();
-        validate_required_string(&mut errors, "strategy", &self.strategy);
+        validate_allowed_str(
+            &mut errors,
+            "strategy",
+            &self.strategy,
+            ALLOWED_STRATEGIES,
+            "must be one of \"default\"",
+        );
         validate_required_string(&mut errors, "drill_name", &self.drill_name);
-        validate_positive_u32(&mut errors, "player_count", self.player_count);
+        validate_drill_name(&mut errors, &self.drill_name);
+        validate_allowed_u32(
+            &mut errors,
+            "player_count",
+            self.player_count,
+            ALLOWED_PLAYER_COUNTS,
+            "must be one of 6, 8, 9",
+        );
+        validate_allowed_u32(
+            &mut errors,
+            "drill_depth",
+            self.drill_depth,
+            ALLOWED_DEPTH_BB,
+            "must be one of 100, 200, 300",
+        );
         errors.finish()
     }
+}
+
+fn validate_drill_name(errors: &mut ValidationErrorDetails, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    let mut chars = trimmed.chars();
+    let Some(first) = chars.next() else {
+        return;
+    };
+    if !first.is_ascii_alphabetic() {
+        errors.push("drill_name", "must start with a letter");
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        errors.push("drill_name", "must not be numeric-only");
+    }
+    if !trimmed
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+    {
+        errors.push(
+            "drill_name",
+            "may only contain letters, digits, underscore, or hyphen",
+        );
+    }
+}
+
+fn default_strategy() -> String {
+    "default".to_owned()
+}
+
+fn default_player_count() -> u32 {
+    6
+}
+
+fn default_depth_bb() -> u32 {
+    100
+}
+
+fn default_drill_name() -> String {
+    "rfi".to_owned()
 }
 
 #[utoipa::path(
@@ -86,6 +175,7 @@ impl ValidateRequest for DrillScenarioLinesRequest {
     responses(
         (status = 200, description = "Concrete lines for an abstract action line.", body = crate::http::openapi::ConcreteLinesResponseEnvelope),
         (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::openapi::ErrorResponse),
+        (status = 404, description = "Concrete lines not found.", body = crate::http::openapi::ErrorResponse),
         (status = 500, description = "Internal service error.", body = crate::http::openapi::ErrorResponse)
     )
 )]
@@ -119,6 +209,7 @@ async fn concrete_lines_impl(
     responses(
         (status = 200, description = "Abstract lines for a drill scenario.", body = crate::http::openapi::DrillScenarioLinesResponseEnvelope),
         (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::openapi::ErrorResponse),
+        (status = 404, description = "Drill scenario abstract lines not found.", body = crate::http::openapi::ErrorResponse),
         (status = 500, description = "Internal service error.", body = crate::http::openapi::ErrorResponse)
     )
 )]

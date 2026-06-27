@@ -48,22 +48,21 @@ impl HandlePool {
         }
 
         let known = self.known.get(&key).ok_or_else(|| {
-            AppError::bin_file_not_found(format!(
-                "Unknown dimension {}:{}max:{}BB",
-                dimension.strategy, dimension.player_count, dimension.depth_bb
-            ))
+            AppError::dimension_not_found(
+                &dimension.strategy,
+                dimension.player_count,
+                dimension.depth_bb,
+            )
         })?;
         let idx_path = self.data_dir.join(&known.idx_file);
         let bin_path = self.data_dir.join(&known.bin_file);
-        let reader = Arc::new(
-            DimensionReader::open(&idx_path, &bin_path).map_err(|error| {
-                AppError::bin_file_not_found(format!(
-                    "Failed to open {} and {}: {error}",
-                    idx_path.display(),
-                    bin_path.display()
-                ))
-            })?,
-        );
+        let reader = Arc::new(DimensionReader::open(&idx_path, &bin_path).map_err(|_| {
+            AppError::dimension_not_found(
+                &dimension.strategy,
+                dimension.player_count,
+                dimension.depth_bb,
+            )
+        })?);
 
         state.handles.insert(key.clone(), Arc::clone(&reader));
         touch(&mut state.lru, &key);

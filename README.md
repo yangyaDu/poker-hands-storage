@@ -135,11 +135,12 @@ The service exposes:
 - `GET /api-docs/openapi.json`
 - `GET /health`
 - `GET /ready`
-- `POST /query`
-- `POST /batch`
-- `POST /prewarm`
-- `POST /concrete-lines`
-- `POST /drill-scenario-lines`
+- `POST /range/hand-strategy`
+- `POST /range/hand-strategy-batch`
+- `POST /range/hands-by-actions`
+- `POST /range/prewarm`
+- `POST /range/concrete-lines`
+- `POST /range/drill-scenarios`
 
 Configuration:
 
@@ -172,21 +173,18 @@ standard JSON error shape:
 
 ```json
 {
-  "code": "INVALID_ARGUMENT",
-  "message": "request validation failed",
-  "details": {
-    "fields": [
-      { "path": "concrete_line_id", "message": "must be greater than 0" }
-    ]
-  }
+  "code": 1000,
+  "data": null,
+  "message": "request validation failed: concrete_line_id must be greater than 0"
 }
 ```
 
 ## Run with Docker
 
-The default compose setup runs the HTTP service against the checked-in smoke
-fixture. It mounts `./data/smoke` as `/data:ro`, enables checksum verification,
-and prewarms `default:6:100`.
+The default compose setup runs the HTTP service against the checked-in
+`data/range-strata` store. It mounts the data directory as `/data:ro`, enables
+checksum verification, and prewarms `default:6:100`. Override the host data
+directory with `PHS_HOST_DATA_DIR` when validating a different store.
 
 For release validation, Docker is the authoritative Linux build and runtime
 gate. The multi-stage image builds the Rust service inside Linux and then runs
@@ -195,7 +193,7 @@ useful for faster local Linux debugging or benchmark iteration, but they are
 not required when the Docker image build and container smoke pass.
 
 ```powershell
-docker compose up --build
+docker compose -f .docker/docker-compose.yml up --build
 ```
 
 Health and readiness checks:
@@ -217,7 +215,7 @@ $body = @{
 } | ConvertTo-Json
 
 Invoke-RestMethod `
-  -Uri http://127.0.0.1:8080/query `
+  -Uri http://127.0.0.1:8080/range/hand-strategy `
   -Method Post `
   -ContentType "application/json" `
   -Body $body

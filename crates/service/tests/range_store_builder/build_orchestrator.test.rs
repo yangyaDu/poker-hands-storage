@@ -49,7 +49,7 @@ fn builds_queryable_store_from_sqlite() {
              INSERT INTO concrete_lines_default_6max_100BB
                VALUES (1, 'F-F-F', 'F-F-F');
              INSERT INTO drill_scenario_lines_default
-               VALUES (1, 'UTG', 'F-F-F', 6, 0);
+               VALUES (1, 'UTG', 'F-F-F', 6, 100);
              INSERT INTO range_data_default_6max_100BB(
                concrete_line_id, hole_cards, action_name, action_size,
                amount_bb, frequency, hand_ev
@@ -76,7 +76,6 @@ fn builds_queryable_store_from_sqlite() {
     let service = QueryService::open(&output_path, 1, true).unwrap();
     let dimension = DimensionRef::with_default_strategy(6, 100);
     let result = service.query(&dimension, 1, "AsAh").unwrap();
-    assert!(result.exists);
     assert_eq!(result.hand_code, "AA");
     assert_eq!(result.actions.len(), 2);
     assert_eq!(
@@ -88,7 +87,7 @@ fn builds_queryable_store_from_sqlite() {
     );
     assert_eq!(
         service
-            .get_drill_scenario_lines("default", "UTG", 6, 0)
+            .get_drill_scenario_lines("default", "UTG", 6, 100)
             .unwrap(),
         vec!["F-F-F"]
     );

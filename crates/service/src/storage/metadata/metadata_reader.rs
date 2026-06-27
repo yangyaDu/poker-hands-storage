@@ -111,7 +111,9 @@ impl MetadataReader {
              WHERE abstract_line = ?1
              ORDER BY concrete_line_id"
         );
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare(&sql).map_err(|_| {
+            AppError::abstract_line_not_found(strategy, player_count, depth_bb, abstract_line)
+        })?;
         statement.start(&[Value::from(abstract_line)])?;
         let mut lines = Vec::new();
         while statement.step_row()? {
@@ -120,6 +122,14 @@ impl MetadataReader {
                 abstract_line: statement.column_text(1)?,
                 concrete_line: statement.column_text(2)?,
             });
+        }
+        if lines.is_empty() {
+            return Err(AppError::abstract_line_not_found(
+                strategy,
+                player_count,
+                depth_bb,
+                abstract_line,
+            ));
         }
         Ok(lines)
     }
@@ -139,7 +149,9 @@ impl MetadataReader {
              WHERE drill_name = ?1 AND player_count = ?2 AND drill_depth = ?3
              ORDER BY abstract_line"
         );
-        let mut statement = connection.prepare(&sql)?;
+        let mut statement = connection.prepare(&sql).map_err(|_| {
+            AppError::drill_scenario_not_found(strategy, drill_name, player_count, drill_depth)
+        })?;
         statement.start(&[
             Value::from(drill_name),
             Value::from(player_count),
@@ -148,6 +160,14 @@ impl MetadataReader {
         let mut lines = Vec::new();
         while statement.step_row()? {
             lines.push(statement.column_text(0)?);
+        }
+        if lines.is_empty() {
+            return Err(AppError::drill_scenario_not_found(
+                strategy,
+                drill_name,
+                player_count,
+                drill_depth,
+            ));
         }
         Ok(lines)
     }

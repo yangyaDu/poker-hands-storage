@@ -18,6 +18,7 @@ use crate::query::QueryService;
 
 pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunReport, AppError> {
     let (workload, workload_source) = load_or_create_workload(command)?;
+    let workload_mode = workload.mode;
     let memory_before = get_memory_snapshot();
     let service = QueryService::open_with_meta(
         command.dir.clone(),
@@ -86,7 +87,7 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
             warmup_iterations: command.warmup_iterations,
             verify_checksums: command.verify_checksums,
             verify_results: command.verify_results,
-            workload_mode: command.workload_mode,
+            workload_mode,
         },
         workload,
         workload_source,
@@ -188,7 +189,9 @@ fn query_batch_count(service: &QueryService, item: &BatchBenchmarkItem) -> Resul
         .iter()
         .map(|request| (request.concrete_line_id, request.hole_cards.clone()))
         .collect::<Vec<_>>();
-    let results = service.query_batch(&item.dimension(), &requests);
+    let results = service
+        .query_batch(&item.dimension(), &requests)
+        .map_err(|error| error.to_string())?;
     let mut total = 0;
     for result in results {
         if let Some(error) = result.error {

@@ -1,9 +1,6 @@
 use utoipa::OpenApi;
 
-use crate::http::request_validation::{FieldValidationError, ValidationErrorDetails};
-use crate::query::{
-    ActionHandsEntry, BatchItemResult, BatchStrategyResult, HandsByActionsResult, QueryResult,
-};
+use crate::query::{BatchItemResult, BatchStrategyResult, HandsByActionsResult, QueryResult};
 use crate::routes::hand_query_routes::{
     BatchQueryItem, BatchRequest, HandsByActionsRequest, PrewarmRequest, QueryRequest,
 };
@@ -20,7 +17,8 @@ use crate::storage::metadata::ConcreteLineRow;
 pub struct QueryResponse {
     code: i32,
     data: QueryResult,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -28,7 +26,8 @@ pub struct QueryResponse {
 pub struct BatchResponseEnvelope {
     code: i32,
     data: BatchData,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -42,7 +41,8 @@ pub struct BatchData {
 pub struct HandsByActionsResponseEnvelope {
     code: i32,
     data: HandsByActionsResult,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -50,7 +50,8 @@ pub struct HandsByActionsResponseEnvelope {
 pub struct PrewarmResponseEnvelope {
     code: i32,
     data: PrewarmData,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -65,7 +66,8 @@ pub struct PrewarmData {
 pub struct ConcreteLinesResponseEnvelope {
     code: i32,
     data: ConcreteLinesPayload,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -79,7 +81,8 @@ pub struct ConcreteLinesPayload {
 pub struct DrillScenarioLinesResponseEnvelope {
     code: i32,
     data: DrillScenarioLinesPayload,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -93,7 +96,8 @@ pub struct DrillScenarioLinesPayload {
 pub struct HealthResponseEnvelope {
     code: i32,
     data: HealthResponse,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -101,7 +105,8 @@ pub struct HealthResponseEnvelope {
 pub struct ReadyResponseEnvelope {
     code: i32,
     data: ReadyResponse,
-    message: String,
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 /// Error response body (used for 4xx/5xx responses).
@@ -127,7 +132,6 @@ pub struct ErrorResponse {
         crate::routes::metadata_routes::drill_scenario_lines
     ),
     components(schemas(
-        ActionHandsEntry,
         BatchItemResult,
         BatchQueryItem,
         BatchRequest,
@@ -142,7 +146,6 @@ pub struct ErrorResponse {
         DrillScenarioLinesRequest,
         DrillScenarioLinesResponseEnvelope,
         ErrorResponse,
-        FieldValidationError,
         HandsByActionsRequest,
         HandsByActionsResult,
         HandsByActionsResponseEnvelope,
@@ -154,8 +157,7 @@ pub struct ErrorResponse {
         QueryRequest,
         QueryResponse,
         ReadyResponse,
-        ReadyResponseEnvelope,
-        ValidationErrorDetails
+        ReadyResponseEnvelope
     )),
     tags(
         (name = "health", description = "Service health and readiness endpoints"),

@@ -1,4 +1,4 @@
-ARG RUST_IMAGE=rust:1-bookworm
+ARG RUST_IMAGE=rust:1-slim-bookworm
 ARG RUNTIME_IMAGE=gcr.io/distroless/base-debian12
 
 FROM ${RUST_IMAGE} AS builder
@@ -43,6 +43,9 @@ ENV PHS_BIND=0.0.0.0:8080 \
 EXPOSE 8080
 
 USER nonroot
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD ["/usr/local/bin/poker-hands-storage-service", "healthcheck", "--url", "http://127.0.0.1:8080/health", "--timeout-ms", "2000"]
 
 ENTRYPOINT ["poker-hands-storage-service"]
 CMD ["serve"]

@@ -5,13 +5,21 @@ use range_store_core::DimensionReader;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::domain::action_schema::ActionDef;
+use crate::domain::action_schema::{ActionDef, ActionName};
 use crate::domain::dimension::DimensionRef;
 use crate::domain::hole_cards::{hand_code_from_id, parse_hole_cards, ParsedHand};
 use crate::errors::AppError;
 use crate::query::dimension_handle_pool::HandlePool;
 use crate::storage::manifest::{load_manifest, queryable_dimensions};
 use crate::storage::metadata::{ConcreteLineRow, MetadataReader};
+
+/// Parsed action filter for the hands-by-actions endpoint.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ActionFilter {
+    pub raw: String,
+    pub action_name: ActionName,
+    pub amount_bb: Option<f32>,
+}
 
 pub struct QueryService {
     action_schemas: HashMap<u32, Vec<ActionDef>>,
@@ -40,8 +48,6 @@ pub struct QueryResult {
     pub input_hole_cards: String,
     /// Normalized 169-hand code.
     pub hand_code: String,
-    /// Whether strategy data exists for the requested hand and concrete line.
-    pub exists: bool,
     /// Ordered action strategy entries.
     pub actions: Vec<ActionResult>,
 }
@@ -62,36 +68,22 @@ pub struct BatchItemResult {
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct BatchStrategyResult {
-    /// Whether strategy data exists for the requested hand and concrete line.
-    pub exists: bool,
     /// Ordered action strategy entries.
     pub actions: Vec<ActionResult>,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct ErrorInfo {
-    /// Stable application error code.
-    pub code: String,
+    /// Public API error code: 1000, 404, or 500.
+    pub code: i32,
     /// Human-readable error message.
     pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct ActionHandsEntry {
-    /// Action name, for example `fold`, `call`, or `raise`.
-    pub action_name: String,
-    /// Abstract action size from the source range data.
-    pub action_size: f32,
-    /// Hand codes belonging to this action.
-    pub hands: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct HandsByActionsResult {
-    /// Concrete line id.
-    pub concrete_line_id: u32,
-    /// Actions with their associated hand lists.
-    pub actions: Vec<ActionHandsEntry>,
+    /// Matching 169-hand codes.
+    pub hands: Vec<String>,
 }
 
 impl QueryService {
@@ -150,24 +142,37 @@ impl QueryService {
         hole_cards: &str,
     ) -> Result<QueryResult, AppError> {
         let parsed = parse_hole_cards(hole_cards)?;
-        let reader = self.pool.get_or_open(dimension)?;
-        self.query_with_reader(&reader, concrete_line_id, parsed)
+        let reader = self
+            .pool
+            .get_or_open(dimension)
+            .map_err(|error| line_lookup_open_error(error, dimension, concrete_line_id))?;
+        self.query_with_reader(&reader, dimension, concrete_line_id, parsed)
     }
 
     fn query_with_reader(
         &self,
         reader: &DimensionReader,
+        dimension: &DimensionRef,
         concrete_line_id: u32,
         parsed: ParsedHand,
     ) -> Result<QueryResult, AppError> {
         let fragment = reader.query(concrete_line_id, parsed.hand_id, self.verify_checksums)?;
         let Some(fragment) = fragment else {
-            return Ok(QueryResult {
-                input_hole_cards: parsed.input,
-                hand_code: parsed.hand_code,
-                exists: false,
-                actions: Vec::new(),
-            });
+            if reader.contains_concrete_line(concrete_line_id) {
+                return Err(AppError::hand_outside_action_line(
+                    &parsed.input,
+                    concrete_line_id,
+                    &dimension.strategy,
+                    dimension.player_count,
+                    dimension.depth_bb,
+                ));
+            }
+            return Err(AppError::concrete_line_not_found(
+                concrete_line_id,
+                &dimension.strategy,
+                dimension.player_count,
+                dimension.depth_bb,
+            ));
         };
 
         let action_schema = self
@@ -194,7 +199,6 @@ impl QueryService {
         Ok(QueryResult {
             input_hole_cards: parsed.input,
             hand_code: parsed.hand_code,
-            exists: true,
             actions,
         })
     }
@@ -203,50 +207,37 @@ impl QueryService {
         &self,
         dimension: &DimensionRef,
         requests: &[(u32, String)],
-    ) -> Vec<BatchItemResult> {
-        let reader = self.pool.get_or_open(dimension);
-        requests
+    ) -> Result<Vec<BatchItemResult>, AppError> {
+        let reader = self.pool.get_or_open(dimension)?;
+        Ok(requests
             .iter()
             .map(
                 |(concrete_line_id, hole_cards)| match parse_hole_cards(hole_cards) {
-                    Ok(parsed) => match &reader {
-                        Ok(reader) => {
-                            match self.query_with_reader(reader, *concrete_line_id, parsed) {
-                                Ok(result) => BatchItemResult {
-                                    concrete_line_id: *concrete_line_id,
-                                    input_hole_cards: hole_cards.clone(),
-                                    hand_code: Some(result.hand_code),
-                                    strategy: Some(BatchStrategyResult {
-                                        exists: result.exists,
-                                        actions: result.actions,
-                                    }),
-                                    error: None,
-                                },
-                                Err(error) => BatchItemResult {
-                                    concrete_line_id: *concrete_line_id,
-                                    input_hole_cards: hole_cards.clone(),
-                                    hand_code: parse_hole_cards(hole_cards)
-                                        .ok()
-                                        .map(|parsed| parsed.hand_code),
-                                    strategy: None,
-                                    error: Some(ErrorInfo {
-                                        code: error.code().to_owned(),
-                                        message: error.message().to_owned(),
-                                    }),
-                                },
-                            }
+                    Ok(parsed) => {
+                        let hand_code = parsed.hand_code.clone();
+                        match self.query_with_reader(&reader, dimension, *concrete_line_id, parsed)
+                        {
+                            Ok(result) => BatchItemResult {
+                                concrete_line_id: *concrete_line_id,
+                                input_hole_cards: hole_cards.clone(),
+                                hand_code: Some(result.hand_code),
+                                strategy: Some(BatchStrategyResult {
+                                    actions: result.actions,
+                                }),
+                                error: None,
+                            },
+                            Err(error) => BatchItemResult {
+                                concrete_line_id: *concrete_line_id,
+                                input_hole_cards: hole_cards.clone(),
+                                hand_code: Some(hand_code),
+                                strategy: None,
+                                error: Some(ErrorInfo {
+                                    code: error.public_code(),
+                                    message: error.message().to_owned(),
+                                }),
+                            },
                         }
-                        Err(error) => BatchItemResult {
-                            concrete_line_id: *concrete_line_id,
-                            input_hole_cards: hole_cards.clone(),
-                            hand_code: Some(parsed.hand_code),
-                            strategy: None,
-                            error: Some(ErrorInfo {
-                                code: error.code().to_owned(),
-                                message: error.message().to_owned(),
-                            }),
-                        },
-                    },
+                    }
                     Err(error) => {
                         let error = AppError::from(error);
                         BatchItemResult {
@@ -255,14 +246,14 @@ impl QueryService {
                             hand_code: None,
                             strategy: None,
                             error: Some(ErrorInfo {
-                                code: error.code().to_owned(),
+                                code: error.public_code(),
                                 message: error.message().to_owned(),
                             }),
                         }
                     }
                 },
             )
-            .collect()
+            .collect())
     }
 
     pub fn prewarm(&self, dimension: &DimensionRef) -> Result<usize, AppError> {
@@ -306,72 +297,108 @@ impl QueryService {
         player_count: u32,
         drill_depth: u32,
     ) -> Result<Vec<String>, AppError> {
-        self.metadata
-            .get_drill_scenario_lines(strategy, drill_name, player_count, drill_depth)
+        let lines = self.metadata.get_drill_scenario_lines(
+            strategy,
+            drill_name,
+            player_count,
+            drill_depth,
+        )?;
+        if lines.is_empty() {
+            return Err(AppError::drill_scenario_not_found(
+                strategy,
+                drill_name,
+                player_count,
+                drill_depth,
+            ));
+        }
+        Ok(lines)
     }
 
     pub fn query_hands_by_actions(
         &self,
         dimension: &DimensionRef,
         concrete_line_id: u32,
+        action_filters: Option<Vec<ActionFilter>>,
+        frequency: Option<f64>,
     ) -> Result<HandsByActionsResult, AppError> {
-        let reader = self.pool.get_or_open(dimension)?;
+        let reader = self
+            .pool
+            .get_or_open(dimension)
+            .map_err(|error| line_lookup_open_error(error, dimension, concrete_line_id))?;
         let result = reader
             .query_all(concrete_line_id, self.verify_checksums)
             .map_err(AppError::from)?;
 
         let Some(result) = result else {
-            return Ok(HandsByActionsResult {
+            return Err(AppError::concrete_line_not_found(
                 concrete_line_id,
-                actions: Vec::new(),
-            });
+                &dimension.strategy,
+                dimension.player_count,
+                dimension.depth_bb,
+            ));
         };
 
         let action_schema = self
             .action_schemas
             .get(&result.action_schema_id)
             .ok_or_else(|| AppError::action_schema_not_found(result.action_schema_id))?;
+        let filters = action_filters.unwrap_or_default();
+        let frequency_filter = FrequencyFilter::from_request(frequency);
+        let actions_text = format_action_filters(&filters);
+        let required_action_groups = resolve_action_filter_groups(
+            action_schema,
+            &filters,
+            &actions_text,
+            &frequency_filter,
+            dimension,
+            concrete_line_id,
+        )?;
 
-        // Build action_id → Vec<hand_code> mapping
-        let mut action_hands: HashMap<u32, Vec<String>> = HashMap::new();
+        // Map each hand to actions that survive the action and frequency filters.
+        let mut hand_action_matches: HashMap<u8, HashSet<u32>> = HashMap::new();
         for cell in &result.pack.cells {
-            if !cell.exists {
+            if !cell.exists || !frequency_filter.matches(cell.frequency) {
                 continue;
             }
-            action_hands
-                .entry(cell.action_id)
-                .or_default()
-                .push(hand_code_from_id(cell.hand_id));
+            if required_action_groups.is_empty()
+                || required_action_groups
+                    .iter()
+                    .any(|group| group.contains(&cell.action_id))
+            {
+                hand_action_matches
+                    .entry(cell.hand_id)
+                    .or_default()
+                    .insert(cell.action_id);
+            }
         }
 
-        // Convert to response, ordered by action_id
-        let mut actions: Vec<ActionHandsEntry> = Vec::with_capacity(action_hands.len());
-        for (action_id, hands) in &action_hands {
-            let action = action_schema.get(*action_id as usize).ok_or_else(|| {
-                AppError::invalid_format(format!(
-                    "Action id {} is outside schema {}",
-                    action_id, result.action_schema_id
-                ))
-            })?;
-            actions.push(ActionHandsEntry {
-                action_name: action.action_name.as_str().to_owned(),
-                action_size: action.action_size,
-                hands: hands.clone(),
-            });
+        let mut hands = Vec::new();
+        for hand_id in result.pack.hand_ids {
+            if let Some(matched_ids) = hand_action_matches.get(&hand_id) {
+                if required_action_groups.is_empty()
+                    || required_action_groups.iter().all(|group| {
+                        matched_ids
+                            .iter()
+                            .any(|action_id| group.contains(action_id))
+                    })
+                {
+                    hands.push(hand_code_from_id(hand_id));
+                }
+            }
         }
-        actions.sort_by_key(|a| {
-            action_schema
-                .iter()
-                .position(|def| {
-                    def.action_name.as_str() == a.action_name && def.action_size == a.action_size
-                })
-                .unwrap_or(usize::MAX)
-        });
 
-        Ok(HandsByActionsResult {
-            concrete_line_id,
-            actions,
-        })
+        if hands.is_empty() {
+            return Err(AppError::no_hands_found(
+                &actions_text,
+                &frequency_filter.description(),
+                concrete_line_id,
+                &dimension.strategy,
+                dimension.player_count,
+                dimension.depth_bb,
+            ));
+        }
+
+        Ok(HandsByActionsResult { hands })
     }
 
     pub fn schema_count(&self) -> usize {
@@ -395,5 +422,108 @@ fn require_file(path: &Path) -> Result<(), AppError> {
             "Required data file not found: {}",
             path.display()
         )))
+    }
+}
+
+struct FrequencyFilter {
+    threshold: f64,
+    include_equal: bool,
+}
+
+impl FrequencyFilter {
+    fn from_request(frequency: Option<f64>) -> Self {
+        match frequency {
+            Some(threshold) => Self {
+                threshold,
+                include_equal: true,
+            },
+            None => Self {
+                threshold: 0.0,
+                include_equal: false,
+            },
+        }
+    }
+
+    fn matches(&self, value: f64) -> bool {
+        if self.include_equal {
+            value >= self.threshold
+        } else {
+            value > self.threshold
+        }
+    }
+
+    fn description(&self) -> String {
+        if self.include_equal {
+            format!(">={}", self.threshold)
+        } else {
+            ">0".to_owned()
+        }
+    }
+}
+
+fn resolve_action_filter_groups(
+    action_schema: &[ActionDef],
+    filters: &[ActionFilter],
+    actions_text: &str,
+    frequency_filter: &FrequencyFilter,
+    dimension: &DimensionRef,
+    concrete_line_id: u32,
+) -> Result<Vec<HashSet<u32>>, AppError> {
+    let mut groups = Vec::with_capacity(filters.len());
+    for filter in filters {
+        let ids: HashSet<u32> = action_schema
+            .iter()
+            .filter(|action| action_matches_filter(action, filter))
+            .map(|action| action.action_id)
+            .collect();
+        if ids.is_empty() {
+            return Err(AppError::no_hands_found(
+                actions_text,
+                &frequency_filter.description(),
+                concrete_line_id,
+                &dimension.strategy,
+                dimension.player_count,
+                dimension.depth_bb,
+            ));
+        }
+        groups.push(ids);
+    }
+    Ok(groups)
+}
+
+fn line_lookup_open_error(
+    error: AppError,
+    dimension: &DimensionRef,
+    concrete_line_id: u32,
+) -> AppError {
+    if error.public_code() == 404 {
+        AppError::concrete_line_not_found(
+            concrete_line_id,
+            &dimension.strategy,
+            dimension.player_count,
+            dimension.depth_bb,
+        )
+    } else {
+        error
+    }
+}
+
+fn action_matches_filter(action: &ActionDef, filter: &ActionFilter) -> bool {
+    action.action_name == filter.action_name
+        && match filter.amount_bb {
+            Some(amount_bb) => (action.amount_bb - amount_bb).abs() <= f32::EPSILON,
+            None => true,
+        }
+}
+
+fn format_action_filters(filters: &[ActionFilter]) -> String {
+    if filters.is_empty() {
+        "[]".to_owned()
+    } else {
+        filters
+            .iter()
+            .map(|filter| filter.raw.as_str())
+            .collect::<Vec<_>>()
+            .join(",")
     }
 }

@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
+pub mod healthcheck;
 pub mod openapi;
 pub mod request_validation;
 
@@ -36,8 +37,9 @@ pub struct ApiResponse<T> {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<T>)]
     data: Option<T>,
-    /// Human-readable message.
-    message: String,
+    /// Human-readable message. Success responses use null; error responses carry a message.
+    #[schema(nullable)]
+    message: Option<String>,
 }
 
 impl<T> ApiResponse<T> {
@@ -45,38 +47,18 @@ impl<T> ApiResponse<T> {
         Self {
             code: 0,
             data: Some(data),
-            message: "success".to_string(),
+            message: None,
         }
     }
 }
 
-/// Business error codes mapped from `AppError::code()`.
+/// Public API status codes. Detailed failure reasons belong in `message`.
 pub mod error_code {
     pub const SUCCESS: i32 = 0;
-    pub const INVALID_ARGUMENT: i32 = 4000;
-    pub const UNKNOWN_HAND: i32 = 4001;
-    pub const INVALID_FORMAT: i32 = 4002;
-    pub const BIN_FILE_NOT_FOUND: i32 = 4004;
-    pub const PACK_NOT_FOUND: i32 = 4004;
-    pub const META_DB_ERROR: i32 = 5000;
-    pub const BUILD_ERROR: i32 = 5001;
-    pub const ACTION_SCHEMA_NOT_FOUND: i32 = 5002;
-}
-
-impl From<&AppError> for i32 {
-    fn from(err: &AppError) -> i32 {
-        match err.code() {
-            "INVALID_ARGUMENT" => error_code::INVALID_ARGUMENT,
-            "UNKNOWN_HAND" => error_code::UNKNOWN_HAND,
-            "INVALID_FORMAT" => error_code::INVALID_FORMAT,
-            "BIN_FILE_NOT_FOUND" => error_code::BIN_FILE_NOT_FOUND,
-            "PACK_NOT_FOUND" => error_code::PACK_NOT_FOUND,
-            "META_DB_ERROR" => error_code::META_DB_ERROR,
-            "BUILD_ERROR" => error_code::BUILD_ERROR,
-            "ACTION_SCHEMA_NOT_FOUND" => error_code::ACTION_SCHEMA_NOT_FOUND,
-            _ => error_code::BUILD_ERROR,
-        }
-    }
+    pub const BAD_REQUEST: i32 = 1000;
+    pub const NOT_FOUND: i32 = 404;
+    pub const INTERNAL_SERVER_ERROR: i32 = 500;
+    pub const SERVICE_UNAVAILABLE: i32 = 503;
 }
 
 pub fn router(service: Arc<QueryService>) -> Router {
@@ -95,7 +77,7 @@ pub fn router(service: Arc<QueryService>) -> Router {
             post(routes::hand_query_routes::query),
         )
         .route(
-            "/range/hand-strategy/batch",
+            "/range/hand-strategy-batch",
             post(routes::hand_query_routes::batch),
         )
         .route(
@@ -195,9 +177,18 @@ impl HttpError {
         }
     }
 
-    pub fn validation(_details: ValidationErrorDetails) -> Self {
+    pub fn validation(details: ValidationErrorDetails) -> Self {
         Self {
-            error: AppError::invalid_argument("request validation failed"),
+            error: AppError::invalid_argument(format!(
+                "request validation failed: {}",
+                details.message()
+            )),
+        }
+    }
+
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            error: AppError::invalid_argument(message),
         }
     }
 }
@@ -208,15 +199,28 @@ impl From<AppError> for HttpError {
     }
 }
 
+#[derive(Serialize, ToSchema)]
+pub struct ErrorResponseBody {
+    /// Business status code. Non-zero values indicate errors.
+    code: i32,
+    /// Error responses do not carry endpoint data.
+    #[schema(nullable)]
+    data: Option<()>,
+    /// Human-readable message.
+    message: String,
+}
+
 impl IntoResponse for HttpError {
     fn into_response(self) -> Response {
-        let status = match self.error.code() {
-            "UNKNOWN_HAND" | "INVALID_ARGUMENT" => StatusCode::BAD_REQUEST,
-            "BIN_FILE_NOT_FOUND" | "PACK_NOT_FOUND" => StatusCode::NOT_FOUND,
+        let code = self.error.public_code();
+        let status = match code {
+            error_code::BAD_REQUEST => StatusCode::BAD_REQUEST,
+            error_code::NOT_FOUND => StatusCode::NOT_FOUND,
+            error_code::SERVICE_UNAVAILABLE => StatusCode::SERVICE_UNAVAILABLE,
             _ => StatusCode::INTERNAL_SERVER_ERROR,
         };
-        let body = ApiResponse::<()> {
-            code: (&self.error).into(),
+        let body = ErrorResponseBody {
+            code,
             data: None,
             message: self.error.message().to_owned(),
         };

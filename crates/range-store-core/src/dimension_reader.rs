@@ -34,6 +34,11 @@ impl DimensionReader {
         self.idx.unique_action_schema_ids()
     }
 
+    #[inline]
+    pub fn contains_concrete_line(&self, concrete_line_id: u32) -> bool {
+        self.idx.find(concrete_line_id).is_some()
+    }
+
     pub fn query(
         &self,
         concrete_line_id: u32,

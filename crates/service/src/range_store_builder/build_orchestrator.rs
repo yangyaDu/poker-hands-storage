@@ -302,7 +302,7 @@ fn init_meta_db(connection: &Connection, dimensions: &[DimensionSpec]) -> Result
                drill_name TEXT NOT NULL,
                abstract_line TEXT NOT NULL,
                player_count INTEGER NOT NULL,
-               drill_depth INTEGER NOT NULL DEFAULT 0,
+               drill_depth INTEGER NOT NULL DEFAULT 100,
                UNIQUE(drill_name, player_count, drill_depth, abstract_line)
              );"
         ))?;

@@ -8,7 +8,7 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ../data/range-strata:/data:ro
+      - ${PHS_HOST_DATA_DIR:-../data/range-strata}:/data:ro
     environment:
       PHS_BIND: 0.0.0.0:8080
       PHS_DATA_DIR: /data
@@ -17,3 +17,23 @@ services:
       PHS_VERIFY_CHECKSUMS: "true"
       PHS_PREWARM: default:6:100
       RUST_LOG: info
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/usr/local/bin/poker-hands-storage-service",
+          "healthcheck",
+          "--url",
+          "http://127.0.0.1:8080/ready",
+          "--timeout-ms",
+          "3000",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s

@@ -34,7 +34,7 @@ pub fn build_verify_fixture(root: &Path) -> (PathBuf, PathBuf) {
              INSERT INTO concrete_lines_default_6max_100BB
                VALUES (1, 'R-C', 'R2-C'), (2, 'R-C', 'R3-C');
              INSERT INTO drill_scenario_lines_default
-               VALUES (1, 'UTG', 'R-C', 6, 0);
+               VALUES (1, 'UTG', 'R-C', 6, 100);
              INSERT INTO range_data_default_6max_100BB(
                concrete_line_id, hole_cards, action_name, action_size,
                amount_bb, frequency, hand_ev

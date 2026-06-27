@@ -18,6 +18,7 @@ pub fn run_sqlite_benchmark(
     command: &BenchmarkSqliteCommand,
 ) -> Result<BenchmarkRunReport, AppError> {
     let (workload, workload_source) = load_or_create_workload(command)?;
+    let workload_mode = workload.mode;
     let connection = Connection::open(&command.source, true)?;
 
     let memory_before = get_memory_snapshot();
@@ -63,7 +64,7 @@ pub fn run_sqlite_benchmark(
                 warmup_iterations: command.warmup_iterations,
                 verify_checksums: false,
                 verify_results: false,
-                workload_mode: command.workload_mode,
+                workload_mode,
             },
             workload,
             workload_source,

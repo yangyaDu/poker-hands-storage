@@ -3,8 +3,10 @@ use axum::Json;
 use serde::Serialize;
 use utoipa::ToSchema;
 
+use crate::errors::AppError;
 use crate::http::ApiResponse;
 use crate::http::AppState;
+use crate::http::HttpError;
 
 #[derive(Serialize, ToSchema)]
 pub struct HealthResponse {
@@ -46,14 +48,24 @@ pub async fn health(State(state): State<AppState>) -> Json<ApiResponse<HealthRes
     path = "/ready",
     tag = "health",
     responses(
-        (status = 200, description = "Service readiness and loaded data summary.", body = crate::http::openapi::ReadyResponseEnvelope)
+        (status = 200, description = "Service readiness and loaded data summary.", body = crate::http::openapi::ReadyResponseEnvelope),
+        (status = 503, description = "Service is not ready to serve range queries.", body = crate::http::openapi::ErrorResponse)
     )
 )]
-pub async fn ready(State(state): State<AppState>) -> Json<ApiResponse<ReadyResponse>> {
-    Json(ApiResponse::ok(ReadyResponse {
+pub async fn ready(
+    State(state): State<AppState>,
+) -> Result<Json<ApiResponse<ReadyResponse>>, HttpError> {
+    let dimensions_known = state.service.known_dimensions();
+    if dimensions_known.is_empty() {
+        return Err(AppError::service_unavailable(
+            "Service is not ready: no queryable dimensions loaded",
+        )
+        .into());
+    }
+    Ok(Json(ApiResponse::ok(ReadyResponse {
         status: "ready",
         schema_count: state.service.schema_count(),
         handles_open: state.service.open_handle_count(),
-        dimensions_known: state.service.known_dimensions(),
-    }))
+        dimensions_known,
+    })))
 }

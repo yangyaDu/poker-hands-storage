@@ -7,6 +7,11 @@ use utoipa::ToSchema;
 
 use crate::http::HttpError;
 
+// Allowed dimension values.
+pub const ALLOWED_STRATEGIES: &[&str] = &["default"];
+pub const ALLOWED_PLAYER_COUNTS: &[u32] = &[6, 8, 9];
+pub const ALLOWED_DEPTH_BB: &[u32] = &[100, 200, 300];
+
 pub const MAX_BATCH_REQUESTS: usize = 500;
 pub const MAX_PREWARM_DIMENSIONS: usize = 64;
 
@@ -46,6 +51,14 @@ impl ValidationErrorDetails {
         } else {
             Err(self)
         }
+    }
+
+    pub fn message(&self) -> String {
+        self.fields
+            .iter()
+            .map(|field| format!("{} {}", field.path, field.message))
+            .collect::<Vec<_>>()
+            .join("; ")
     }
 }
 
@@ -94,5 +107,29 @@ pub fn validate_positive_u32(
 ) {
     if value == 0 {
         errors.push(path, "must be greater than 0");
+    }
+}
+
+pub fn validate_allowed_str(
+    errors: &mut ValidationErrorDetails,
+    path: impl Into<String>,
+    value: &str,
+    allowed: &[&str],
+    message: impl Into<String>,
+) {
+    if !allowed.contains(&value) {
+        errors.push(path, message);
+    }
+}
+
+pub fn validate_allowed_u32(
+    errors: &mut ValidationErrorDetails,
+    path: impl Into<String>,
+    value: u32,
+    allowed: &[u32],
+    message: impl Into<String>,
+) {
+    if !allowed.contains(&value) {
+        errors.push(path, message);
     }
 }

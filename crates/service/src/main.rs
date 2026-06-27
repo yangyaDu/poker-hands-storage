@@ -9,6 +9,9 @@ use poker_hands_storage_service::config::ServiceConfig;
 use poker_hands_storage_service::domain::dimension::DimensionRef;
 use poker_hands_storage_service::errors::AppError;
 use poker_hands_storage_service::http;
+use poker_hands_storage_service::http::healthcheck::{
+    run_http_healthcheck, HttpHealthcheckOptions,
+};
 use poker_hands_storage_service::query::QueryService;
 use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_service::scripts::benchmark::parse_benchmark_args;
@@ -43,6 +46,7 @@ async fn run() -> Result<(), AppError> {
         Some("benchmark-compare") => run_benchmark_compare_cmd(args.collect()),
         Some("benchmark-cold") => run_benchmark_cold(args.collect()),
         Some("cold-worker") => run_cold_worker_cmd(args.collect()),
+        Some("healthcheck") => run_healthcheck(args.collect()),
         Some("serve") => {
             let remaining: Vec<_> = args.collect();
             if !remaining.is_empty() {
@@ -198,6 +202,34 @@ fn run_cold_worker_cmd(args: Vec<String>) -> Result<(), AppError> {
         std::process::exit(1);
     }
     Ok(())
+}
+
+fn run_healthcheck(args: Vec<String>) -> Result<(), AppError> {
+    let mut options = HttpHealthcheckOptions::default();
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--url" => options.url = next_value(&args, &mut index)?.to_owned(),
+            "--timeout-ms" => {
+                let timeout_ms = next_value(&args, &mut index)?
+                    .parse::<u64>()
+                    .map_err(|_| AppError::invalid_argument("--timeout-ms must be an integer"))?;
+                if timeout_ms == 0 {
+                    return Err(AppError::invalid_argument(
+                        "--timeout-ms must be greater than 0",
+                    ));
+                }
+                options.timeout = std::time::Duration::from_millis(timeout_ms);
+            }
+            option => {
+                return Err(AppError::invalid_argument(format!(
+                    "Unknown healthcheck option: {option}"
+                )))
+            }
+        }
+        index += 1;
+    }
+    run_http_healthcheck(&options)
 }
 
 fn init_tracing() {
@@ -436,6 +468,8 @@ Commands:
         [--cache-filler-mb <mb>] [--max-errors-per-dimension <count>]
         [--fail-fast] [--verify-checksum]
         [--out <report.json>] [--md <report.md>]
+
+  healthcheck [--url <http-url>] [--timeout-ms <milliseconds>]
 
   serve
         Environment: PHS_BIND, PHS_DATA_DIR, PHS_META_DB,
