@@ -22,7 +22,7 @@ pub struct ActionFilter {
 }
 
 pub struct QueryService {
-    action_schemas: HashMap<u32, Vec<ActionDef>>,
+    action_schemas: Vec<Option<Vec<ActionDef>>>,
     metadata: MetadataReader,
     pool: HandlePool,
     verify_checksums: bool,
@@ -110,8 +110,8 @@ impl QueryService {
         require_file(&meta_path)?;
 
         let metadata = MetadataReader::new(meta_path);
-        let action_schemas = metadata.load_action_schemas()?;
-        let schema_ids: HashSet<u32> = action_schemas.keys().copied().collect();
+        let schemas_map = metadata.load_action_schemas()?;
+        let schema_ids: HashSet<u32> = schemas_map.keys().copied().collect();
         metadata.validate_dimension_schema_refs(&schema_ids)?;
 
         for dimension in &dimensions {
@@ -125,6 +125,13 @@ impl QueryService {
                     return Err(AppError::action_schema_not_found(action_schema_id));
                 }
             }
+        }
+
+        // Convert HashMap to Vec for O(1) index lookup
+        let max_id = schemas_map.keys().copied().max().unwrap_or(0) as usize;
+        let mut action_schemas = vec![None; max_id + 1];
+        for (id, schema) in schemas_map {
+            action_schemas[id as usize] = Some(schema);
         }
 
         Ok(Self {
@@ -176,8 +183,7 @@ impl QueryService {
         };
 
         let action_schema = self
-            .action_schemas
-            .get(&fragment.action_schema_id)
+            .get_action_schema(fragment.action_schema_id)
             .ok_or_else(|| AppError::action_schema_not_found(fragment.action_schema_id))?;
         let mut actions = Vec::with_capacity(fragment.cells.len());
         for cell in fragment.cells {
@@ -209,51 +215,212 @@ impl QueryService {
         requests: &[(u32, String)],
     ) -> Result<Vec<BatchItemResult>, AppError> {
         let reader = self.pool.get_or_open(dimension)?;
-        Ok(requests
+
+        // Phase 1: parse all hole cards and group by concrete_line_id
+        struct ParsedItem {
+            original_index: usize,
+            concrete_line_id: u32,
+            input_hole_cards: String,
+            parsed: Result<ParsedHand, AppError>,
+        }
+
+        let items: Vec<ParsedItem> = requests
             .iter()
-            .map(
-                |(concrete_line_id, hole_cards)| match parse_hole_cards(hole_cards) {
-                    Ok(parsed) => {
-                        let hand_code = parsed.hand_code.clone();
-                        match self.query_with_reader(&reader, dimension, *concrete_line_id, parsed)
-                        {
-                            Ok(result) => BatchItemResult {
-                                concrete_line_id: *concrete_line_id,
-                                input_hole_cards: hole_cards.clone(),
-                                hand_code: Some(result.hand_code),
-                                strategy: Some(BatchStrategyResult {
-                                    actions: result.actions,
-                                }),
-                                error: None,
+            .enumerate()
+            .map(|(i, (line_id, hole_cards))| ParsedItem {
+                original_index: i,
+                concrete_line_id: *line_id,
+                input_hole_cards: hole_cards.clone(),
+                parsed: parse_hole_cards(hole_cards).map_err(AppError::from),
+            })
+            .collect();
+
+        // Phase 2: group valid items by concrete_line_id
+        let mut groups: HashMap<u32, Vec<usize>> = HashMap::new();
+        for (idx, item) in items.iter().enumerate() {
+            if item.parsed.is_ok() {
+                groups.entry(item.concrete_line_id).or_default().push(idx);
+            }
+        }
+
+        // Phase 3: batch query each group (one idx lookup + one bin read per group)
+        let mut results: Vec<Option<BatchItemResult>> = vec![None; requests.len()];
+
+        for (concrete_line_id, group_indices) in &groups {
+            let hand_ids: Vec<u8> = group_indices
+                .iter()
+                .map(|&idx| items[idx].parsed.as_ref().unwrap().hand_id)
+                .collect();
+
+            match reader.query_many_hands(*concrete_line_id, &hand_ids, self.verify_checksums) {
+                Ok(Some((action_schema_id, pack_results))) => {
+                    let action_schema = self.get_action_schema(action_schema_id);
+                    for (group_pos, &item_idx) in group_indices.iter().enumerate() {
+                        let item = &items[item_idx];
+                        let parsed = item.parsed.as_ref().unwrap();
+                        let result = match &pack_results[group_pos] {
+                            Some(fragment) => match action_schema {
+                                Some(schema) => {
+                                    let actions =
+                                        self.build_action_results(schema, &fragment.cells);
+                                    match actions {
+                                        Ok(actions) => BatchItemResult {
+                                            concrete_line_id: item.concrete_line_id,
+                                            input_hole_cards: item.input_hole_cards.clone(),
+                                            hand_code: Some(parsed.hand_code.clone()),
+                                            strategy: Some(BatchStrategyResult { actions }),
+                                            error: None,
+                                        },
+                                        Err(e) => BatchItemResult {
+                                            concrete_line_id: item.concrete_line_id,
+                                            input_hole_cards: item.input_hole_cards.clone(),
+                                            hand_code: Some(parsed.hand_code.clone()),
+                                            strategy: None,
+                                            error: Some(ErrorInfo {
+                                                code: e.public_code(),
+                                                message: e.message().to_owned(),
+                                            }),
+                                        },
+                                    }
+                                }
+                                None => BatchItemResult {
+                                    concrete_line_id: item.concrete_line_id,
+                                    input_hole_cards: item.input_hole_cards.clone(),
+                                    hand_code: Some(parsed.hand_code.clone()),
+                                    strategy: None,
+                                    error: Some(ErrorInfo {
+                                        code: 500,
+                                        message: format!(
+                                            "Action schema {} not found",
+                                            action_schema_id
+                                        ),
+                                    }),
+                                },
                             },
-                            Err(error) => BatchItemResult {
-                                concrete_line_id: *concrete_line_id,
-                                input_hole_cards: hole_cards.clone(),
-                                hand_code: Some(hand_code),
-                                strategy: None,
-                                error: Some(ErrorInfo {
-                                    code: error.public_code(),
-                                    message: error.message().to_owned(),
-                                }),
-                            },
-                        }
+                            None => {
+                                // Hand not found in pack
+                                let error = if reader.contains_concrete_line(*concrete_line_id) {
+                                    AppError::hand_outside_action_line(
+                                        &parsed.input,
+                                        *concrete_line_id,
+                                        &dimension.strategy,
+                                        dimension.player_count,
+                                        dimension.depth_bb,
+                                    )
+                                } else {
+                                    AppError::concrete_line_not_found(
+                                        *concrete_line_id,
+                                        &dimension.strategy,
+                                        dimension.player_count,
+                                        dimension.depth_bb,
+                                    )
+                                };
+                                BatchItemResult {
+                                    concrete_line_id: item.concrete_line_id,
+                                    input_hole_cards: item.input_hole_cards.clone(),
+                                    hand_code: Some(parsed.hand_code.clone()),
+                                    strategy: None,
+                                    error: Some(ErrorInfo {
+                                        code: error.public_code(),
+                                        message: error.message().to_owned(),
+                                    }),
+                                }
+                            }
+                        };
+                        results[item.original_index] = Some(result);
                     }
-                    Err(error) => {
-                        let error = AppError::from(error);
-                        BatchItemResult {
-                            concrete_line_id: *concrete_line_id,
-                            input_hole_cards: hole_cards.clone(),
-                            hand_code: None,
+                }
+                Ok(None) => {
+                    // Concrete line not found — error for all items in group
+                    let error = AppError::concrete_line_not_found(
+                        *concrete_line_id,
+                        &dimension.strategy,
+                        dimension.player_count,
+                        dimension.depth_bb,
+                    );
+                    for &item_idx in group_indices {
+                        let item = &items[item_idx];
+                        let parsed = item.parsed.as_ref().unwrap();
+                        results[item.original_index] = Some(BatchItemResult {
+                            concrete_line_id: item.concrete_line_id,
+                            input_hole_cards: item.input_hole_cards.clone(),
+                            hand_code: Some(parsed.hand_code.clone()),
                             strategy: None,
                             error: Some(ErrorInfo {
                                 code: error.public_code(),
                                 message: error.message().to_owned(),
                             }),
-                        }
+                        });
                     }
-                },
-            )
-            .collect())
+                }
+                Err(io_error) => {
+                    let error = AppError::from(io_error);
+                    for &item_idx in group_indices {
+                        let item = &items[item_idx];
+                        let parsed = item.parsed.as_ref().unwrap();
+                        results[item.original_index] = Some(BatchItemResult {
+                            concrete_line_id: item.concrete_line_id,
+                            input_hole_cards: item.input_hole_cards.clone(),
+                            hand_code: Some(parsed.hand_code.clone()),
+                            strategy: None,
+                            error: Some(ErrorInfo {
+                                code: error.public_code(),
+                                message: error.message().to_owned(),
+                            }),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Phase 4: fill in parse-error items
+        for (i, item) in items.iter().enumerate() {
+            if results[i].is_none() {
+                let error = item.parsed.as_ref().unwrap_err();
+                results[i] = Some(BatchItemResult {
+                    concrete_line_id: item.concrete_line_id,
+                    input_hole_cards: item.input_hole_cards.clone(),
+                    hand_code: None,
+                    strategy: None,
+                    error: Some(ErrorInfo {
+                        code: error.public_code(),
+                        message: error.message().to_owned(),
+                    }),
+                });
+            }
+        }
+
+        Ok(results.into_iter().map(|r| r.unwrap()).collect())
+    }
+
+    /// Build action results from decoded cells using action schema.
+    fn build_action_results(
+        &self,
+        action_schema: &[ActionDef],
+        cells: &[range_store_core::types::DecodedCellResult],
+    ) -> Result<Vec<ActionResult>, AppError> {
+        let mut actions = Vec::with_capacity(cells.len());
+        for cell in cells {
+            let action = action_schema.get(cell.action_id as usize).ok_or_else(|| {
+                AppError::invalid_format(format!("Action id {} is outside schema", cell.action_id))
+            })?;
+            actions.push(ActionResult {
+                action_name: action.action_name.as_str().to_owned(),
+                action_size: action.action_size,
+                amount_bb: action.amount_bb,
+                frequency: cell.frequency,
+                hand_ev: cell.hand_ev,
+            });
+        }
+        Ok(actions)
+    }
+
+    /// O(1) action schema lookup by index.
+    #[inline]
+    fn get_action_schema(&self, id: u32) -> Option<&Vec<ActionDef>> {
+        self.action_schemas
+            .get(id as usize)
+            .and_then(|opt| opt.as_ref())
     }
 
     pub fn prewarm(&self, dimension: &DimensionRef) -> Result<usize, AppError> {
@@ -339,13 +506,12 @@ impl QueryService {
         };
 
         let action_schema = self
-            .action_schemas
-            .get(&result.action_schema_id)
+            .get_action_schema(result.action_schema_id)
             .ok_or_else(|| AppError::action_schema_not_found(result.action_schema_id))?;
         let filters = action_filters.unwrap_or_default();
         let frequency_filter = FrequencyFilter::from_request(frequency);
         let actions_text = format_action_filters(&filters);
-        let required_action_groups = resolve_action_filter_groups(
+        let required_group_masks = resolve_action_filter_bitmasks(
             action_schema,
             &filters,
             &actions_text,
@@ -354,36 +520,32 @@ impl QueryService {
             concrete_line_id,
         )?;
 
-        // Map each hand to actions that survive the action and frequency filters.
-        let mut hand_action_matches: HashMap<u8, HashSet<u32>> = HashMap::new();
+        // Bitmask per hand: bit N set = action N matched frequency + filter criteria
+        let mut hand_masks = [0u32; 169];
         for cell in &result.pack.cells {
             if !cell.exists || !frequency_filter.matches(cell.frequency) {
                 continue;
             }
-            if required_action_groups.is_empty()
-                || required_action_groups
-                    .iter()
-                    .any(|group| group.contains(&cell.action_id))
-            {
-                hand_action_matches
-                    .entry(cell.hand_id)
-                    .or_default()
-                    .insert(cell.action_id);
+            if cell.action_id < 32 {
+                let action_bit = 1u32 << cell.action_id;
+                if required_group_masks.is_empty()
+                    || required_group_masks
+                        .iter()
+                        .any(|&mask| action_bit & mask != 0)
+                {
+                    hand_masks[cell.hand_id as usize] |= action_bit;
+                }
             }
         }
 
         let mut hands = Vec::new();
         for hand_id in result.pack.hand_ids {
-            if let Some(matched_ids) = hand_action_matches.get(&hand_id) {
-                if required_action_groups.is_empty()
-                    || required_action_groups.iter().all(|group| {
-                        matched_ids
-                            .iter()
-                            .any(|action_id| group.contains(action_id))
-                    })
-                {
-                    hands.push(hand_code_from_id(hand_id));
-                }
+            let mask = hand_masks[hand_id as usize];
+            if mask != 0
+                && (required_group_masks.is_empty()
+                    || required_group_masks.iter().all(|&group| mask & group != 0))
+            {
+                hands.push(hand_code_from_id(hand_id));
             }
         }
 
@@ -402,7 +564,7 @@ impl QueryService {
     }
 
     pub fn schema_count(&self) -> usize {
-        self.action_schemas.len()
+        self.action_schemas.iter().filter(|s| s.is_some()).count()
     }
 
     pub fn open_handle_count(&self) -> usize {
@@ -461,22 +623,27 @@ impl FrequencyFilter {
     }
 }
 
-fn resolve_action_filter_groups(
+/// Resolve action filters into u32 bitmasks for O(1) bitwise matching.
+///
+/// Each filter maps to a bitmask where bit N is set if action_id N matches
+/// the filter. Returns empty Vec when no filters are specified.
+fn resolve_action_filter_bitmasks(
     action_schema: &[ActionDef],
     filters: &[ActionFilter],
     actions_text: &str,
     frequency_filter: &FrequencyFilter,
     dimension: &DimensionRef,
     concrete_line_id: u32,
-) -> Result<Vec<HashSet<u32>>, AppError> {
-    let mut groups = Vec::with_capacity(filters.len());
+) -> Result<Vec<u32>, AppError> {
+    let mut masks = Vec::with_capacity(filters.len());
     for filter in filters {
-        let ids: HashSet<u32> = action_schema
-            .iter()
-            .filter(|action| action_matches_filter(action, filter))
-            .map(|action| action.action_id)
-            .collect();
-        if ids.is_empty() {
+        let mut mask = 0u32;
+        for action in action_schema {
+            if action_matches_filter(action, filter) && action.action_id < 32 {
+                mask |= 1u32 << action.action_id;
+            }
+        }
+        if mask == 0 {
             return Err(AppError::no_hands_found(
                 actions_text,
                 &frequency_filter.description(),
@@ -486,9 +653,9 @@ fn resolve_action_filter_groups(
                 dimension.depth_bb,
             ));
         }
-        groups.push(ids);
+        masks.push(mask);
     }
-    Ok(groups)
+    Ok(masks)
 }
 
 fn line_lookup_open_error(

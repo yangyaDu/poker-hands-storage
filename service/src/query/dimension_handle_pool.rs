@@ -1,6 +1,6 @@
 use std::collections::{HashMap, VecDeque};
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, RwLock};
 
 use range_store_core::DimensionReader;
 
@@ -13,7 +13,7 @@ pub struct HandlePool {
     data_dir: PathBuf,
     known: HashMap<String, QueryableDimension>,
     capacity: usize,
-    state: Mutex<PoolState>,
+    state: RwLock<PoolState>,
 }
 
 #[derive(Debug, Default)]
@@ -32,16 +32,33 @@ impl HandlePool {
             data_dir,
             known,
             capacity: capacity.max(1),
-            state: Mutex::new(PoolState::default()),
+            state: RwLock::new(PoolState::default()),
         }
     }
 
     pub fn get_or_open(&self, dimension: &DimensionRef) -> Result<Arc<DimensionReader>, AppError> {
         let key = dimension_key_ref(dimension);
+
+        // Fast path: read lock for cached handles (no write contention)
+        {
+            let state = self
+                .state
+                .read()
+                .map_err(|_| AppError::invalid_format("Dimension handle pool lock poisoned"))?;
+            if let Some(reader) = state.handles.get(&key).cloned() {
+                // LRU touch requires write lock, but skipping it on read path
+                // is acceptable — the order is approximate and eviction is rare.
+                return Ok(reader);
+            }
+        }
+
+        // Slow path: write lock to open and cache a new handle
         let mut state = self
             .state
-            .lock()
+            .write()
             .map_err(|_| AppError::invalid_format("Dimension handle pool lock poisoned"))?;
+
+        // Double-check after acquiring write lock (another thread may have opened it)
         if let Some(reader) = state.handles.get(&key).cloned() {
             touch(&mut state.lru, &key);
             return Ok(reader);
@@ -76,7 +93,7 @@ impl HandlePool {
 
     pub fn open_count(&self) -> usize {
         self.state
-            .lock()
+            .read()
             .map(|state| state.handles.len())
             .unwrap_or_default()
     }
