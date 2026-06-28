@@ -515,7 +515,7 @@ cargo test --workspace --target x86_64-pc-windows-msvc
 - 已有 benchmark report 格式保持兼容。
 - `storage-tools` 不依赖 `service`。
 
-## Phase 8：收敛 service 为纯 API 服务
+## Phase 8：收敛 service 为纯 API 服务 ✅
 
 目的：最终清理 `service`。
 
