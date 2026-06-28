@@ -3,10 +3,10 @@ use std::path::Path;
 
 use range_store_core::crc32c::crc32c;
 
-use crate::domain::dimension::{get_concrete_lines_table_name, get_drill_scenario_table_name};
-use crate::storage::manifest::BuildManifest;
-use crate::storage::sqlite::Connection;
 use crate::verification::report::{VerifyFailure, VerifyLayer};
+use range_store_core::dimension::{get_concrete_lines_table_name, get_drill_scenario_table_name};
+use range_store_core::manifest::BuildManifest;
+use range_store_core::sqlite::Connection;
 
 #[derive(Debug, Clone, Default)]
 pub struct CatalogInfo {

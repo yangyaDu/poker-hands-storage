@@ -1,4 +1,4 @@
-use poker_hands_storage_service::verification::float32_precision::{
+use poker_hands_storage_tools::verification::float32_precision::{
     check_float32_round_trip, check_nullable_float32_round_trip, format_float32_bits,
     Float32CheckReason, Float32PrecisionStatsAccumulator, NullableFloat32CheckReason,
 };

@@ -1,4 +1,4 @@
-use poker_hands_storage_service::verification::report::{
+use poker_hands_storage_tools::verification::report::{
     DimensionVerifyDetail, RangeStrataVerifyReport, VerifyFailure, VerifyLayer, VerifyMode,
     VerifyOptionsSummary,
 };

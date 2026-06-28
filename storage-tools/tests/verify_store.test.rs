@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 
-use poker_hands_storage_service::verification::cli::parse_verify_args;
-use poker_hands_storage_service::verification::report::VerifyMode;
+use poker_hands_storage_tools::verification::cli::parse_verify_args;
+use poker_hands_storage_tools::verification::report::VerifyMode;
 
 #[test]
 fn parse_verify_args_uses_standalone_report_defaults() {
@@ -35,7 +35,7 @@ fn parse_verify_args_requires_source_for_cross() {
     ])
     .unwrap_err();
 
-    assert!(error.message().contains("--source is required"));
+    assert!(error.to_string().contains("--source is required"));
 }
 
 #[test]
@@ -48,7 +48,7 @@ fn parse_verify_args_rejects_invalid_mode() {
     ])
     .unwrap_err();
 
-    assert!(error.message().contains("Invalid --mode"));
+    assert!(error.to_string().contains("Invalid --mode"));
 }
 
 #[test]

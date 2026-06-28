@@ -379,7 +379,7 @@ name = "poker-hands-storage-service"
 version = "0.1.0"
 dependencies = [
  "axum",
- "libloading",
+ "poker-hands-storage-tools",
  "range-store-core",
  "serde",
  "serde_json",
@@ -396,6 +396,9 @@ name = "poker-hands-storage-tools"
 version = "0.1.0"
 dependencies = [
  "range-store-core",
+ "serde",
+ "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -426,6 +429,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 name = "range-store-core"
 version = "0.1.0"
 dependencies = [
+ "libloading",
  "memmap2",
  "serde",
  "serde_json",

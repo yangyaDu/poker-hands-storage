@@ -3,8 +3,8 @@ mod verify_store_fixture;
 
 use std::fs;
 
-use poker_hands_storage_service::storage::sqlite::{Connection, Value};
-use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
+use poker_hands_storage_tools::verification::cross::{run_cross_verify, CrossVerifyOptions};
+use range_store_core::sqlite::{Connection, Value};
 
 use verify_store_fixture::build_verify_fixture;
 

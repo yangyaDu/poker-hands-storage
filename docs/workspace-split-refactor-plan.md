@@ -377,7 +377,7 @@ cargo test --workspace --target x86_64-pc-windows-msvc
 - `rg "range_store_builder" service/tests service/src` 不再命中 API 测试依赖。
 - `service` 仍然可以独立跑 API 测试。
 
-## Phase 5：迁移 range_store_builder 到 storage-tools
+## Phase 5：迁移 range_store_builder 到 storage-tools ✅
 
 目的：把离线构建工具从 API 服务中移走。
 
@@ -422,7 +422,7 @@ cargo test --workspace --target x86_64-pc-windows-msvc
 - `storage-tools` build 命令行为与旧命令一致。
 - `storage-tools` 不依赖 `service`。
 
-## Phase 6：迁移 verification 到 storage-tools
+## Phase 6：迁移 verification 到 storage-tools ✅
 
 目的：把 standalone/cross verifier 和报告生成移出 API 服务。
 

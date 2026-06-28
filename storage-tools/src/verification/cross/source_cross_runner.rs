@@ -7,14 +7,8 @@ use range_store_core::idx_reader::IdxReader;
 use range_store_core::pack_codec::decode_pack;
 use range_store_core::types::IdxRecord;
 
-use crate::domain::action_schema::ActionDef;
-use crate::domain::dimension::{get_bin_file_name, get_idx_file_name, quote_identifier};
-use crate::domain::hole_cards::get_hand_id;
-use crate::errors::AppError;
-use crate::range_store_builder::{discover_dimensions, DimensionSpec};
-use crate::storage::manifest::{load_manifest, BuildManifest};
-use crate::storage::metadata::MetadataReader;
-use crate::storage::sqlite::{Connection, Value};
+use crate::errors::ToolError;
+use crate::metadata::load_action_schemas;
 use crate::verification::float32_precision::{
     check_float32_round_trip, check_nullable_float32_round_trip, Float32CheckReason,
     Float32PrecisionStatsAccumulator, NullableFloat32CheckReason,
@@ -24,6 +18,12 @@ use crate::verification::report::{
     VerifyFailure, VerifyLayer, VerifyMode, VerifyOptionsSummary, VerifyPrecision,
 };
 use crate::verification::standalone::{run_standalone_verify, StandaloneVerifyOptions};
+use range_store_core::action_schema::ActionDef;
+use range_store_core::dimension::{discover_dimensions, DimensionSpec};
+use range_store_core::dimension::{get_bin_file_name, get_idx_file_name, quote_identifier};
+use range_store_core::hole_cards::get_hand_id;
+use range_store_core::manifest::{load_manifest, BuildManifest};
+use range_store_core::sqlite::{Connection, Value};
 
 const ACTION_VALUE_TOLERANCE: f64 = 1e-6;
 
@@ -60,7 +60,9 @@ struct SourceCrossResult {
     dimension_counts: HashMap<String, (u64, u64)>,
 }
 
-pub fn run_cross_verify(options: &CrossVerifyOptions) -> Result<RangeStrataVerifyReport, AppError> {
+pub fn run_cross_verify(
+    options: &CrossVerifyOptions,
+) -> Result<RangeStrataVerifyReport, ToolError> {
     let standalone = run_standalone_verify(&StandaloneVerifyOptions {
         dir: options.dir.clone(),
         verify_checksums: options.verify_checksums,
@@ -110,13 +112,13 @@ pub fn run_cross_verify(options: &CrossVerifyOptions) -> Result<RangeStrataVerif
 fn run_source_cross(
     options: &CrossVerifyOptions,
     manifest: &BuildManifest,
-) -> Result<SourceCrossResult, AppError> {
+) -> Result<SourceCrossResult, ToolError> {
     let mut result = SourceCrossResult::default();
     let source = Connection::open(&options.source_db, true)?;
     let dimensions = discover_dimensions(&source)?;
     let row_counts = dimension_row_counts(&source, &dimensions)?;
     let total_rows = row_counts.values().sum::<u64>().max(1);
-    let action_schemas = MetadataReader::new(options.dir.join("meta.db")).load_action_schemas()?;
+    let action_schemas = load_action_schemas(&options.dir.join("meta.db"))?;
 
     for dimension in dimensions {
         if manifest_dimension_failed(manifest, &dimension) {
@@ -545,10 +547,10 @@ fn normalize_action_name(value: &str) -> String {
 fn dimension_row_counts(
     connection: &Connection,
     dimensions: &[DimensionSpec],
-) -> Result<HashMap<String, u64>, AppError> {
+) -> Result<HashMap<String, u64>, ToolError> {
     let mut counts = HashMap::new();
     for dimension in dimensions {
-        let table = quote_identifier(&range_table_name(dimension))?;
+        let table = quote_identifier(&dimension.range_table())?;
         let mut statement = connection.prepare(&format!("SELECT COUNT(*) FROM {table}"))?;
         statement.start(&[])?;
         if statement.step_row()? {
@@ -565,8 +567,8 @@ fn load_source_rows(
     connection: &Connection,
     dimension: &DimensionSpec,
     quota: Option<usize>,
-) -> Result<Vec<SourceRow>, AppError> {
-    let table = quote_identifier(&range_table_name(dimension))?;
+) -> Result<Vec<SourceRow>, ToolError> {
+    let table = quote_identifier(&dimension.range_table())?;
     let sql = if quota.is_some() {
         format!(
             "SELECT concrete_line_id, hole_cards, action_name, action_size,
@@ -639,17 +641,10 @@ fn dimension_key(dimension: &DimensionSpec) -> String {
     )
 }
 
-fn range_table_name(dimension: &DimensionSpec) -> String {
-    format!(
-        "range_data_{}_{}max_{}BB",
-        dimension.strategy, dimension.player_count, dimension.depth_bb
-    )
-}
-
 fn write_cross_reports(
     report: &RangeStrataVerifyReport,
     options: &CrossVerifyOptions,
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     if let Some(path) = &options.out_path {
         write_json_report(report, path)?;
     }

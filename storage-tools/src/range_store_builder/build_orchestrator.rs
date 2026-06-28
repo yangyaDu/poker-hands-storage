@@ -5,54 +5,16 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use range_store_core::crc32c::crc32c;
+use range_store_core::dimension::{
+    get_bin_file_name, get_drill_scenario_table_name, get_idx_file_name, quote_identifier,
+    DimensionSpec,
+};
+use range_store_core::hole_cards::get_hand_id;
+use range_store_core::manifest::{BuildManifest, ManifestDimension};
+use range_store_core::sqlite::{Connection, Value};
 use range_store_core::types::{IDX_HEADER_SIZE, IDX_RECORD_SIZE, PFSP_HEADER_SIZE};
 
-use crate::domain::dimension::{
-    get_bin_file_name, get_concrete_lines_table_name, get_drill_scenario_table_name,
-    get_idx_file_name, quote_identifier,
-};
-use crate::domain::hole_cards::get_hand_id;
-use crate::errors::AppError;
-use crate::storage::manifest::{BuildManifest, ManifestDimension};
-use crate::storage::sqlite::{Connection, Value};
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct DimensionSpec {
-    pub strategy: String,
-    pub player_count: u32,
-    pub depth_bb: u32,
-}
-
-impl DimensionSpec {
-    pub fn parse(value: &str) -> Result<Self, AppError> {
-        let parts: Vec<_> = value.split(':').collect();
-        if parts.len() != 3 || parts[0].is_empty() {
-            return Err(AppError::invalid_argument(format!(
-                "Invalid dimension '{value}', expected strategy:player_count:depth_bb"
-            )));
-        }
-        Ok(Self {
-            strategy: parts[0].to_owned(),
-            player_count: parts[1].parse().map_err(|_| {
-                AppError::invalid_argument(format!("Invalid player count in dimension '{value}'"))
-            })?,
-            depth_bb: parts[2].parse().map_err(|_| {
-                AppError::invalid_argument(format!("Invalid depth in dimension '{value}'"))
-            })?,
-        })
-    }
-
-    fn range_table(&self) -> String {
-        format!(
-            "range_data_{}_{}max_{}BB",
-            self.strategy, self.player_count, self.depth_bb
-        )
-    }
-
-    fn concrete_table(&self) -> String {
-        get_concrete_lines_table_name(&self.strategy, self.player_count, self.depth_bb)
-    }
-}
+use crate::errors::ToolError;
 
 #[derive(Debug, Clone)]
 pub struct BuildOptions {
@@ -105,9 +67,9 @@ impl ActionKey {
     }
 }
 
-pub fn build_store(options: &BuildOptions) -> Result<BuildSummary, AppError> {
+pub fn build_store(options: &BuildOptions) -> Result<BuildSummary, ToolError> {
     if !options.source_db.is_file() {
-        return Err(AppError::build(format!(
+        return Err(ToolError::build(format!(
             "Source DB not found: {}",
             options.source_db.display()
         )));
@@ -118,7 +80,7 @@ pub fn build_store(options: &BuildOptions) -> Result<BuildSummary, AppError> {
     let discovered = discover_dimensions(&source)?;
     let dimensions = select_dimensions(discovered, &options.dimensions)?;
     if dimensions.is_empty() {
-        return Err(AppError::build("No range dimensions selected"));
+        return Err(ToolError::build("No range dimensions selected"));
     }
 
     let source_db_checksum = sha256_file(&options.source_db)?;
@@ -169,7 +131,7 @@ pub fn build_store(options: &BuildOptions) -> Result<BuildSummary, AppError> {
     };
     let manifest_path = options.out_dir.join("manifest.json");
     let manifest_json = serde_json::to_string_pretty(&manifest)
-        .map_err(|error| AppError::build(error.to_string()))?;
+        .map_err(|error| ToolError::build(error.to_string()))?;
     fs::write(&manifest_path, format!("{manifest_json}\n"))?;
 
     Ok(BuildSummary {
@@ -178,7 +140,7 @@ pub fn build_store(options: &BuildOptions) -> Result<BuildSummary, AppError> {
     })
 }
 
-pub fn discover_dimensions(connection: &Connection) -> Result<Vec<DimensionSpec>, AppError> {
+pub fn discover_dimensions(connection: &Connection) -> Result<Vec<DimensionSpec>, ToolError> {
     let mut statement = connection.prepare(
         "SELECT name FROM sqlite_master
          WHERE type = 'table' AND name LIKE 'range_data_%'
@@ -230,14 +192,14 @@ fn parse_range_table_name(name: &str) -> Option<DimensionSpec> {
 fn select_dimensions(
     discovered: Vec<DimensionSpec>,
     requested: &[DimensionSpec],
-) -> Result<Vec<DimensionSpec>, AppError> {
+) -> Result<Vec<DimensionSpec>, ToolError> {
     if requested.is_empty() {
         return Ok(discovered);
     }
     let available: HashSet<_> = discovered.iter().cloned().collect();
     for dimension in requested {
         if !available.contains(dimension) {
-            return Err(AppError::build(format!(
+            return Err(ToolError::build(format!(
                 "Requested dimension not found: {}:{}:{}",
                 dimension.strategy, dimension.player_count, dimension.depth_bb
             )));
@@ -249,11 +211,11 @@ fn select_dimensions(
         .collect())
 }
 
-fn prepare_output_dir(out_dir: &Path, overwrite: bool) -> Result<(), AppError> {
+fn prepare_output_dir(out_dir: &Path, overwrite: bool) -> Result<(), ToolError> {
     if out_dir.exists() {
         let has_entries = fs::read_dir(out_dir)?.next().transpose()?.is_some();
         if has_entries && !overwrite {
-            return Err(AppError::build(format!(
+            return Err(ToolError::build(format!(
                 "Output directory is not empty: {}. Pass --overwrite to replace it.",
                 out_dir.display()
             )));
@@ -266,7 +228,7 @@ fn prepare_output_dir(out_dir: &Path, overwrite: bool) -> Result<(), AppError> {
     Ok(())
 }
 
-fn init_meta_db(connection: &Connection, dimensions: &[DimensionSpec]) -> Result<(), AppError> {
+fn init_meta_db(connection: &Connection, dimensions: &[DimensionSpec]) -> Result<(), ToolError> {
     connection.exec(
         "PRAGMA journal_mode = DELETE;
          PRAGMA synchronous = NORMAL;
@@ -325,7 +287,7 @@ fn copy_metadata(
     source: &Connection,
     target: &Connection,
     dimensions: &[DimensionSpec],
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     target.exec("BEGIN")?;
     let result = (|| {
         let strategies: BTreeSet<_> = dimensions
@@ -338,17 +300,17 @@ fn copy_metadata(
         for dimension in dimensions {
             copy_concrete_lines(source, target, dimension)?;
         }
-        Ok::<(), AppError>(())
+        Ok::<(), ToolError>(())
     })();
     finish_transaction(target, result)
 }
 
 fn finish_transaction(
     connection: &Connection,
-    result: Result<(), AppError>,
-) -> Result<(), AppError> {
+    result: Result<(), ToolError>,
+) -> Result<(), ToolError> {
     match result {
-        Ok(()) => connection.exec("COMMIT").map_err(AppError::from),
+        Ok(()) => connection.exec("COMMIT").map_err(ToolError::from),
         Err(error) => {
             let _ = connection.exec("ROLLBACK");
             Err(error)
@@ -360,7 +322,7 @@ fn copy_drill_lines(
     source: &Connection,
     target: &Connection,
     strategy: &str,
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     let raw_table = get_drill_scenario_table_name(strategy);
     let mut exists_statement = source.prepare(
         "SELECT EXISTS(
@@ -399,7 +361,7 @@ fn copy_concrete_lines(
     source: &Connection,
     target: &Connection,
     dimension: &DimensionSpec,
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     let table = quote_identifier(&dimension.concrete_table())?;
     let mut select = source.prepare(&format!(
         "SELECT id, abstract_line, concrete_line FROM {table} ORDER BY id"
@@ -427,7 +389,7 @@ fn build_dimension(
     dimension: &DimensionSpec,
     max_concrete_lines: Option<usize>,
     schema_ids_by_key: &mut HashMap<String, u32>,
-) -> Result<ManifestDimension, AppError> {
+) -> Result<ManifestDimension, ToolError> {
     let bin_name = get_bin_file_name(
         &dimension.strategy,
         dimension.player_count,
@@ -485,7 +447,7 @@ fn build_dimension_files(
     schema_ids_by_key: &mut HashMap<String, u32>,
     bin_tmp: &Path,
     idx_tmp: &Path,
-) -> Result<(u32, u32), AppError> {
+) -> Result<(u32, u32), ToolError> {
     let mut bin = create_new_file(bin_tmp)?;
     let mut idx = create_new_file(idx_tmp)?;
     write_bin_header(&mut bin)?;
@@ -569,7 +531,7 @@ fn build_dimension_files(
                 ],
             )?;
         }
-        Ok::<(), AppError>(())
+        Ok::<(), ToolError>(())
     })();
     finish_transaction(meta, build_result)?;
     write_idx_header(&mut idx, pack_count)?;
@@ -588,7 +550,7 @@ fn flush_pack(
     bin: &mut File,
     idx: &mut File,
     bin_offset: &mut u32,
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     let encoded = encode_concrete_line_pack(rows)?;
     let schema_key = to_hex(&encoded.action_blob);
     let action_schema_id = get_or_insert_action_schema(
@@ -601,7 +563,7 @@ fn flush_pack(
     dimension_schema_ids.insert(action_schema_id);
 
     let byte_length = u32::try_from(encoded.payload.len())
-        .map_err(|_| AppError::build("Range pack exceeds u32 byte length"))?;
+        .map_err(|_| ToolError::build("Range pack exceeds u32 byte length"))?;
     let checksum = crc32c(&encoded.payload);
     bin.seek(SeekFrom::Start(*bin_offset as u64))?;
     bin.write_all(&encoded.payload)?;
@@ -617,7 +579,7 @@ fn flush_pack(
     )?;
     *bin_offset = bin_offset
         .checked_add(byte_length)
-        .ok_or_else(|| AppError::build(".bin offset exceeds u32 format limit"))?;
+        .ok_or_else(|| ToolError::build(".bin offset exceeds u32 format limit"))?;
     Ok(())
 }
 
@@ -628,9 +590,9 @@ struct EncodedPack {
     payload: Vec<u8>,
 }
 
-fn encode_concrete_line_pack(rows: &[RangeRow]) -> Result<EncodedPack, AppError> {
+fn encode_concrete_line_pack(rows: &[RangeRow]) -> Result<EncodedPack, ToolError> {
     if rows.is_empty() {
-        return Err(AppError::build("Cannot encode an empty concrete line"));
+        return Err(ToolError::build("Cannot encode an empty concrete line"));
     }
     let mut action_set = HashSet::new();
     let mut hand_set = BTreeSet::new();
@@ -652,14 +614,14 @@ fn encode_concrete_line_pack(rows: &[RangeRow]) -> Result<EncodedPack, AppError>
             .then(left.amount_bb().total_cmp(&right.amount_bb()))
     });
     if actions.is_empty() || actions.len() > 32 {
-        return Err(AppError::build(format!(
+        return Err(ToolError::build(format!(
             "V1 range pack requires 1..=32 actions, got {}",
             actions.len()
         )));
     }
     let hand_ids: Vec<u8> = hand_set.into_iter().collect();
     let hand_count =
-        u16::try_from(hand_ids.len()).map_err(|_| AppError::build("Hand count exceeds u16"))?;
+        u16::try_from(hand_ids.len()).map_err(|_| ToolError::build("Hand count exceeds u16"))?;
     let action_index: HashMap<_, _> = actions
         .iter()
         .copied()
@@ -716,7 +678,7 @@ fn get_or_insert_action_schema(
     schema_key: &str,
     action_count: u32,
     action_blob: &[u8],
-) -> Result<u32, AppError> {
+) -> Result<u32, ToolError> {
     if let Some(id) = schema_ids_by_key.get(schema_key) {
         return Ok(*id);
     }
@@ -738,12 +700,12 @@ fn get_or_insert_action_schema(
         ],
     )?;
     let id = u32::try_from(connection.last_insert_rowid())
-        .map_err(|_| AppError::build("Action schema id exceeds u32"))?;
+        .map_err(|_| ToolError::build("Action schema id exceeds u32"))?;
     schema_ids_by_key.insert(schema_key.to_owned(), id);
     Ok(id)
 }
 
-fn normalize_action_type(value: &str) -> Result<u8, AppError> {
+fn normalize_action_type(value: &str) -> Result<u8, ToolError> {
     let normalized: String = value
         .trim()
         .to_ascii_lowercase()
@@ -757,20 +719,20 @@ fn normalize_action_type(value: &str) -> Result<u8, AppError> {
         "bet" => Ok(3),
         "raise" => Ok(4),
         "allin" => Ok(5),
-        _ => Err(AppError::build(format!("Unknown action name: {value}"))),
+        _ => Err(ToolError::build(format!("Unknown action name: {value}"))),
     }
 }
 
-fn create_new_file(path: &Path) -> Result<File, AppError> {
+fn create_new_file(path: &Path) -> Result<File, ToolError> {
     OpenOptions::new()
         .create_new(true)
         .read(true)
         .write(true)
         .open(path)
-        .map_err(AppError::from)
+        .map_err(ToolError::from)
 }
 
-fn write_bin_header(file: &mut File) -> Result<(), AppError> {
+fn write_bin_header(file: &mut File) -> Result<(), ToolError> {
     let mut header = [0u8; PFSP_HEADER_SIZE];
     header[0..4].copy_from_slice(b"PFSP");
     header[4..6].copy_from_slice(&1u16.to_le_bytes());
@@ -783,7 +745,7 @@ fn write_bin_header(file: &mut File) -> Result<(), AppError> {
     Ok(())
 }
 
-fn write_idx_header(file: &mut File, record_count: u32) -> Result<(), AppError> {
+fn write_idx_header(file: &mut File, record_count: u32) -> Result<(), ToolError> {
     let mut header = [0u8; IDX_HEADER_SIZE];
     header[0..4].copy_from_slice(b"PFXI");
     header[4..6].copy_from_slice(&1u16.to_le_bytes());
@@ -803,7 +765,7 @@ fn write_idx_record(
     offset: u32,
     byte_length: u32,
     checksum: u32,
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     let mut record = [0u8; IDX_RECORD_SIZE];
     record[0..4].copy_from_slice(&concrete_line_id.to_le_bytes());
     record[4..8].copy_from_slice(&action_schema_id.to_le_bytes());
@@ -815,7 +777,7 @@ fn write_idx_record(
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String, AppError> {
+fn sha256_file(path: &Path) -> Result<String, ToolError> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256State::new();
     let mut buffer = vec![0u8; 1024 * 1024];
@@ -952,10 +914,10 @@ fn to_hex(bytes: &[u8]) -> String {
     output
 }
 
-fn utc_now_iso8601() -> Result<String, AppError> {
+fn utc_now_iso8601() -> Result<String, ToolError> {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| AppError::build(error.to_string()))?
+        .map_err(|error| ToolError::build(error.to_string()))?
         .as_secs() as i64;
     let days = seconds.div_euclid(86_400);
     let seconds_of_day = seconds.rem_euclid(86_400);

@@ -7,13 +7,13 @@ use range_store_core::types::{
     IDX_HEADER_SIZE, IDX_MAGIC, IDX_RECORD_SIZE, PFSP_HEADER_SIZE, PFSP_MAGIC,
 };
 
-use crate::errors::AppError;
-use crate::storage::manifest::{parse_manifest, BuildManifest, ManifestDimension, ManifestError};
+use crate::errors::ToolError;
 use crate::verification::catalog_checks::check_catalog;
 use crate::verification::report::{
     write_json_report, write_markdown_report, DimensionVerifyDetail, RangeStrataVerifyReport,
     VerifyFailure, VerifyLayer, VerifyMode, VerifyOptionsSummary,
 };
+use range_store_core::manifest::{parse_manifest, BuildManifest, ManifestDimension, ManifestError};
 
 #[derive(Debug, Clone)]
 pub struct StandaloneVerifyOptions {
@@ -25,7 +25,7 @@ pub struct StandaloneVerifyOptions {
 
 pub fn run_standalone_verify(
     options: &StandaloneVerifyOptions,
-) -> Result<RangeStrataVerifyReport, AppError> {
+) -> Result<RangeStrataVerifyReport, ToolError> {
     let mut failures = Vec::new();
     let manifest = match read_manifest(&options.dir) {
         Ok(manifest) => manifest,
@@ -621,7 +621,7 @@ fn u16_from_le(bytes: &[u8]) -> u16 {
 fn write_reports(
     report: &RangeStrataVerifyReport,
     options: &StandaloneVerifyOptions,
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     if let Some(path) = &options.out_path {
         write_json_report(report, path)?;
     }

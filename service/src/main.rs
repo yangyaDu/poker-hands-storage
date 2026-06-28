@@ -22,13 +22,6 @@ use poker_hands_storage_service::http::healthcheck::{
     run_http_healthcheck, HttpHealthcheckOptions,
 };
 use poker_hands_storage_service::query::QueryService;
-use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
-use poker_hands_storage_service::verification::cli::parse_verify_args;
-use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
-use poker_hands_storage_service::verification::report::{RangeStrataVerifyReport, VerifyMode};
-use poker_hands_storage_service::verification::standalone::{
-    run_standalone_verify, StandaloneVerifyOptions,
-};
 use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
@@ -43,9 +36,7 @@ async fn main() {
 async fn run() -> Result<(), AppError> {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
-        Some("build") => run_build(args.collect()),
         Some("query") => run_query(args.collect()),
-        Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
         Some("benchmark-sqlite") => run_benchmark_sqlite(args.collect()),
         Some("benchmark-compare") => run_benchmark_compare_cmd(args.collect()),
@@ -336,119 +327,6 @@ fn init_tracing() {
     tracing_subscriber::fmt().with_env_filter(filter).init();
 }
 
-fn run_build(args: Vec<String>) -> Result<(), AppError> {
-    let mut source_db = None;
-    let mut out_dir = None;
-    let mut dimensions = Vec::new();
-    let mut max_concrete_lines = None;
-    let mut overwrite = false;
-    let mut index = 0;
-    while index < args.len() {
-        match args[index].as_str() {
-            "--source-db" => source_db = Some(PathBuf::from(next_value(&args, &mut index)?)),
-            "--out-dir" => out_dir = Some(PathBuf::from(next_value(&args, &mut index)?)),
-            "--dimension" => dimensions.push(DimensionSpec::parse(next_value(&args, &mut index)?)?),
-            "--max-concrete-lines" => {
-                max_concrete_lines = Some(next_value(&args, &mut index)?.parse().map_err(|_| {
-                    AppError::invalid_argument("--max-concrete-lines must be an integer")
-                })?)
-            }
-            "--overwrite" => overwrite = true,
-            option => {
-                return Err(AppError::invalid_argument(format!(
-                    "Unknown build option: {option}"
-                )))
-            }
-        }
-        index += 1;
-    }
-    let summary = build_store(&BuildOptions {
-        source_db: source_db
-            .ok_or_else(|| AppError::invalid_argument("--source-db is required"))?,
-        out_dir: out_dir.ok_or_else(|| AppError::invalid_argument("--out-dir is required"))?,
-        dimensions,
-        max_concrete_lines_per_dimension: max_concrete_lines,
-        overwrite,
-    })?;
-    println!("manifest={}", summary.manifest_path.display());
-    for dimension in summary.dimensions {
-        println!(
-            "dimension={}:{}:{} packs={} bin_bytes={} idx_bytes={}",
-            dimension.strategy,
-            dimension.player_count,
-            dimension.depth_bb,
-            dimension.pack_count,
-            dimension.bin_file_size_bytes.unwrap_or_default(),
-            dimension.idx_file_size_bytes.unwrap_or_default()
-        );
-    }
-    Ok(())
-}
-
-fn run_verify(args: Vec<String>) -> Result<(), AppError> {
-    let command = parse_verify_args(args)?;
-    let report = match command.mode {
-        VerifyMode::Standalone => run_standalone_verify(&StandaloneVerifyOptions {
-            dir: command.dir,
-            verify_checksums: command.verify_checksums,
-            out_path: Some(command.out_path),
-            md_path: Some(command.md_path),
-        })?,
-        VerifyMode::Cross => run_cross_verify(&CrossVerifyOptions {
-            dir: command.dir,
-            source_db: command
-                .source
-                .ok_or_else(|| AppError::invalid_argument("--source is required for cross mode"))?,
-            sample_size: command.sample_size,
-            max_failures: command.max_failures,
-            verify_checksums: command.verify_checksums,
-            out_path: Some(command.out_path),
-            md_path: Some(command.md_path),
-        })?,
-    };
-    print_verify_summary(&report);
-    if report.has_failures() {
-        return Err(AppError::new("VERIFY_FAILED", "verification failed"));
-    }
-    Ok(())
-}
-
-fn print_verify_summary(report: &RangeStrataVerifyReport) {
-    println!("Range Strata Binary verification complete.");
-    println!("  Dimensions: {}", report.totals.dimensions);
-    println!("  Manifest OK: {}", report.totals.manifest_ok);
-    println!("  Catalog OK: {}", report.totals.catalog_ok);
-    println!(
-        "  Index files OK: {}/{}",
-        report.totals.index_files_ok,
-        report.totals.index_files_ok + report.totals.index_files_failed
-    );
-    println!(
-        "  Pack files OK: {}/{}",
-        report.totals.pack_files_ok,
-        report.totals.pack_files_ok + report.totals.pack_files_failed
-    );
-    println!(
-        "  Index-Pack cross failures: {}",
-        report.totals.index_pack_cross_failures
-    );
-    if report.mode == VerifyMode::Cross {
-        println!(
-            "  Source records checked: {}",
-            report.totals.checked_source_records.unwrap_or_default()
-        );
-        println!(
-            "  Source records failed: {}",
-            report.totals.failed_source_records.unwrap_or_default()
-        );
-        println!(
-            "  Extra binary records: {}",
-            report.totals.extra_binary_records.unwrap_or_default()
-        );
-    }
-    println!("  Total failures: {}", report.failures.len());
-}
-
 fn run_query(args: Vec<String>) -> Result<(), AppError> {
     let mut data_dir = None;
     let mut strategy = "default".to_owned();
@@ -525,18 +403,10 @@ fn print_help() {
         "poker-hands-storage-service
 
 Commands:
-  build --source-db <range.db> --out-dir <dir>
-        [--dimension strategy:player_count:depth_bb]
-        [--max-concrete-lines <count>] [--overwrite]
-
   query --data-dir <dir> --player-count <count> --depth-bb <bb>
         --concrete-line-id <id> --hole-cards <AA|AKs|AsKh>
         [--strategy <name>] [--verify-checksum]
 
-  verify --mode <standalone|cross> --dir <dir>
-        [--source <range.db>] [--sample-size <count>]
-        [--max-failures <count>] [--verify-checksum]
-        [--out <report.json>] [--md <report.md>]
 
   benchmark --dir <dir> --source <range.db>
         [--meta <meta.db>] [--workload <workload.json>]

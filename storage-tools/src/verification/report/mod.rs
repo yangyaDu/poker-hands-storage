@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 use super::float32_precision::Float32PrecisionStats;
-use crate::errors::AppError;
+use crate::errors::ToolError;
 
 const FREQUENCY_TOLERANCE: f64 = 1e-6;
 const HAND_EV_TOLERANCE: f64 = 1e-5;
@@ -189,12 +189,12 @@ impl RangeStrataVerifyReport {
     }
 }
 
-pub fn write_json_report(report: &RangeStrataVerifyReport, path: &Path) -> Result<(), AppError> {
+pub fn write_json_report(report: &RangeStrataVerifyReport, path: &Path) -> Result<(), ToolError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     let json = serde_json::to_string_pretty(report)
-        .map_err(|error| AppError::invalid_format(error.to_string()))?;
+        .map_err(|error| ToolError::invalid_format(error.to_string()))?;
     fs::write(path, format!("{json}\n"))?;
     Ok(())
 }
@@ -202,7 +202,7 @@ pub fn write_json_report(report: &RangeStrataVerifyReport, path: &Path) -> Resul
 pub fn write_markdown_report(
     report: &RangeStrataVerifyReport,
     path: &Path,
-) -> Result<(), AppError> {
+) -> Result<(), ToolError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }

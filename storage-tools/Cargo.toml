@@ -3,6 +3,40 @@ name = "poker-hands-storage-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+autotests = false
 
 [dependencies]
 range-store-core = { path = "../range-store-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "range_store_builder_build_orchestrator_test"
+path = "tests/range_store_builder/build_orchestrator.test.rs"
+
+[[test]]
+name = "verification_float32_precision_test"
+path = "tests/verification/float32_precision.test.rs"
+
+[[test]]
+name = "verification_source_cross_runner_test"
+path = "tests/verification/cross/source_cross_runner.test.rs"
+
+[[test]]
+name = "verification_standalone_runner_test"
+path = "tests/verification/standalone/standalone_runner.test.rs"
+
+[[test]]
+name = "verification_markdown_report_test"
+path = "tests/verification/report/markdown_report.test.rs"
+
+[[test]]
+name = "verification_report_totals_test"
+path = "tests/verification/report/report_totals.test.rs"
+
+[[test]]
+name = "scripts_verify_store_test"
+path = "tests/verify_store.test.rs"

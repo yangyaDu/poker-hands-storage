@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use crate::errors::AppError;
+use crate::errors::ToolError;
 
 use super::report::VerifyMode;
 
@@ -16,7 +16,7 @@ pub struct VerifyCommand {
     pub md_path: PathBuf,
 }
 
-pub fn parse_verify_args(args: Vec<String>) -> Result<VerifyCommand, AppError> {
+pub fn parse_verify_args(args: Vec<String>) -> Result<VerifyCommand, ToolError> {
     let mut mode = VerifyMode::Standalone;
     let mut dir = None;
     let mut source = None;
@@ -43,7 +43,7 @@ pub fn parse_verify_args(args: Vec<String>) -> Result<VerifyCommand, AppError> {
             "--max-failures" => {
                 max_failures = parse_usize("--max-failures", next_value(&args, &mut index)?)?;
                 if max_failures == 0 {
-                    return Err(AppError::invalid_argument(
+                    return Err(ToolError::invalid_argument(
                         "--max-failures must be a positive integer",
                     ));
                 }
@@ -51,16 +51,16 @@ pub fn parse_verify_args(args: Vec<String>) -> Result<VerifyCommand, AppError> {
             "--out" => out_path = Some(PathBuf::from(next_value(&args, &mut index)?)),
             "--md" => md_path = Some(PathBuf::from(next_value(&args, &mut index)?)),
             option => {
-                return Err(AppError::invalid_argument(format!(
+                return Err(ToolError::invalid_argument(format!(
                     "Unknown verify option: {option}"
                 )))
             }
         }
         index += 1;
     }
-    let dir = dir.ok_or_else(|| AppError::invalid_argument("--dir is required"))?;
+    let dir = dir.ok_or_else(|| ToolError::invalid_argument("--dir is required"))?;
     if mode == VerifyMode::Cross && source.is_none() {
-        return Err(AppError::invalid_argument(
+        return Err(ToolError::invalid_argument(
             "--source is required for cross mode",
         ));
     }
@@ -85,25 +85,25 @@ pub fn parse_verify_args(args: Vec<String>) -> Result<VerifyCommand, AppError> {
     })
 }
 
-fn parse_verify_mode(value: &str) -> Result<VerifyMode, AppError> {
+fn parse_verify_mode(value: &str) -> Result<VerifyMode, ToolError> {
     match value {
         "standalone" => Ok(VerifyMode::Standalone),
         "cross" => Ok(VerifyMode::Cross),
-        _ => Err(AppError::invalid_argument(format!(
+        _ => Err(ToolError::invalid_argument(format!(
             "Invalid --mode value: {value}. Use standalone or cross."
         ))),
     }
 }
 
-fn next_value<'a>(args: &'a [String], index: &mut usize) -> Result<&'a str, AppError> {
+fn next_value<'a>(args: &'a [String], index: &mut usize) -> Result<&'a str, ToolError> {
     *index += 1;
     args.get(*index)
         .map(String::as_str)
-        .ok_or_else(|| AppError::invalid_argument("Missing option value"))
+        .ok_or_else(|| ToolError::invalid_argument("Missing option value"))
 }
 
-fn parse_usize(name: &str, value: &str) -> Result<usize, AppError> {
+fn parse_usize(name: &str, value: &str) -> Result<usize, ToolError> {
     value
         .parse()
-        .map_err(|_| AppError::invalid_argument(format!("{name} must be an integer")))
+        .map_err(|_| ToolError::invalid_argument(format!("{name} must be an integer")))
 }
