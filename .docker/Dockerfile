@@ -5,7 +5,9 @@ FROM ${RUST_IMAGE} AS builder
 WORKDIR /app
 
 COPY Cargo.toml Cargo.lock ./
-COPY crates ./crates
+COPY range-store-core ./range-store-core
+COPY service ./service
+COPY storage-tools ./storage-tools
 
 RUN cargo build --release -p poker-hands-storage-service
 

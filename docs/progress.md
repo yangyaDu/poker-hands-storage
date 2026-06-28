@@ -18,7 +18,7 @@
 ## 已实现模块
 
 ```text
-crates/range-store-core/src/
+range-store-core/src/
   idx_reader.rs
   bin_reader.rs
   pack_codec.rs
@@ -26,7 +26,7 @@ crates/range-store-core/src/
   types.rs
   dimension_reader.rs
 
-crates/service/src/
+service/src/
   config/
   domain/
   errors/

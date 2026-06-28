@@ -1,5 +1,6 @@
-use std::fs;
-use std::path::Path;
+#[path = "../support/api_test_fixture.rs"]
+mod api_test_fixture;
+
 use std::sync::Arc;
 
 use axum::body::{to_bytes, Body};
@@ -7,15 +8,13 @@ use axum::http::{Method, Request, StatusCode};
 use axum::Router;
 use poker_hands_storage_service::http::{error_code, router};
 use poker_hands_storage_service::query::QueryService;
-use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
-use poker_hands_storage_service::storage::sqlite::Connection;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
 #[tokio::test]
 async fn serves_query_and_metadata_workflows() {
     let directory = tempfile::tempdir().unwrap();
-    let data_dir = build_test_store(directory.path());
+    let data_dir = api_test_fixture::build_api_test_store(directory.path());
     let service = Arc::new(QueryService::open(&data_dir, 2, true).unwrap());
     let app = router(service);
 
@@ -456,7 +455,7 @@ async fn serves_query_and_metadata_workflows() {
 #[tokio::test]
 async fn ready_returns_503_when_no_queryable_dimensions_are_loaded() {
     let directory = tempfile::tempdir().unwrap();
-    let data_dir = build_empty_store(directory.path());
+    let data_dir = api_test_fixture::build_empty_store(directory.path());
     let service = Arc::new(QueryService::open(&data_dir, 2, true).unwrap());
     let app = router(service);
 
@@ -474,7 +473,7 @@ async fn ready_returns_503_when_no_queryable_dimensions_are_loaded() {
 #[tokio::test]
 async fn returns_boundary_validation_messages_for_range_endpoints() {
     let directory = tempfile::tempdir().unwrap();
-    let data_dir = build_test_store(directory.path());
+    let data_dir = api_test_fixture::build_api_test_store(directory.path());
     let service = Arc::new(QueryService::open(&data_dir, 2, true).unwrap());
     let app = router(service);
 
@@ -783,96 +782,4 @@ async fn call_text(app: &Router, method: Method, path: &str) -> (StatusCode, Str
     let status = response.status();
     let bytes = to_bytes(response.into_body(), usize::MAX).await.unwrap();
     (status, String::from_utf8(bytes.to_vec()).unwrap())
-}
-
-fn build_test_store(root: &Path) -> std::path::PathBuf {
-    let source_path = root.join("source.db");
-    let output_path = root.join("output");
-    let source = Connection::open(&source_path, false).unwrap();
-    source
-        .exec(
-            "CREATE TABLE range_data_default_6max_100BB (
-               id INTEGER PRIMARY KEY AUTOINCREMENT,
-               concrete_line_id INTEGER NOT NULL,
-               hole_cards TEXT NOT NULL,
-               action_name TEXT NOT NULL,
-               action_size REAL NOT NULL,
-               amount_bb REAL NOT NULL,
-               frequency REAL NOT NULL,
-               hand_ev REAL NULL
-             );
-             CREATE TABLE concrete_lines_default_6max_100BB (
-               id INTEGER PRIMARY KEY,
-               abstract_line TEXT NOT NULL,
-               concrete_line TEXT NOT NULL
-             );
-             CREATE TABLE drill_scenario_lines_default (
-               id INTEGER PRIMARY KEY,
-               drill_name TEXT NOT NULL,
-               abstract_line TEXT NOT NULL,
-               player_count INTEGER NOT NULL,
-               depth INTEGER NOT NULL
-             );
-             INSERT INTO concrete_lines_default_6max_100BB
-               VALUES (1, 'F-F-F', 'F-F-F');
-              INSERT INTO drill_scenario_lines_default
-               VALUES (1, 'rfi', 'F-F-F', 6, 100);
-             INSERT INTO range_data_default_6max_100BB(
-               concrete_line_id, hole_cards, action_name, action_size,
-               amount_bb, frequency, hand_ev
-             ) VALUES
-               (1, 'AA', 'fold', 0, 0, 0.25, NULL),
-               (1, 'AA', 'raise', 2.5, 2.5, 0.75, 1.0),
-               (1, '72o', 'fold', 0, 0, 0.0, NULL);",
-        )
-        .unwrap();
-    drop(source);
-
-    build_store(&BuildOptions {
-        source_db: source_path,
-        out_dir: output_path.clone(),
-        dimensions: vec![DimensionSpec {
-            strategy: "default".to_owned(),
-            player_count: 6,
-            depth_bb: 100,
-        }],
-        max_concrete_lines_per_dimension: None,
-        overwrite: false,
-    })
-    .unwrap();
-    output_path
-}
-
-fn build_empty_store(root: &Path) -> std::path::PathBuf {
-    let output_path = root.join("output-empty");
-    fs::create_dir(&output_path).unwrap();
-    fs::write(
-        output_path.join("manifest.json"),
-        serde_json::to_vec_pretty(&json!({
-            "format": "PFSP",
-            "version": 1,
-            "sourceDbChecksum": "fixture",
-            "builtAt": "2026-06-27T00:00:00Z",
-            "dimensions": [],
-            "files": ["meta.db"]
-        }))
-        .unwrap(),
-    )
-    .unwrap();
-    let meta = Connection::open(&output_path.join("meta.db"), false).unwrap();
-    meta.exec(
-        "CREATE TABLE action_schemas (
-           id INTEGER PRIMARY KEY,
-           action_count INTEGER NOT NULL,
-           action_blob BLOB NOT NULL
-         );
-         CREATE TABLE dimension_action_schemas (
-           strategy TEXT NOT NULL,
-           player_count INTEGER NOT NULL,
-           depth_bb INTEGER NOT NULL,
-           action_schema_id INTEGER NOT NULL
-         );",
-    )
-    .unwrap();
-    output_path
 }

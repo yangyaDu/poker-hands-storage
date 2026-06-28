@@ -14,7 +14,7 @@ The HTTP runtime remains read-only. The same binary also provides an offline
 
 ## Service module layout
 
-`crates/service/src` is organized by business area:
+`service/src` is organized by business area:
 
 - `domain`: action schemas, dimensions, and hole-card parsing.
 - `storage`: manifest, metadata DB, and dynamically loaded SQLite access.
@@ -25,7 +25,7 @@ The HTTP runtime remains read-only. The same binary also provides an offline
 - `scripts`: CLI command parsing and command entry points.
 - `verification`: standalone and source-cross verification reports.
 
-Service integration tests live under `crates/service/tests` and use explicit
+Service integration tests live under `service/tests` and use explicit
 Cargo targets with `<source-file>.test.rs` filenames.
 
 ## Build data

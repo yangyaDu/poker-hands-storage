@@ -1,7 +1,8 @@
 [workspace]
 members = [
-    "crates/range-store-core",
-    "crates/service",
+    "range-store-core",
+    "service",
+    "storage-tools",
 ]
 resolver = "2"
 

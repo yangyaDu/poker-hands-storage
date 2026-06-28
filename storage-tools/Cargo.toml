@@ -1,11 +1,8 @@
 [package]
-name = "range-store-core"
+name = "poker-hands-storage-tools"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
-memmap2 = "0.9"
-
-[dev-dependencies]
-tempfile = "3"
+range-store-core = { path = "../range-store-core" }
