@@ -50,19 +50,96 @@ git config core.hooksPath .githooks
 cargo build --workspace --target x86_64-pc-windows-msvc
 ```
 
-## Workspace 结构
-
-项目为 Cargo workspace，包含三个 crate：
+## 项目结构
 
 ```text
-range-store-core/     共享存储核心：.idx/.bin reader、pack 编解码、
-                      CRC32C、维度命名、手牌解析、action schema、
-                      StoreQueryService。
-
-service/              HTTP API 服务（axum）：serve、healthcheck。
-
-storage-tools/        离线工具集（不依赖 HTTP）：
-                      build、verify、benchmark。
+poker-hands-storage/
+├── Cargo.toml                  # Workspace 根配置（三个 member crate）
+├── Cargo.lock
+├── AGENTS.md                   # AI 编码助手项目指令
+├── rustfmt.toml                # 代码格式化配置
+│
+├── range-store-core/           # 共享存储核心库（无 HTTP 依赖）
+│   ├── src/
+│   │   ├── lib.rs
+│   │   ├── bin_reader.rs       # .bin 文件 mmap reader
+│   │   ├── idx_reader.rs       # .idx 索引文件 reader
+│   │   ├── pack_codec.rs       # Pack 二进制编解码
+│   │   ├── crc32c.rs           # CRC32C 校验
+│   │   ├── dimension.rs        # 维度命名与发现
+│   │   ├── dimension_reader.rs # 单维度 reader（组合 idx + bin）
+│   │   ├── hole_cards.rs       # 手牌解析与归一化
+│   │   ├── action_schema.rs    # Action 类型定义与解码
+│   │   ├── types.rs            # 共享类型定义
+│   │   ├── manifest/           # manifest.json 解析
+│   │   ├── query/              # StoreQueryService 与 LRU handle pool
+│   │   └── sqlite/             # SQLite 动态加载（libloading）
+│   └── tests/                  # 集成测试
+│       ├── domain/             # action_schema / dimension / hole_cards 测试
+│       ├── storage/            # manifest reader / sqlite connection 测试
+│       └── traversal_and_decode.rs  # idx + bin 联合遍历测试
+│
+├── service/                    # HTTP API 服务（axum 0.8）
+│   ├── src/
+│   │   ├── main.rs             # 入口：serve / healthcheck 子命令
+│   │   ├── lib.rs
+│   │   ├── config/             # 环境变量配置加载
+│   │   ├── errors/             # 统一 AppError 错误类型
+│   │   ├── http/               # Axum server 启动、OpenAPI、校验
+│   │   ├── query/              # 查询服务层、维度 handle pool
+│   │   ├── routes/             # HTTP 路由 handler
+│   │   └── storage/            # Manifest reader、metadata DB
+│   └── tests/                  # 集成测试
+│       ├── config/             # 配置解析测试
+│       ├── http/               # 路由测试
+│       └── storage/            # 存储层测试
+│
+├── storage-tools/              # 离线工具集（不依赖 HTTP）
+│   ├── src/
+│   │   ├── main.rs             # CLI 入口（build / verify / benchmark 等）
+│   │   ├── lib.rs
+│   │   ├── errors.rs           # 工具错误类型
+│   │   ├── metadata.rs         # meta.db 元数据写入
+│   │   ├── range_store_builder/  # SQLite → PFSP/PFXI 二进制构建流程
+│   │   ├── verification/       # 数据验证
+│   │   │   ├── standalone/     # 独立验证（不需要源 SQLite）
+│   │   │   ├── cross/          # 源数据交叉验证
+│   │   │   ├── report/         # 验证报告生成（JSON / Markdown）
+│   │   │   ├── float32_precision.rs  # float32 精度比较语义
+│   │   │   └── catalog_checks.rs     # manifest / meta.db 目录检查
+│   │   └── benchmark/          # 性能基准测试
+│   │       ├── hot/            # 热路径（mmap 缓存命中）基准
+│   │       ├── cold/           # 冷启动基准
+│   │       ├── sqlite/         # SQLite 基线基准
+│   │       ├── compare/        # 二进制 vs SQLite 对比报告
+│   │       ├── workload.rs     # 工作负载生成
+│   │       ├── metrics.rs      # QPS / 延迟 / 百分位统计
+│   │       └── report.rs       # 基准报告生成
+│   └── tests/                  # 集成测试
+│       ├── verification/       # 验证逻辑测试
+│       └── benchmark/          # 基准配置解析测试
+│
+├── .docker/                    # 容器化部署
+│   ├── Dockerfile              # 多阶段构建（builder + runtime）
+│   ├── Cargo.service.toml      # Docker 构建专用最小 Cargo.toml
+│   ├── docker-compose.yml      # Compose 编排
+│   └── k8s.yaml                # Kubernetes 部署清单
+│
+├── .githooks/                  # Git Hooks
+│   ├── pre-commit              # 提交前自动运行 fmt + clippy + test
+│   ├── pre-push                # 推送前检查
+│   ├── post-commit
+│   ├── post-checkout
+│   └── post-merge
+│
+├── data/                       # 数据目录（gitignore 排除大文件）
+│   ├── range-strata/           # 完整构建输出（manifest + idx + bin）
+│   ├── smoke/                  # 测试用小数据集
+│   └── sqlite/                 # 源 SQLite 数据库
+│
+├── docs/                       # 项目文档
+├── reports/                    # 验证和基准报告输出
+└── target/                     # Cargo 编译输出
 ```
 
 集成测试位于各 crate 的 `tests/` 目录下，使用显式 Cargo target，
