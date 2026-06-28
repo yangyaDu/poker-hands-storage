@@ -1,43 +1,76 @@
 # poker-hands-storage
 
-Standalone Rust storage and query service for Preflop Storage range data.
+独立的 Rust 存储与查询服务，用于 Preflop Storage range 数据的高性能读取。
 
-V1 follows the current `preflop-storage` Range Strata Binary contract:
+V1 遵循当前 `preflop-storage` Range Strata Binary 契约：
 
-- `manifest.json` with `format = "PFSP"` and `version = 1`
+- `manifest.json`（`format = "PFSP"`，`version = 1`）
 - `meta.db`
 - `ranges_{strategy}_{player_count}max_{depth_bb}BB.idx`
 - `ranges_{strategy}_{player_count}max_{depth_bb}BB.bin`
 
-## Workspace layout
+## 环境准备
 
-The project is a Cargo workspace with three crates:
+| 依赖 | 要求 | 说明 |
+| --- | --- | --- |
+| Rust toolchain | stable（edition 2021） | 安装方式见 [rustup.rs](https://rustup.rs) |
+| 编译目标 | `x86_64-pc-windows-msvc` | `rustup target add x86_64-pc-windows-msvc`；禁止使用 GNU target |
+| SQLite 动态库 | `sqlite3.dll`（64 位） | 仅离线工具（build / verify / benchmark）需要；服务运行时不需要 |
+| Docker（可选） | Docker Desktop 或兼容引擎 | 仅容器化部署时需要 |
 
-```text
-range-store-core/     Shared storage core: .idx/.bin readers, pack codec,
-                      CRC32C, dimension naming, hole-card parsing,
-                      action schema, StoreQueryService.
+> **注意**：项目禁止使用 GNU target（会误用 32 位 dlltool）。所有 `cargo` 命令
+> 均需指定 `--target x86_64-pc-windows-msvc`。
 
-service/              HTTP API service (axum): serve, healthcheck.
-  src/
-    config/           Environment-based service configuration.
-    errors/           Unified AppError type.
-    http/             Axum server setup, OpenAPI, validation.
-    query/            Hand query service and dimension handle pool.
-    routes/           HTTP route handlers.
-    storage/          Manifest reader, metadata DB, dynamic SQLite.
+### SQLite 配置
 
-storage-tools/        Offline toolset (no HTTP dependency).
-  src/
-    benchmark/        Hot/cold/SQLite/compare benchmark runners.
-    range_store_builder/  SQLite source → PFSP/PFXI binary build flow.
-    verification/     Standalone and source-cross verification reports.
+SQLite 通过 `libloading` 动态加载，**不需要** 系统安装或静态链接。
+运行离线工具时，程序会依次查找 `sqlite3.dll` / `libsqlite3.so.0` /
+`libsqlite3.so` / `libsqlite3.dylib`。
+
+如果自动查找失败，通过环境变量显式指定：
+
+```powershell
+$env:PHS_SQLITE3_LIB = "C:\path\to\sqlite3.dll"
 ```
 
-Integration tests live under each crate's `tests/` directory and use explicit
-Cargo targets with `<source-file>.test.rs` filenames.
+> Windows 下建议固定指向已知的 64 位 `sqlite3.dll`，避免系统 `PATH`
+> 中被加载到不兼容的 32 位版本。
 
-## Build data
+## 首次配置
+
+```powershell
+# 1. 克隆项目
+git clone <repo-url>
+cd poker-hands-storage
+
+# 2. 启用 Git Hooks（pre-commit 自动运行 fmt + clippy + test）
+git config core.hooksPath .githooks
+
+# 3. 验证编译
+cargo build --workspace --target x86_64-pc-windows-msvc
+```
+
+## Workspace 结构
+
+项目为 Cargo workspace，包含三个 crate：
+
+```text
+range-store-core/     共享存储核心：.idx/.bin reader、pack 编解码、
+                      CRC32C、维度命名、手牌解析、action schema、
+                      StoreQueryService。
+
+service/              HTTP API 服务（axum）：serve、healthcheck。
+
+storage-tools/        离线工具集（不依赖 HTTP）：
+                      build、verify、benchmark。
+```
+
+集成测试位于各 crate 的 `tests/` 目录下，使用显式 Cargo target，
+文件名格式为 `<source-file>.test.rs`。
+
+## 快速上手
+
+### 构建二进制数据
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
@@ -47,209 +80,48 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build 
   --overwrite
 ```
 
-Repeat `--dimension` to select multiple dimensions. Omit it to build all
-dimensions. `--max-concrete-lines` is intended for smoke fixtures.
-
-## Query smoke test
+### 启动 HTTP 服务
 
 ```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark `
-  --dir data\range-strata `
-  --source data\sqlite\range.db `
-  --iterations 1 --hand-iterations 1
-```
-
-SQLite is loaded dynamically. Set `PHS_SQLITE3_LIB` when it is not available as
-`sqlite3.dll`, `libsqlite3.so.0`, `libsqlite3.so`, or `libsqlite3.dylib`.
-On Windows release-validation runs, prefer pinning `PHS_SQLITE3_LIB` to a known
-64-bit `sqlite3.dll` so the dynamic loader does not pick an incompatible DLL
-from `PATH`.
-
-## Verify Range Strata output
-
-Standalone verification checks `manifest.json`, `meta.db`, `.idx`, `.bin`,
-index-pack cross references, and optional pack CRC32C checksums without reading
-the source SQLite DB.
-
-```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
-  --mode standalone `
-  --dir data\range-strata `
-  --verify-checksum
-```
-
-Cross verification first runs standalone checks, then compares source SQLite
-rows against decoded binary packs using float32 bit-exact frequency and hand EV
-semantics.
-
-```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
-  --mode cross `
-  --dir data\range-strata `
-  --source data\sqlite\range.db `
-  --sample-size 10000 `
-  --verify-checksum
-```
-
-Reports default to `reports/range-strata-verify-standalone.json/.md` and
-`reports/range-strata-verify-cross.json/.md`. Use `--sample-size 0` for a full
-source scan in cross mode.
-
-## Benchmark hot query path
-
-The Rust benchmark command measures the binary query hot path and can verify the
-first 100 generated hand queries against source SQLite action counts.
-
-```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark `
-  --dir data\range-strata `
-  --source data\sqlite\range.db `
-  --verify-results
-```
-
-Useful workload controls:
-
-- `--seed`, `--iterations`, `--hand-iterations`, `--batch-iterations`
-- `--batch-size`, `--batch-sizes 1,5,10,50,100`
-- `--dimension default:6:100` or `--dimension default_6max_100BB`
-- `--workload-mode random|abstract-local`
-- `--workload <workload.json>` to reuse a fixed workload
-- `--write-workload <workload.json>` to write the generated workload for
-  SQLite baseline and compare runs
-
-Reports default to `reports/benchmark-range-strata-binary.json/.md` and include
-QPS, avg, p50, p95, p99, max, error count, result action count, memory
-approximation, workload details, and result verification notes. The command
-exits non-zero when benchmark errors or `--verify-results` mismatches occur.
-
-For release comparison, run the binary benchmark with `--write-workload`, then
-reuse that file with `benchmark-sqlite`, and compare the two JSON reports with
-`benchmark-compare`.
-
-## Run the HTTP service
-
-```powershell
-$env:PHS_DATA_DIR = "data\smoke"
-$env:PHS_META_DB = "data\smoke\meta.db"
+$env:PHS_DATA_DIR = "data\range-strata"
+$env:PHS_META_DB = "data\range-strata\meta.db"
 $env:PHS_PREWARM = "default:6:100"
 cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- serve
 ```
 
-The service exposes:
-
-- `GET /swagger`
-- `GET /api-docs/openapi.json`
-- `GET /health`
-- `GET /ready`
-- `POST /range/hand-strategy`
-- `POST /range/hand-strategy-batch`
-- `POST /range/hands-by-actions`
-- `POST /range/prewarm`
-- `POST /range/concrete-lines`
-- `POST /range/drill-scenarios`
-
-Configuration:
-
-| Variable | Default |
-| --- | --- |
-| `PHS_BIND` | `0.0.0.0:8080` |
-| `PHS_DATA_DIR` | `/data` |
-| `PHS_META_DB` | `${PHS_DATA_DIR}/meta.db` |
-| `PHS_MAX_OPEN_HANDLES` | `3` |
-| `PHS_VERIFY_CHECKSUMS` | `false` |
-| `PHS_PREWARM` | empty |
-| `RUST_LOG` | `info` |
-
-## API documentation and validation
-
-Scalar API Reference is available from the running service:
-
-```text
-http://127.0.0.1:8080/swagger
-```
-
-The raw OpenAPI document is available at:
-
-```text
-http://127.0.0.1:8080/api-docs/openapi.json
-```
-
-Request bodies are validated before query execution. Validation failures use the
-standard JSON error shape:
-
-```json
-{
-  "code": 1000,
-  "data": null,
-  "message": "request validation failed: concrete_line_id must be greater than 0"
-}
-```
-
-## Run with Docker
-
-The default compose setup runs the HTTP service against the checked-in
-`data/range-strata` store. It mounts the data directory as `/data:ro`, enables
-checksum verification, and prewarms `default:6:100`. Override the host data
-directory with `PHS_HOST_DATA_DIR` when validating a different store.
-
-For release validation, Docker is the authoritative Linux build and runtime
-gate. The multi-stage image builds the Rust service inside Linux and then runs
-it with a Debian-based runtime containing `libsqlite3.so.0`. WSL builds are
-useful for faster local Linux debugging or benchmark iteration, but they are
-not required when the Docker image build and container smoke pass.
+### Docker 部署
 
 ```powershell
 docker compose -f .docker/docker-compose.yml up --build
 ```
 
-Health and readiness checks:
+## 环境变量
+
+| 变量 | 默认值 | 说明 |
+| --- | --- | --- |
+| `PHS_BIND` | `0.0.0.0:8080` | 监听地址 |
+| `PHS_DATA_DIR` | `/data` | 数据目录 |
+| `PHS_META_DB` | `${PHS_DATA_DIR}/meta.db` | 元数据数据库路径 |
+| `PHS_MAX_OPEN_HANDLES` | `3` | 最大打开句柄数 |
+| `PHS_VERIFY_CHECKSUMS` | `false` | 启用 CRC32C 校验 |
+| `PHS_PREWARM` | 空 | 启动预热维度 |
+| `PHS_SQLITE3_LIB` | 自动检测 | SQLite 动态库路径 |
+| `RUST_LOG` | `info` | 日志级别 |
+
+## 详细文档
+
+| 文档 | 说明 |
+| --- | --- |
+| [API 业务逻辑和接口契约](docs/api-business-contract.md) | HTTP 路由、请求/响应格式、验证规则、错误码 |
+| [二进制存储方案设计](docs/range-db-binary-storage-design.md) | `.idx/.bin` 文件格式、pack 编码、CRC32C 校验 |
+| [存储架构调研报告](docs/storage-architecture-research.md) | 技术选型、mmap、SQLite 动态加载、性能基准 |
+| [数据一致性验证](docs/data-verification-and-format-validation.md) | standalone / cross 验证流程、报告格式 |
+| [Docker 部署指南](docs/docker-deployment-guide.md) | Dockerfile、compose、容器运行、健康检查 |
+
+## 校验
 
 ```powershell
-Invoke-RestMethod http://127.0.0.1:8080/health
-Invoke-RestMethod http://127.0.0.1:8080/ready
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --target x86_64-pc-windows-msvc
 ```
-
-Query smoke:
-
-```powershell
-$body = @{
-  strategy = "default"
-  player_count = 6
-  depth_bb = 100
-  concrete_line_id = 1
-  hole_cards = "AA"
-} | ConvertTo-Json
-
-Invoke-RestMethod `
-  -Uri http://127.0.0.1:8080/range/hand-strategy `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body $body
-```
-
-For full data, mount a directory containing `manifest.json`, `meta.db`, and the
-matching `.idx/.bin` files to `/data:ro`. The runtime image includes
-`libsqlite3.so.0` for the dynamic SQLite loader.
-
-## Command migration reference
-
-All offline tooling commands have been migrated from `poker-hands-storage-service`
-to `poker-hands-storage-tools`:
-
-| Old command | New command |
-|---|---|
-| `poker-hands-storage-service build` | `poker-hands-storage-tools build` |
-| `poker-hands-storage-service verify` | `poker-hands-storage-tools verify` |
-| `poker-hands-storage-service benchmark` | `poker-hands-storage-tools benchmark` |
-| `poker-hands-storage-service benchmark-sqlite` | `poker-hands-storage-tools benchmark-sqlite` |
-| `poker-hands-storage-service benchmark-compare` | `poker-hands-storage-tools benchmark-compare` |
-| `poker-hands-storage-service benchmark-cold` | `poker-hands-storage-tools benchmark-cold` |
-| `poker-hands-storage-service benchmark-sqlite-cold` | `poker-hands-storage-tools benchmark-sqlite-cold` |
-| `poker-hands-storage-service benchmark-cold-compare` | `poker-hands-storage-tools benchmark-cold-compare` |
-
-The HTTP service commands are unchanged:
-
-| Command | Binary |
-|---|---|
-| `serve` | `poker-hands-storage-service` |
-| `healthcheck` | `poker-hands-storage-service` |
