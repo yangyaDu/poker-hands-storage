@@ -195,6 +195,23 @@ docker compose -f .docker/docker-compose.yml up --build
 | [数据一致性验证](docs/data-verification-and-format-validation.md) | standalone / cross 验证流程、报告格式 |
 | [Docker 部署指南](docs/docker-deployment-guide.md) | Dockerfile、compose、容器运行、健康检查 |
 
+## Agent Skills
+
+本项目内置了 [Agent Skills](https://agentskills.io) 支持，AI 编码助手（Claude Code、
+Gemini 等）可自动加载项目指令，获得编译规则、架构边界、操作流程等上下文。
+
+```text
+.agents/
+├── SKILL.md                  # 全局项目指令（编译规则、架构边界、操作流程）
+└── references/               # 按需加载的详细参考
+    ├── build.md              # 构建二进制数据
+    ├── verify.md             # 数据验证（standalone / cross）
+    ├── benchmark.md          # 性能基准（hot / cold / compare）
+    └── service.md            # HTTP 服务与 Docker 部署
+```
+
+支持 Agent Skills 的客户端会自动发现并使用这些指令，无需额外配置。
+
 ## 校验
 
 ```powershell
