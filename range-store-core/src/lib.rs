@@ -7,6 +7,7 @@ pub mod hole_cards;
 pub mod idx_reader;
 pub mod manifest;
 pub mod pack_codec;
+pub mod query;
 pub mod sqlite;
 pub mod types;
 

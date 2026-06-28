@@ -35,6 +35,14 @@ impl ToolError {
     pub fn verify(message: impl Into<String>) -> Self {
         Self::new("VERIFY_ERROR", message)
     }
+
+    pub fn code(&self) -> &str {
+        self.code
+    }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl fmt::Display for ToolError {
@@ -72,5 +80,17 @@ impl From<NamingError> for ToolError {
 impl From<ManifestError> for ToolError {
     fn from(error: ManifestError) -> Self {
         Self::new("MANIFEST_ERROR", error.to_string())
+    }
+}
+
+impl From<range_store_core::query::StoreQueryError> for ToolError {
+    fn from(error: range_store_core::query::StoreQueryError) -> Self {
+        Self::new("QUERY_ERROR", error.to_string())
+    }
+}
+
+impl From<range_store_core::action_schema::ActionSchemaLoadError> for ToolError {
+    fn from(error: range_store_core::action_schema::ActionSchemaLoadError) -> Self {
+        Self::new("META_DB_ERROR", error.to_string())
     }
 }

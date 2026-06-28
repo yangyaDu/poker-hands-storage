@@ -40,3 +40,39 @@ path = "tests/verification/report/report_totals.test.rs"
 [[test]]
 name = "scripts_verify_store_test"
 path = "tests/verify_store.test.rs"
+
+[[test]]
+name = "scripts_benchmark_test"
+path = "tests/benchmark.test.rs"
+
+[[test]]
+name = "scripts_benchmark_7e_test"
+path = "tests/benchmark_7e.test.rs"
+
+[[test]]
+name = "benchmark_metrics_test"
+path = "tests/benchmark/metrics.test.rs"
+
+[[test]]
+name = "benchmark_workload_test"
+path = "tests/benchmark/workload.test.rs"
+
+[[test]]
+name = "benchmark_report_test"
+path = "tests/benchmark/benchmark_report.test.rs"
+
+[[test]]
+name = "benchmark_result_verifier_test"
+path = "tests/benchmark/result_verifier.test.rs"
+
+[[test]]
+name = "benchmark_hot_runner_test"
+path = "tests/benchmark/hot_runner.test.rs"
+
+[[test]]
+name = "benchmark_sqlite_runner_test"
+path = "tests/benchmark/sqlite_runner.test.rs"
+
+[[test]]
+name = "benchmark_compare_test"
+path = "tests/benchmark/compare.test.rs"

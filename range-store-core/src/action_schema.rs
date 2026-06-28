@@ -117,3 +117,57 @@ impl std::fmt::Display for ActionSchemaError {
 }
 
 impl std::error::Error for ActionSchemaError {}
+
+use std::collections::HashMap;
+use std::path::Path;
+
+use crate::sqlite::{Connection, SqliteError};
+
+/// Load all action schemas from a `meta.db` SQLite file.
+pub fn load_action_schemas(
+    meta_db_path: &Path,
+) -> Result<HashMap<u32, Vec<ActionDef>>, ActionSchemaLoadError> {
+    let connection = Connection::open(meta_db_path, true)?;
+    let mut statement = connection
+        .prepare("SELECT id, action_count, action_blob FROM action_schemas ORDER BY id")?;
+    statement.start(&[])?;
+    let mut schemas = HashMap::new();
+    while statement.step_row()? {
+        let id = statement.column_u32(0)?;
+        let action_count = statement.column_u32(1)?;
+        let action_blob = statement.column_blob(2);
+        let actions = decode_action_blob(&action_blob, action_count)?;
+        schemas.insert(id, actions);
+    }
+    Ok(schemas)
+}
+
+/// Error returned by [`load_action_schemas`].
+#[derive(Debug)]
+pub enum ActionSchemaLoadError {
+    Sqlite(SqliteError),
+    Schema(ActionSchemaError),
+}
+
+impl std::fmt::Display for ActionSchemaLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Sqlite(e) => write!(f, "SQLite error loading action schemas: {e}"),
+            Self::Schema(e) => write!(f, "Action schema decode error: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ActionSchemaLoadError {}
+
+impl From<SqliteError> for ActionSchemaLoadError {
+    fn from(error: SqliteError) -> Self {
+        Self::Sqlite(error)
+    }
+}
+
+impl From<ActionSchemaError> for ActionSchemaLoadError {
+    fn from(error: ActionSchemaError) -> Self {
+        Self::Schema(error)
+    }
+}
