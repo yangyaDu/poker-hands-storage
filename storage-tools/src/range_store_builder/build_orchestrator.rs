@@ -6,8 +6,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use range_store_core::crc32c::crc32c;
 use range_store_core::dimension::{
-    get_bin_file_name, get_drill_scenario_table_name, get_idx_file_name, quote_identifier,
-    DimensionSpec,
+    discover_dimensions, get_bin_file_name, get_drill_scenario_table_name, get_idx_file_name,
+    quote_identifier, DimensionSpec,
 };
 use range_store_core::hole_cards::get_hand_id;
 use range_store_core::manifest::{BuildManifest, ManifestDimension};
@@ -137,55 +137,6 @@ pub fn build_store(options: &BuildOptions) -> Result<BuildSummary, ToolError> {
     Ok(BuildSummary {
         manifest_path,
         dimensions: manifest_dimensions,
-    })
-}
-
-pub fn discover_dimensions(connection: &Connection) -> Result<Vec<DimensionSpec>, ToolError> {
-    let mut statement = connection.prepare(
-        "SELECT name FROM sqlite_master
-         WHERE type = 'table' AND name LIKE 'range_data_%'
-         ORDER BY name",
-    )?;
-    statement.start(&[])?;
-    let mut dimensions = Vec::new();
-    while statement.step_row()? {
-        let name = statement.column_text(0)?;
-        if let Some(dimension) = parse_range_table_name(&name) {
-            let mut exists_statement = connection.prepare(
-                "SELECT EXISTS(
-                    SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?1
-                 )",
-            )?;
-            exists_statement.start(&[Value::from(dimension.concrete_table())])?;
-            let concrete_exists =
-                exists_statement.step_row()? && exists_statement.column_i64(0) != 0;
-            if concrete_exists {
-                dimensions.push(dimension);
-            }
-        }
-    }
-    dimensions.sort_by(|left, right| {
-        left.strategy
-            .cmp(&right.strategy)
-            .then(left.player_count.cmp(&right.player_count))
-            .then(left.depth_bb.cmp(&right.depth_bb))
-    });
-    Ok(dimensions)
-}
-
-fn parse_range_table_name(name: &str) -> Option<DimensionSpec> {
-    let suffix = name.strip_prefix("range_data_")?;
-    let (strategy_and_players, depth_text) = suffix.rsplit_once("max_")?;
-    let depth_bb = depth_text.strip_suffix("BB")?.parse().ok()?;
-    let (strategy, player_count_text) = strategy_and_players.rsplit_once('_')?;
-    let player_count = player_count_text.parse().ok()?;
-    if strategy.is_empty() {
-        return None;
-    }
-    Some(DimensionSpec {
-        strategy: strategy.to_owned(),
-        player_count,
-        depth_bb,
     })
 }
 
