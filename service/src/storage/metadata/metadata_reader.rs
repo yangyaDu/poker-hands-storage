@@ -4,12 +4,12 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::domain::action_schema::{decode_action_blob, ActionDef};
-use crate::domain::dimension::{
-    get_concrete_lines_table_name, get_drill_scenario_table_name, quote_identifier,
-};
 use crate::errors::AppError;
 use crate::storage::sqlite::{Connection, Value};
+use range_store_core::action_schema::{decode_action_blob, ActionDef};
+use range_store_core::dimension::{
+    get_concrete_lines_table_name, get_drill_scenario_table_name, quote_identifier,
+};
 
 #[derive(Debug, Clone)]
 pub struct MetadataReader {

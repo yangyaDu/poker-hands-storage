@@ -4,9 +4,9 @@ use std::sync::{Arc, Mutex};
 
 use range_store_core::DimensionReader;
 
-use crate::domain::dimension::DimensionRef;
 use crate::errors::AppError;
 use crate::storage::manifest::QueryableDimension;
+use range_store_core::dimension::DimensionRef;
 
 #[derive(Debug)]
 pub struct HandlePool {

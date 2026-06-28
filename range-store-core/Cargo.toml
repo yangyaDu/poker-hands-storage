@@ -3,6 +3,7 @@ name = "range-store-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+autotests = false
 
 [dependencies]
 libloading = "0.9"
@@ -12,3 +13,19 @@ serde_json = "1"
 
 [dev-dependencies]
 tempfile = "3"
+
+[[test]]
+name = "traversal_and_decode"
+path = "tests/traversal_and_decode.rs"
+
+[[test]]
+name = "domain_action_schema_test"
+path = "tests/domain/action_schema.test.rs"
+
+[[test]]
+name = "domain_hole_cards_test"
+path = "tests/domain/hole_cards.test.rs"
+
+[[test]]
+name = "domain_dimension_test"
+path = "tests/domain/dimension.test.rs"

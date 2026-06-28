@@ -21,18 +21,6 @@ tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [[test]]
-name = "domain_action_schema_test"
-path = "tests/domain/action_schema.test.rs"
-
-[[test]]
-name = "domain_hole_cards_test"
-path = "tests/domain/hole_cards.test.rs"
-
-[[test]]
-name = "domain_dimension_test"
-path = "tests/domain/dimension.test.rs"
-
-[[test]]
 name = "config_service_config_test"
 path = "tests/config/service_config.test.rs"
 

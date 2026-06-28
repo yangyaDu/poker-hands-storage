@@ -1,10 +1,10 @@
 use std::fmt;
 use std::io;
 
-use crate::domain::action_schema::ActionSchemaError;
-use crate::domain::dimension::NamingError;
-use crate::domain::hole_cards::HandDictError;
 use crate::storage::manifest::ManifestError;
+use range_store_core::action_schema::ActionSchemaError;
+use range_store_core::dimension::NamingError;
+use range_store_core::hole_cards::HandDictError;
 
 #[derive(Debug)]
 pub struct AppError {

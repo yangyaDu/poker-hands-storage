@@ -1,6 +1,4 @@
-use poker_hands_storage_service::domain::action_schema::{
-    decode_action_blob, ActionName, ActionSchemaError,
-};
+use range_store_core::action_schema::{decode_action_blob, ActionName, ActionSchemaError};
 
 fn push_action(bytes: &mut Vec<u8>, action_type: u8, action_size: f32, amount_bb: f32) {
     bytes.push(action_type);

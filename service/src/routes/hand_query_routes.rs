@@ -3,8 +3,6 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::domain::action_schema::ActionName;
-use crate::domain::dimension::DimensionRef;
 use crate::http::blocking_task::run_blocking;
 use crate::http::request_validation::{
     validate_allowed_str, validate_allowed_u32, validate_positive_u32, validate_required_string,
@@ -13,6 +11,8 @@ use crate::http::request_validation::{
 };
 use crate::http::{ApiResponse, AppState, HttpError};
 use crate::query::{ActionFilter, BatchItemResult, HandsByActionsResult, QueryResult};
+use range_store_core::action_schema::ActionName;
+use range_store_core::dimension::DimensionRef;
 
 #[derive(Deserialize, ToSchema)]
 pub struct QueryRequest {

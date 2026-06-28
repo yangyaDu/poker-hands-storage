@@ -2,8 +2,8 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use poker_hands_storage_service::config::ServiceConfig;
-use poker_hands_storage_service::domain::dimension::DimensionRef;
 use poker_hands_storage_service::errors::AppError;
+use range_store_core::dimension::DimensionRef;
 
 fn config_from(values: &[(&str, &str)]) -> Result<ServiceConfig, AppError> {
     let values: HashMap<_, _> = values

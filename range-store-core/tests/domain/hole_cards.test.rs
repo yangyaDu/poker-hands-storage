@@ -1,4 +1,4 @@
-use poker_hands_storage_service::domain::hole_cards::{parse_hole_cards, HandDictError};
+use range_store_core::hole_cards::{parse_hole_cards, HandDictError};
 
 #[test]
 fn parses_existing_169_hand_codes() {

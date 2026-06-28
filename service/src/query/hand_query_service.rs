@@ -5,13 +5,13 @@ use range_store_core::DimensionReader;
 use serde::Serialize;
 use utoipa::ToSchema;
 
-use crate::domain::action_schema::{ActionDef, ActionName};
-use crate::domain::dimension::DimensionRef;
-use crate::domain::hole_cards::{hand_code_from_id, parse_hole_cards, ParsedHand};
 use crate::errors::AppError;
 use crate::query::dimension_handle_pool::HandlePool;
 use crate::storage::manifest::{load_manifest, queryable_dimensions};
 use crate::storage::metadata::{ConcreteLineRow, MetadataReader};
+use range_store_core::action_schema::{ActionDef, ActionName};
+use range_store_core::dimension::DimensionRef;
+use range_store_core::hole_cards::{hand_code_from_id, parse_hole_cards, ParsedHand};
 
 /// Parsed action filter for the hands-by-actions endpoint.
 #[derive(Debug, Clone, PartialEq)]

@@ -3,7 +3,6 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::domain::dimension::DimensionRef;
 use crate::http::blocking_task::run_blocking;
 use crate::http::request_validation::{
     validate_allowed_str, validate_allowed_u32, validate_required_string, ValidateRequest,
@@ -12,6 +11,7 @@ use crate::http::request_validation::{
 };
 use crate::http::{ApiResponse, AppState, HttpError};
 use crate::storage::metadata::ConcreteLineRow;
+use range_store_core::dimension::DimensionRef;
 
 #[derive(Deserialize, ToSchema)]
 pub struct ConcreteLinesRequest {

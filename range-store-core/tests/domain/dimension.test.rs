@@ -1,4 +1,4 @@
-use poker_hands_storage_service::domain::dimension::{
+use range_store_core::dimension::{
     get_bin_file_name, get_concrete_lines_table_name, get_drill_scenario_table_name,
     get_idx_file_name, quote_identifier,
 };

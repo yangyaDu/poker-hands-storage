@@ -2,8 +2,8 @@ use std::env;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
-use crate::domain::dimension::DimensionRef;
 use crate::errors::AppError;
+use range_store_core::dimension::DimensionRef;
 
 const DEFAULT_BIND: &str = "0.0.0.0:8080";
 const DEFAULT_DATA_DIR: &str = "/data";
