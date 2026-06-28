@@ -1,0 +1,109 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: poker-hands-storage
+  labels:
+    app: poker-hands-storage
+data:
+  PHS_BIND: "0.0.0.0:8080"
+  PHS_MAX_OPEN_HANDLES: "3"
+  PHS_VERIFY_CHECKSUMS: "true"
+  PHS_PREWARM: "default:6:100"
+  RUST_LOG: "info"
+
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: poker-hands-storage-data
+  labels:
+    app: poker-hands-storage
+spec:
+  accessModes:
+    - ReadOnlyMany
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: poker-hands-storage
+  labels:
+    app: poker-hands-storage
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: poker-hands-storage
+  template:
+    metadata:
+      labels:
+        app: poker-hands-storage
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+      containers:
+        - name: poker-hands-storage
+          image: poker-hands-storage:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+              protocol: TCP
+              name: http
+          envFrom:
+            - configMapRef:
+                name: poker-hands-storage
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 30
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          volumeMounts:
+            - name: data
+              mountPath: /data
+              readOnly: true
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: poker-hands-storage-data
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: poker-hands-storage
+  labels:
+    app: poker-hands-storage
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+      protocol: TCP
+  selector:
+    app: poker-hands-storage

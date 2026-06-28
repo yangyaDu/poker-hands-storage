@@ -1,0 +1,39 @@
+[package]
+name = "range-store-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autotests = false
+
+[dependencies]
+libloading = "0.9"
+memmap2 = "0.9"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[dev-dependencies]
+tempfile = "3"
+
+[[test]]
+name = "traversal_and_decode"
+path = "tests/traversal_and_decode.rs"
+
+[[test]]
+name = "domain_action_schema_test"
+path = "tests/domain/action_schema.test.rs"
+
+[[test]]
+name = "domain_hole_cards_test"
+path = "tests/domain/hole_cards.test.rs"
+
+[[test]]
+name = "domain_dimension_test"
+path = "tests/domain/dimension.test.rs"
+
+[[test]]
+name = "storage_manifest_reader_test"
+path = "tests/storage/manifest/manifest_reader.test.rs"
+
+[[test]]
+name = "storage_sqlite_connection_test"
+path = "tests/storage/sqlite/sqlite_connection.test.rs"

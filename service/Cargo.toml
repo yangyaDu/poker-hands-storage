@@ -1,0 +1,28 @@
+[package]
+name = "poker-hands-storage-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+autotests = false
+
+[dependencies]
+axum = "0.8"
+range-store-core = { path = "../range-store-core" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+utoipa = { version = "5.5.0", features = ["axum_extras"] }
+
+[dev-dependencies]
+tempfile = "3"
+tower = { version = "0.5", features = ["util"] }
+
+[[test]]
+name = "config_service_config_test"
+path = "tests/config/service_config.test.rs"
+
+[[test]]
+name = "http_router_test"
+path = "tests/http/router.test.rs"

@@ -21,3 +21,6 @@ data/sqlite/*.shm
 # Environment
 .env
 .env.local
+
+nul
+.brooks-lint-history.json

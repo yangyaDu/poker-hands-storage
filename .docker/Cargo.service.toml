@@ -2,7 +2,6 @@
 members = [
     "range-store-core",
     "service",
-    "storage-tools",
 ]
 resolver = "2"
 
