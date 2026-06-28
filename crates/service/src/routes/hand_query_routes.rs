@@ -5,6 +5,7 @@ use utoipa::ToSchema;
 
 use crate::domain::action_schema::ActionName;
 use crate::domain::dimension::DimensionRef;
+use crate::http::blocking_task::run_blocking;
 use crate::http::request_validation::{
     validate_allowed_str, validate_allowed_u32, validate_positive_u32, validate_required_string,
     ValidateRequest, ValidatedJson, ValidationErrorDetails, ALLOWED_DEPTH_BB,
@@ -12,8 +13,6 @@ use crate::http::request_validation::{
 };
 use crate::http::{ApiResponse, AppState, HttpError};
 use crate::query::{ActionFilter, BatchItemResult, HandsByActionsResult, QueryResult};
-
-use super::run_blocking;
 
 #[derive(Deserialize, ToSchema)]
 pub struct QueryRequest {

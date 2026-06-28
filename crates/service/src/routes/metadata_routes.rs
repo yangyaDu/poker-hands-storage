@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use crate::domain::dimension::DimensionRef;
+use crate::http::blocking_task::run_blocking;
 use crate::http::request_validation::{
     validate_allowed_str, validate_allowed_u32, validate_required_string, ValidateRequest,
     ValidatedJson, ValidationErrorDetails, ALLOWED_DEPTH_BB, ALLOWED_PLAYER_COUNTS,
@@ -11,8 +12,6 @@ use crate::http::request_validation::{
 };
 use crate::http::{ApiResponse, AppState, HttpError};
 use crate::storage::metadata::ConcreteLineRow;
-
-use super::run_blocking;
 
 #[derive(Deserialize, ToSchema)]
 pub struct ConcreteLinesRequest {
