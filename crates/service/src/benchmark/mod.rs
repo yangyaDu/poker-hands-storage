@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod cold;
 pub mod compare;
 pub mod hot;

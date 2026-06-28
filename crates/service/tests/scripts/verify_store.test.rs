@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use poker_hands_storage_service::scripts::verify_store::parse_verify_args;
+use poker_hands_storage_service::verification::cli::parse_verify_args;
 use poker_hands_storage_service::verification::report::VerifyMode;
 
 #[test]

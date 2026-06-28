@@ -1,11 +1,12 @@
 use std::path::PathBuf;
 
 use poker_hands_storage_service::benchmark::cold::types::ColdStartMode;
+use poker_hands_storage_service::benchmark::cold::{
+    parse_benchmark_cold_compare_args, parse_benchmark_sqlite_cold_args,
+};
+use poker_hands_storage_service::benchmark::compare::parse_benchmark_compare_args;
+use poker_hands_storage_service::benchmark::sqlite::parse_benchmark_sqlite_args;
 use poker_hands_storage_service::benchmark::types::WorkloadMode;
-use poker_hands_storage_service::scripts::benchmark_cold_compare::parse_benchmark_cold_compare_args;
-use poker_hands_storage_service::scripts::benchmark_compare::parse_benchmark_compare_args;
-use poker_hands_storage_service::scripts::benchmark_sqlite::parse_benchmark_sqlite_args;
-use poker_hands_storage_service::scripts::benchmark_sqlite_cold::parse_benchmark_sqlite_cold_args;
 
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()

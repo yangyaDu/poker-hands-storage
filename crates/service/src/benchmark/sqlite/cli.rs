@@ -1,9 +1,10 @@
 use std::path::PathBuf;
 
-use crate::benchmark::sqlite::types::BenchmarkSqliteCommand;
+use crate::benchmark::cli::{next_value, parse_requested_dimension, parse_usize, parse_usize_list};
 use crate::benchmark::types::{normalize_batch_sizes, WorkloadMode};
 use crate::errors::AppError;
-use crate::scripts::benchmark::parse_requested_dimension;
+
+use super::types::BenchmarkSqliteCommand;
 
 pub fn parse_benchmark_sqlite_args(args: Vec<String>) -> Result<BenchmarkSqliteCommand, AppError> {
     let mut source = None;
@@ -28,7 +29,11 @@ pub fn parse_benchmark_sqlite_args(args: Vec<String>) -> Result<BenchmarkSqliteC
             "--out" => out_path = PathBuf::from(next_value(&args, &mut index)?),
             "--md" => md_path = PathBuf::from(next_value(&args, &mut index)?),
             "--workload" => workload_path = Some(PathBuf::from(next_value(&args, &mut index)?)),
-            "--seed" => seed = parse_u64("--seed", next_value(&args, &mut index)?)?,
+            "--seed" => {
+                seed = next_value(&args, &mut index)?
+                    .parse()
+                    .map_err(|_| AppError::invalid_argument("--seed must be an integer"))?
+            }
             "--iterations" => {
                 iterations = parse_usize("--iterations", next_value(&args, &mut index)?)?
             }
@@ -91,40 +96,4 @@ pub fn parse_benchmark_sqlite_args(args: Vec<String>) -> Result<BenchmarkSqliteC
         workload_mode,
         warmup_iterations,
     })
-}
-
-fn parse_usize(name: &str, value: &str) -> Result<usize, AppError> {
-    value
-        .parse()
-        .map_err(|_| AppError::invalid_argument(format!("{name} must be an integer")))
-}
-
-fn parse_u64(name: &str, value: &str) -> Result<u64, AppError> {
-    value
-        .parse()
-        .map_err(|_| AppError::invalid_argument(format!("{name} must be an integer")))
-}
-
-fn parse_usize_list(name: &str, value: &str) -> Result<Vec<usize>, AppError> {
-    let mut parsed = Vec::new();
-    for part in value.split(',') {
-        let part = part.trim();
-        if part.is_empty() {
-            continue;
-        }
-        parsed.push(parse_usize(name, part)?.max(1));
-    }
-    if parsed.is_empty() {
-        return Err(AppError::invalid_argument(format!(
-            "{name} must contain at least one integer"
-        )));
-    }
-    Ok(parsed)
-}
-
-fn next_value<'a>(args: &'a [String], index: &mut usize) -> Result<&'a str, AppError> {
-    *index += 1;
-    args.get(*index)
-        .map(String::as_str)
-        .ok_or_else(|| AppError::invalid_argument("Missing option value"))
 }

@@ -2,12 +2,18 @@ use std::env;
 use std::path::PathBuf;
 
 use poker_hands_storage_service::benchmark::cold::{
+    parse_benchmark_cold_args, parse_benchmark_cold_compare_args, parse_benchmark_sqlite_cold_args,
     run_cold_start_compare, run_sqlite_cold_benchmark,
 };
-use poker_hands_storage_service::benchmark::compare::run_benchmark_compare;
+use poker_hands_storage_service::benchmark::compare::{
+    parse_benchmark_compare_args, run_benchmark_compare,
+};
+use poker_hands_storage_service::benchmark::hot::parse_benchmark_args;
 use poker_hands_storage_service::benchmark::run_cold_benchmark;
 use poker_hands_storage_service::benchmark::run_hot_benchmark;
-use poker_hands_storage_service::benchmark::sqlite::run_sqlite_benchmark;
+use poker_hands_storage_service::benchmark::sqlite::{
+    parse_benchmark_sqlite_args, run_sqlite_benchmark,
+};
 use poker_hands_storage_service::config::ServiceConfig;
 use poker_hands_storage_service::domain::dimension::DimensionRef;
 use poker_hands_storage_service::errors::AppError;
@@ -17,13 +23,7 @@ use poker_hands_storage_service::http::healthcheck::{
 };
 use poker_hands_storage_service::query::QueryService;
 use poker_hands_storage_service::range_store_builder::{build_store, BuildOptions, DimensionSpec};
-use poker_hands_storage_service::scripts::benchmark::parse_benchmark_args;
-use poker_hands_storage_service::scripts::benchmark_cold::parse_benchmark_cold_args;
-use poker_hands_storage_service::scripts::benchmark_cold_compare::parse_benchmark_cold_compare_args;
-use poker_hands_storage_service::scripts::benchmark_compare::parse_benchmark_compare_args;
-use poker_hands_storage_service::scripts::benchmark_sqlite::parse_benchmark_sqlite_args;
-use poker_hands_storage_service::scripts::benchmark_sqlite_cold::parse_benchmark_sqlite_cold_args;
-use poker_hands_storage_service::scripts::verify_store::parse_verify_args;
+use poker_hands_storage_service::verification::cli::parse_verify_args;
 use poker_hands_storage_service::verification::cross::{run_cross_verify, CrossVerifyOptions};
 use poker_hands_storage_service::verification::report::{RangeStrataVerifyReport, VerifyMode};
 use poker_hands_storage_service::verification::standalone::{

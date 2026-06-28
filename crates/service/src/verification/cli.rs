@@ -1,7 +1,8 @@
 use std::path::PathBuf;
 
 use crate::errors::AppError;
-use crate::verification::report::VerifyMode;
+
+use super::report::VerifyMode;
 
 #[derive(Debug, Clone)]
 pub struct VerifyCommand {

@@ -6,6 +6,5 @@ pub mod http;
 pub mod query;
 pub mod range_store_builder;
 pub mod routes;
-pub mod scripts;
 pub mod storage;
 pub mod verification;

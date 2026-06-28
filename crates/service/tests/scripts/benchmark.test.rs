@@ -1,9 +1,8 @@
 use std::path::PathBuf;
 
+use poker_hands_storage_service::benchmark::cli::parse_requested_dimension;
+use poker_hands_storage_service::benchmark::hot::parse_benchmark_args;
 use poker_hands_storage_service::benchmark::types::WorkloadMode;
-use poker_hands_storage_service::scripts::benchmark::{
-    parse_benchmark_args, parse_requested_dimension,
-};
 
 fn args(values: &[&str]) -> Vec<String> {
     values.iter().map(|value| (*value).to_owned()).collect()

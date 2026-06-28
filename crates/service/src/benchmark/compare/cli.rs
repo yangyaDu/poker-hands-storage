@@ -1,15 +1,17 @@
 use std::path::PathBuf;
 
-use crate::benchmark::cold::types::BenchmarkColdCompareCommand;
+use crate::benchmark::cli::next_value;
 use crate::errors::AppError;
 
-pub fn parse_benchmark_cold_compare_args(
+use super::types::BenchmarkCompareCommand;
+
+pub fn parse_benchmark_compare_args(
     args: Vec<String>,
-) -> Result<BenchmarkColdCompareCommand, AppError> {
+) -> Result<BenchmarkCompareCommand, AppError> {
     let mut binary_report = None;
     let mut sqlite_report = None;
-    let mut out_path = PathBuf::from("reports/benchmark-cold-compare.json");
-    let mut md_path = PathBuf::from("reports/benchmark-cold-compare.md");
+    let mut out_path = PathBuf::from("reports/benchmark-compare.json");
+    let mut md_path = PathBuf::from("reports/benchmark-compare.md");
     let mut allow_mismatch = false;
 
     let mut index = 0;
@@ -22,14 +24,14 @@ pub fn parse_benchmark_cold_compare_args(
             "--allow-mismatch" => allow_mismatch = true,
             option => {
                 return Err(AppError::invalid_argument(format!(
-                    "Unknown benchmark-cold-compare option: {option}"
+                    "Unknown benchmark-compare option: {option}"
                 )))
             }
         }
         index += 1;
     }
 
-    Ok(BenchmarkColdCompareCommand {
+    Ok(BenchmarkCompareCommand {
         binary_report: binary_report
             .ok_or_else(|| AppError::invalid_argument("--binary is required"))?,
         sqlite_report: sqlite_report
@@ -38,11 +40,4 @@ pub fn parse_benchmark_cold_compare_args(
         md_path,
         allow_mismatch,
     })
-}
-
-fn next_value<'a>(args: &'a [String], index: &mut usize) -> Result<&'a str, AppError> {
-    *index += 1;
-    args.get(*index)
-        .map(String::as_str)
-        .ok_or_else(|| AppError::invalid_argument("Missing option value"))
 }
