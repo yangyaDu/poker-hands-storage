@@ -61,7 +61,14 @@ git config core.hooksPath .githooks
 
 ## 操作流程
 
-详细命令参数见 `references/commands.md`。
+各操作的详细命令和参数见 `references/` 下对应文件：
+
+| 操作 | 参考文件 |
+|---|---|
+| 构建二进制数据 | `references/build.md` |
+| 数据验证 | `references/verify.md` |
+| 性能基准测试 | `references/benchmark.md` |
+| HTTP 服务与 Docker | `references/service.md` |
 
 ### 构建二进制数据
 
