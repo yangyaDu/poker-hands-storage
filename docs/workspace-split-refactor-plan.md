@@ -459,7 +459,7 @@ cargo test --workspace --target x86_64-pc-windows-msvc
 - verify 报告 JSON/Markdown shape 不变。
 - `storage-tools` 不依赖 `service`。
 
-## Phase 7：迁移 benchmark 和对比分析到 storage-tools
+## Phase 7：迁移 benchmark 和对比分析到 storage-tools ✅
 
 目的：把 hot benchmark、SQLite benchmark、compare、cold-start compare 全部移出 API 服务。
 
