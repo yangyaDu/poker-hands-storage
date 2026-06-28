@@ -6,6 +6,8 @@ license.workspace = true
 autotests = false
 
 [dependencies]
+arrayvec = "0.7"
+crc32c = "0.6"
 libloading = "0.9"
 memmap2 = "0.9"
 serde = { version = "1", features = ["derive"] }

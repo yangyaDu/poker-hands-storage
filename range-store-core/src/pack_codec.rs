@@ -10,6 +10,8 @@
 //!
 //! Total pack size = hand_count * (5 + action_count * 8) bytes.
 
+use arrayvec::ArrayVec;
+
 use crate::types::{DecodedCellResult, DecodedPack, DecodedPackCell};
 
 /// Compute the total byte length of a range pack.
@@ -34,25 +36,25 @@ pub fn decode_pack_for_hand(
     hand_count: u16,
     action_count: u16,
     target_hand_id: u8,
-) -> Vec<DecodedCellResult> {
+) -> ArrayVec<DecodedCellResult, 32> {
     let hand_count = hand_count as usize;
     let action_count_u = action_count as usize;
 
     // Validate pack length
     let expected_len = hand_count * (5 + action_count_u * 8);
     if pack.len() != expected_len {
-        return Vec::new();
+        return ArrayVec::new();
     }
 
     if action_count_u == 0 {
-        return Vec::new();
+        return ArrayVec::new();
     }
 
     // Step 1: binary search hand_id in the hand_ids segment (sorted ascending)
     let hand_ids = &pack[0..hand_count];
     let hand_idx = match binary_search_u8(hand_ids, target_hand_id) {
         Some(idx) => idx,
-        None => return Vec::new(),
+        None => return ArrayVec::new(),
     };
 
     // Step 2: read action_mask for this hand
@@ -68,7 +70,7 @@ pub fn decode_pack_for_hand(
     let cell_data = &pack[cell_offset..cell_offset + floats_per_hand * 4];
 
     // Decode cells — only emit cells where mask bit is 1
-    let mut result = Vec::with_capacity(action_count_u);
+    let mut result = ArrayVec::new();
     for action_id in 0..action_count_u {
         if (mask >> action_id) & 1 == 0 {
             continue;

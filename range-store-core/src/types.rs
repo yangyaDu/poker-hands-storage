@@ -2,6 +2,8 @@
 //!
 //! All integers are little-endian as stored on disk.
 
+use arrayvec::ArrayVec;
+
 // ── .idx file constants ──
 
 pub const IDX_MAGIC: &[u8; 4] = b"PFXI";
@@ -75,7 +77,7 @@ pub struct DecodedPack {
 #[derive(Debug, Clone)]
 pub struct PackDecodeResult {
     pub action_schema_id: u32,
-    pub cells: Vec<DecodedCellResult>,
+    pub cells: ArrayVec<DecodedCellResult, 32>,
 }
 
 /// A single request in a batch query.

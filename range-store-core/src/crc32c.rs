@@ -1,40 +1,8 @@
-/// CRC32C (Castagnoli) lookup table — computed at compile time.
-///
-/// Polynomial: 0x82F63B78 (Castagnoli, used by iSCSI / SCTP / SSE4.2)
-///
-/// Standard test vector: `"123456789"` → `0xE3069283`
-const CRC32C_TABLE: [u32; 256] = {
-    let mut table = [0u32; 256];
-    let poly: u32 = 0x82F63B78;
-    let mut i = 0u32;
-    while i < 256 {
-        let mut crc = i;
-        let mut bit = 0;
-        while bit < 8 {
-            crc = if (crc & 1) != 0 {
-                poly ^ (crc >> 1)
-            } else {
-                crc >> 1
-            };
-            bit += 1;
-        }
-        table[i as usize] = crc;
-        i += 1;
-    }
-    table
-};
-
-/// Compute CRC32C checksum over `data`.
-///
-/// Returns the 32-bit unsigned checksum (matches JS crc32c implementation).
+/// Compute CRC32C checksum over `data` using hardware-accelerated instructions
+/// (SSE4.2 on x86, ARM CRC on aarch64) with automatic software fallback.
 #[inline]
 pub fn crc32c(data: &[u8]) -> u32 {
-    let mut crc: u32 = 0xFFFF_FFFF;
-    for &byte in data {
-        let idx = ((crc ^ byte as u32) & 0xFF) as usize;
-        crc = CRC32C_TABLE[idx] ^ (crc >> 8);
-    }
-    crc ^ 0xFFFF_FFFF
+    crc32c::crc32c(data)
 }
 
 /// Verify that data's CRC32C matches the expected checksum.
@@ -59,7 +27,6 @@ mod tests {
 
     #[test]
     fn test_empty() {
-        // CRC32C of empty data with initial 0xFFFFFFFF → final XOR
         assert_eq!(crc32c(b""), 0x0000_0000);
     }
 
