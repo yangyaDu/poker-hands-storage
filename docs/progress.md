@@ -1,6 +1,6 @@
 # Poker Hands Storage 实施进度
 
-更新时间：2026-06-26
+更新时间：2026-06-28
 
 ## 当前状态
 
@@ -14,45 +14,52 @@
 | Phase 4 HTTP | 完成 | axum 0.8、七个路由、JSON 错误、预热、graceful shutdown 已实现 |
 | Phase 5 容器化 | 完成 | multi-stage Dockerfile、compose、只读 volume、healthcheck、启动预热配置和容器 smoke 已通过 |
 | Phase 6 完整验收 | 完成 | 真实进程 HTTP smoke、全量 9 维度构建、API 契约化、Rust verifier、hot/sqlite/compare/cold benchmark 正式报告、Docker 全量容器验收均已通过 |
+| Workspace 重构 Phase 0-9 | 完成 | 三 crate 拆分完成，service 纯 API，storage-tools 负责全部离线工具，range-store-core 提供共享核心 |
 
-## 已实现模块
+## Workspace 结构
 
 ```text
-range-store-core/src/
-  idx_reader.rs
-  bin_reader.rs
-  pack_codec.rs
-  crc32c.rs
-  types.rs
-  dimension_reader.rs
+range-store-core/
+  src/
+    idx_reader.rs         .idx mmap reader
+    bin_reader.rs         .bin mmap reader
+    pack_codec.rs         Pack encoder/decoder
+    crc32c.rs             CRC32C checksum
+    types.rs              Shared types
+    dimension_reader.rs   Dimension-level reader
+    dimension.rs          Dimension naming, DimensionRef
+    hole_cards.rs         Hole-card parsing and dictionary
+    action_schema.rs      Action schema codec, load_action_schemas
+    sqlite.rs             Dynamic SQLite connection
+    query/                StoreQueryService, HandlePool (core query, no HTTP)
 
-service/src/
-  config/
-  domain/
-  errors/
-  http/
-  query/
-  range_store_builder/
-  benchmark/
-  routes/
-    health_routes.rs
-    hand_query_routes.rs
-    metadata_routes.rs
-  scripts/
-  storage/
-  verification/
-    catalog_checks.rs
-    float32_precision.rs
-    cross/
-    report/
-    standalone/
-  main.rs
+service/
+  src/
+    config/               Environment-based service configuration
+    errors/               Unified AppError type
+    http/                 Axum server setup, OpenAPI, validation
+    query/                HTTP-aware QueryService and handle pool
+    routes/               HTTP route handlers
+    storage/              Manifest reader, metadata DB
+
+storage-tools/
+  src/
+    benchmark/            Hot/cold/SQLite/compare benchmark runners
+      hot/                Hot-path benchmark runner
+      cold/               Cold-start benchmark runner and workers
+      sqlite/             SQLite baseline benchmark runner
+      compare/            Binary vs SQLite comparison
+    range_store_builder/  SQLite source → PFSP/PFXI binary build flow
+    verification/         Standalone and source-cross verification reports
+      standalone/         Standalone verification
+      cross/              Source-cross verification
+      report/             Report generation
 ```
 
 ## 构建命令
 
 ```text
-poker-hands-storage-service build
+poker-hands-storage-tools build
   --source-db <range.db>
   --out-dir <output>
   [--dimension default:6:100]
@@ -156,10 +163,6 @@ poker-hands-storage-service build
 - 全量 9 个维度数据已构建并通过上游 standalone verifier；Rust standalone/cross verifier
   正式报告已刷新；hot/sqlite/compare/cold benchmark 正式报告已刷新；Docker 全量容器验收
   已通过。
-- Phase 8 已完成本机 smoke：workspace test gate 通过；standalone verifier 覆盖
-  `data/range-strata` 9 个维度；binary/sqlite/compare/cold smoke 报告已刷新到
-  `reports/*phase8-smoke*`；全量 Docker 容器挂载验收已通过；正式 release 报告已刷新。
-  full cross verifier 仍是发布候选前的可选加严项，当前 release gate 使用 sampled cross。
 - 容器 smoke 已使用 `data/smoke` 和全量 `data/range-strata` 验证；如果 Docker 配置
   或 runtime 镜像后续变更，需要重新跑全量容器验收。
 

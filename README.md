@@ -9,29 +9,38 @@ V1 follows the current `preflop-storage` Range Strata Binary contract:
 - `ranges_{strategy}_{player_count}max_{depth_bb}BB.idx`
 - `ranges_{strategy}_{player_count}max_{depth_bb}BB.bin`
 
-The HTTP runtime remains read-only. The same binary also provides an offline
-`build` command that converts the legacy SQLite range DB into the V1 files.
+## Workspace layout
 
-## Service module layout
+The project is a Cargo workspace with three crates:
 
-`service/src` is organized by business area:
+```text
+range-store-core/     Shared storage core: .idx/.bin readers, pack codec,
+                      CRC32C, dimension naming, hole-card parsing,
+                      action schema, StoreQueryService.
 
-- `domain`: action schemas, dimensions, and hole-card parsing.
-- `storage`: manifest, metadata DB, and dynamically loaded SQLite access.
-- `range_store_builder`: SQLite source to PFSP/PFXI binary store build flow.
-- `query`: hand query service and dimension handle pool.
-- `benchmark`: hot-path benchmark workload generation, metrics, reports, and result checks.
-- `http` and `routes`: Axum server setup, OpenAPI, validation, and handlers.
-- `scripts`: CLI command parsing and command entry points.
-- `verification`: standalone and source-cross verification reports.
+service/              HTTP API service (axum): serve, healthcheck.
+  src/
+    config/           Environment-based service configuration.
+    errors/           Unified AppError type.
+    http/             Axum server setup, OpenAPI, validation.
+    query/            Hand query service and dimension handle pool.
+    routes/           HTTP route handlers.
+    storage/          Manifest reader, metadata DB, dynamic SQLite.
 
-Service integration tests live under `service/tests` and use explicit
+storage-tools/        Offline toolset (no HTTP dependency).
+  src/
+    benchmark/        Hot/cold/SQLite/compare benchmark runners.
+    range_store_builder/  SQLite source → PFSP/PFXI binary build flow.
+    verification/     Standalone and source-cross verification reports.
+```
+
+Integration tests live under each crate's `tests/` directory and use explicit
 Cargo targets with `<source-file>.test.rs` filenames.
 
 ## Build data
 
 ```powershell
-cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- build `
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
   --source-db C:\path\to\range.db `
   --out-dir data\range-strata `
   --dimension default:6:100 `
@@ -44,13 +53,10 @@ dimensions. `--max-concrete-lines` is intended for smoke fixtures.
 ## Query smoke test
 
 ```powershell
-cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- query `
-  --data-dir data\range-strata `
-  --player-count 6 `
-  --depth-bb 100 `
-  --concrete-line-id 1 `
-  --hole-cards AA `
-  --verify-checksum
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --iterations 1 --hand-iterations 1
 ```
 
 SQLite is loaded dynamically. Set `PHS_SQLITE3_LIB` when it is not available as
@@ -66,7 +72,7 @@ index-pack cross references, and optional pack CRC32C checksums without reading
 the source SQLite DB.
 
 ```powershell
-cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- verify `
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
   --mode standalone `
   --dir data\range-strata `
   --verify-checksum
@@ -77,7 +83,7 @@ rows against decoded binary packs using float32 bit-exact frequency and hand EV
 semantics.
 
 ```powershell
-cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- verify `
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
   --mode cross `
   --dir data\range-strata `
   --source data\sqlite\range.db `
@@ -95,7 +101,7 @@ The Rust benchmark command measures the binary query hot path and can verify the
 first 100 generated hand queries against source SQLite action counts.
 
 ```powershell
-cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- benchmark `
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark `
   --dir data\range-strata `
   --source data\sqlite\range.db `
   --verify-results
@@ -224,3 +230,26 @@ Invoke-RestMethod `
 For full data, mount a directory containing `manifest.json`, `meta.db`, and the
 matching `.idx/.bin` files to `/data:ro`. The runtime image includes
 `libsqlite3.so.0` for the dynamic SQLite loader.
+
+## Command migration reference
+
+All offline tooling commands have been migrated from `poker-hands-storage-service`
+to `poker-hands-storage-tools`:
+
+| Old command | New command |
+|---|---|
+| `poker-hands-storage-service build` | `poker-hands-storage-tools build` |
+| `poker-hands-storage-service verify` | `poker-hands-storage-tools verify` |
+| `poker-hands-storage-service benchmark` | `poker-hands-storage-tools benchmark` |
+| `poker-hands-storage-service benchmark-sqlite` | `poker-hands-storage-tools benchmark-sqlite` |
+| `poker-hands-storage-service benchmark-compare` | `poker-hands-storage-tools benchmark-compare` |
+| `poker-hands-storage-service benchmark-cold` | `poker-hands-storage-tools benchmark-cold` |
+| `poker-hands-storage-service benchmark-sqlite-cold` | `poker-hands-storage-tools benchmark-sqlite-cold` |
+| `poker-hands-storage-service benchmark-cold-compare` | `poker-hands-storage-tools benchmark-cold-compare` |
+
+The HTTP service commands are unchanged:
+
+| Command | Binary |
+|---|---|
+| `serve` | `poker-hands-storage-service` |
+| `healthcheck` | `poker-hands-storage-service` |

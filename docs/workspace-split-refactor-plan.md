@@ -561,7 +561,7 @@ docker compose -f .docker\docker-compose.yml up --build -d
 - Docker 只构建和运行 `service`。
 - `/ready` 正常。
 
-## Phase 9：文档和命令入口收尾
+## Phase 9：文档和命令入口收尾 ✅
 
 目的：让 README、progress、Docker 文档和 benchmark 文档全部匹配新结构。
 
