@@ -379,7 +379,6 @@ name = "poker-hands-storage-service"
 version = "0.1.0"
 dependencies = [
  "axum",
- "poker-hands-storage-tools",
  "range-store-core",
  "serde",
  "serde_json",

@@ -29,3 +29,11 @@ path = "tests/domain/hole_cards.test.rs"
 [[test]]
 name = "domain_dimension_test"
 path = "tests/domain/dimension.test.rs"
+
+[[test]]
+name = "storage_manifest_reader_test"
+path = "tests/storage/manifest/manifest_reader.test.rs"
+
+[[test]]
+name = "storage_sqlite_connection_test"
+path = "tests/storage/sqlite/sqlite_connection.test.rs"

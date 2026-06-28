@@ -4,12 +4,12 @@ ARG RUNTIME_IMAGE=gcr.io/distroless/base-debian12
 FROM ${RUST_IMAGE} AS builder
 WORKDIR /app
 
-COPY Cargo.toml Cargo.lock ./
+COPY .docker/Cargo.service.toml ./Cargo.toml
+COPY Cargo.lock ./
 COPY range-store-core ./range-store-core
 COPY service ./service
-COPY storage-tools ./storage-tools
 
-RUN cargo build --release -p poker-hands-storage-service
+RUN cargo build --release --locked -p poker-hands-storage-service
 
 # Extract runtime dependencies from a temp debian container
 FROM ${RUST_IMAGE} AS deps-extractor

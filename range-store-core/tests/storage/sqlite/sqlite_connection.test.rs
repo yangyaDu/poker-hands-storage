@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use poker_hands_storage_service::storage::sqlite::{Connection, Value};
+use range_store_core::sqlite::{Connection, Value};
 
 #[test]
 fn opens_in_memory_database() {

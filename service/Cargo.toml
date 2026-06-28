@@ -16,21 +16,12 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 utoipa = { version = "5.5.0", features = ["axum_extras"] }
 
 [dev-dependencies]
-poker-hands-storage-tools = { path = "../storage-tools" }
 tempfile = "3"
 tower = { version = "0.5", features = ["util"] }
 
 [[test]]
 name = "config_service_config_test"
 path = "tests/config/service_config.test.rs"
-
-[[test]]
-name = "storage_manifest_reader_test"
-path = "tests/storage/manifest/manifest_reader.test.rs"
-
-[[test]]
-name = "storage_sqlite_connection_test"
-path = "tests/storage/sqlite/sqlite_connection.test.rs"
 
 [[test]]
 name = "http_router_test"

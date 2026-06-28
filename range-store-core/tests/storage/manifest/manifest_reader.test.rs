@@ -1,6 +1,4 @@
-use poker_hands_storage_service::storage::manifest::{
-    parse_manifest, queryable_dimensions, ManifestError,
-};
+use range_store_core::manifest::{parse_manifest, queryable_dimensions, ManifestError};
 
 const MANIFEST: &str = r#"
 {
