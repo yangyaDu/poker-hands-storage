@@ -511,7 +511,7 @@ impl QueryService {
         let filters = action_filters.unwrap_or_default();
         let frequency_filter = FrequencyFilter::from_request(frequency);
         let actions_text = format_action_filters(&filters);
-        let required_action_groups = resolve_action_filter_groups(
+        let required_group_masks = resolve_action_filter_bitmasks(
             action_schema,
             &filters,
             &actions_text,
@@ -520,36 +520,32 @@ impl QueryService {
             concrete_line_id,
         )?;
 
-        // Map each hand to actions that survive the action and frequency filters.
-        let mut hand_action_matches: HashMap<u8, HashSet<u32>> = HashMap::new();
+        // Bitmask per hand: bit N set = action N matched frequency + filter criteria
+        let mut hand_masks = [0u32; 169];
         for cell in &result.pack.cells {
             if !cell.exists || !frequency_filter.matches(cell.frequency) {
                 continue;
             }
-            if required_action_groups.is_empty()
-                || required_action_groups
-                    .iter()
-                    .any(|group| group.contains(&cell.action_id))
-            {
-                hand_action_matches
-                    .entry(cell.hand_id)
-                    .or_default()
-                    .insert(cell.action_id);
+            if cell.action_id < 32 {
+                let action_bit = 1u32 << cell.action_id;
+                if required_group_masks.is_empty()
+                    || required_group_masks
+                        .iter()
+                        .any(|&mask| action_bit & mask != 0)
+                {
+                    hand_masks[cell.hand_id as usize] |= action_bit;
+                }
             }
         }
 
         let mut hands = Vec::new();
         for hand_id in result.pack.hand_ids {
-            if let Some(matched_ids) = hand_action_matches.get(&hand_id) {
-                if required_action_groups.is_empty()
-                    || required_action_groups.iter().all(|group| {
-                        matched_ids
-                            .iter()
-                            .any(|action_id| group.contains(action_id))
-                    })
-                {
-                    hands.push(hand_code_from_id(hand_id));
-                }
+            let mask = hand_masks[hand_id as usize];
+            if mask != 0
+                && (required_group_masks.is_empty()
+                    || required_group_masks.iter().all(|&group| mask & group != 0))
+            {
+                hands.push(hand_code_from_id(hand_id));
             }
         }
 
@@ -627,22 +623,27 @@ impl FrequencyFilter {
     }
 }
 
-fn resolve_action_filter_groups(
+/// Resolve action filters into u32 bitmasks for O(1) bitwise matching.
+///
+/// Each filter maps to a bitmask where bit N is set if action_id N matches
+/// the filter. Returns empty Vec when no filters are specified.
+fn resolve_action_filter_bitmasks(
     action_schema: &[ActionDef],
     filters: &[ActionFilter],
     actions_text: &str,
     frequency_filter: &FrequencyFilter,
     dimension: &DimensionRef,
     concrete_line_id: u32,
-) -> Result<Vec<HashSet<u32>>, AppError> {
-    let mut groups = Vec::with_capacity(filters.len());
+) -> Result<Vec<u32>, AppError> {
+    let mut masks = Vec::with_capacity(filters.len());
     for filter in filters {
-        let ids: HashSet<u32> = action_schema
-            .iter()
-            .filter(|action| action_matches_filter(action, filter))
-            .map(|action| action.action_id)
-            .collect();
-        if ids.is_empty() {
+        let mut mask = 0u32;
+        for action in action_schema {
+            if action_matches_filter(action, filter) && action.action_id < 32 {
+                mask |= 1u32 << action.action_id;
+            }
+        }
+        if mask == 0 {
             return Err(AppError::no_hands_found(
                 actions_text,
                 &frequency_filter.description(),
@@ -652,9 +653,9 @@ fn resolve_action_filter_groups(
                 dimension.depth_bb,
             ));
         }
-        groups.push(ids);
+        masks.push(mask);
     }
-    Ok(groups)
+    Ok(masks)
 }
 
 fn line_lookup_open_error(
