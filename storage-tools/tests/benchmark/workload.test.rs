@@ -42,6 +42,8 @@ fn create_workload_is_deterministic_for_seed() {
     assert_eq!(first, second);
     assert_eq!(first.hand_queries.len(), 5);
     assert_eq!(first.batch_queries.len(), 3);
+    assert_eq!(first.hands_by_actions_queries.len(), 5);
+    assert_eq!(first.drill_scenario_queries.len(), 5);
     assert_eq!(
         first
             .batch_queries_by_size
@@ -91,6 +93,8 @@ fn workload_json_round_trip_and_legacy_fallback() {
         batch_queries: Vec::new(),
         batch_size: 5,
         batch_queries_by_size: vec![(5, Vec::new())],
+        hands_by_actions_queries: Vec::new(),
+        drill_scenario_queries: Vec::new(),
     };
 
     write_workload_json(&path, &workload).unwrap();
@@ -117,4 +121,6 @@ fn workload_json_round_trip_and_legacy_fallback() {
     assert_eq!(loaded.batch_queries_by_size.len(), 1);
     assert_eq!(loaded.batch_queries_by_size[0].0, 9);
     assert_eq!(loaded.batch_queries.len(), 1);
+    assert!(loaded.hands_by_actions_queries.is_empty());
+    assert!(loaded.drill_scenario_queries.is_empty());
 }

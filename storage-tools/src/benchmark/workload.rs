@@ -5,12 +5,14 @@ use std::path::Path;
 use serde::Deserialize;
 
 use crate::benchmark::types::{
-    concrete_lines_table_name, dimension_matches_requested, normalize_batch_sizes,
-    range_table_name, BatchBenchmarkItem, BatchBenchmarkRequest, BatchQueriesBySize,
-    BenchmarkWorkload, HandBenchmarkItem, WorkloadMode, WorkloadOptions,
+    concrete_lines_table_name, dimension_matches_requested, drill_scenario_table_name,
+    normalize_batch_sizes, range_table_name, BatchBenchmarkItem, BatchBenchmarkRequest,
+    BatchQueriesBySize, BenchmarkWorkload, DrillScenarioBenchmarkItem, HandBenchmarkItem,
+    HandsByActionsBenchmarkItem, WorkloadMode, WorkloadOptions,
 };
 use crate::errors::ToolError;
 use range_store_core::dimension::{quote_identifier, DimensionRef};
+use range_store_core::query::DEFAULT_HANDS_BY_ACTIONS_FREQUENCY;
 use range_store_core::sqlite::{Connection, Value};
 
 #[derive(Debug, Clone)]
@@ -87,6 +89,9 @@ pub fn create_benchmark_workload(
             sampler.sample_abstract_local_hand_queries(options.hand_iterations)?
         }
     };
+    let hands_by_actions_queries =
+        sampler.sample_hands_by_actions_queries(options.hand_iterations)?;
+    let drill_scenario_queries = sampler.sample_drill_scenario_queries(options.hand_iterations)?;
 
     Ok(BenchmarkWorkload {
         seed: options.seed,
@@ -100,6 +105,8 @@ pub fn create_benchmark_workload(
         batch_queries,
         batch_size: options.batch_size.max(1),
         batch_queries_by_size,
+        hands_by_actions_queries,
+        drill_scenario_queries,
     })
 }
 
@@ -133,6 +140,8 @@ pub fn read_workload_json(path: &Path) -> Result<BenchmarkWorkload, ToolError> {
         },
         batch_size,
         batch_queries_by_size,
+        hands_by_actions_queries: parsed.hands_by_actions_queries.unwrap_or_default(),
+        drill_scenario_queries: parsed.drill_scenario_queries.unwrap_or_default(),
     })
 }
 
@@ -267,6 +276,74 @@ impl<'a> WorkloadSampler<'a> {
         Ok(result)
     }
 
+    fn sample_hands_by_actions_queries(
+        &mut self,
+        count: usize,
+    ) -> Result<Vec<HandsByActionsBenchmarkItem>, ToolError> {
+        let mut result = Vec::with_capacity(count);
+        let mut seen = HashSet::new();
+        let max_attempts = (count * 20).max(count + 100);
+
+        for _ in 0..max_attempts {
+            if result.len() >= count {
+                break;
+            }
+            let stats = self.pick_stats().clone();
+            let item = self.sample_hands_by_actions_query(&stats)?;
+            let key = format!(
+                "{}:{}:{}",
+                dimension_key(&item.dimension()),
+                item.concrete_line_id,
+                item.actions.join(",")
+            );
+            if seen.insert(key) {
+                result.push(item);
+            }
+        }
+
+        while result.len() < count {
+            let stats = self.pick_stats().clone();
+            result.push(self.sample_hands_by_actions_query(&stats)?);
+        }
+        Ok(result)
+    }
+
+    fn sample_drill_scenario_queries(
+        &mut self,
+        count: usize,
+    ) -> Result<Vec<DrillScenarioBenchmarkItem>, ToolError> {
+        let mut result = Vec::with_capacity(count);
+        let mut seen = HashSet::new();
+        let max_attempts = (count * 20).max(count + 100);
+
+        for _ in 0..max_attempts {
+            if result.len() >= count {
+                break;
+            }
+            let stats = self.pick_stats().clone();
+            let Some(item) = self.sample_drill_scenario_query(&stats)? else {
+                continue;
+            };
+            let key = format!(
+                "{}:{}:{}:{}",
+                item.strategy, item.drill_name, item.player_count, item.drill_depth
+            );
+            if seen.insert(key) {
+                result.push(item);
+            }
+        }
+
+        while !result.is_empty() && result.len() < count {
+            let stats = self.pick_stats().clone();
+            if let Some(item) = self.sample_drill_scenario_query(&stats)? {
+                result.push(item);
+            } else {
+                break;
+            }
+        }
+        Ok(result)
+    }
+
     fn sample_batch_queries(
         &mut self,
         count: usize,
@@ -397,6 +474,22 @@ impl<'a> WorkloadSampler<'a> {
             depth_bb: stats.dimension.depth_bb,
             concrete_line_id: row.concrete_line_id,
             hole_cards,
+        })
+    }
+
+    fn sample_hands_by_actions_query(
+        &mut self,
+        stats: &SamplingStats,
+    ) -> Result<HandsByActionsBenchmarkItem, ToolError> {
+        let item = self.sample_hand_query(stats)?;
+        let actions = self.sample_action_names_for_concrete_line(stats, item.concrete_line_id)?;
+        Ok(HandsByActionsBenchmarkItem {
+            strategy: stats.dimension.strategy.clone(),
+            player_count: stats.dimension.player_count,
+            depth_bb: stats.dimension.depth_bb,
+            concrete_line_id: item.concrete_line_id,
+            actions,
+            frequency: None,
         })
     }
 
@@ -573,6 +666,105 @@ impl<'a> WorkloadSampler<'a> {
             stats.range_table
         )))
     }
+
+    fn sample_action_names_for_concrete_line(
+        &self,
+        stats: &SamplingStats,
+        concrete_line_id: u32,
+    ) -> Result<Vec<String>, ToolError> {
+        let table = quote_identifier(&stats.range_table)?;
+        let sql = format!(
+            "SELECT DISTINCT action_name
+             FROM {table}
+             WHERE concrete_line_id = ?1 AND frequency > ?2
+             ORDER BY action_name
+             LIMIT 2"
+        );
+        let mut statement = self.connection.prepare(&sql)?;
+        statement.start(&[
+            Value::from(concrete_line_id),
+            Value::from(DEFAULT_HANDS_BY_ACTIONS_FREQUENCY),
+        ])?;
+        let mut actions = Vec::new();
+        while statement.step_row()? {
+            actions.push(statement.column_text(0)?);
+        }
+        if !actions.is_empty() {
+            return Ok(actions);
+        }
+
+        let sql = format!(
+            "SELECT DISTINCT action_name
+             FROM {table}
+             WHERE concrete_line_id = ?1
+             ORDER BY action_name
+             LIMIT 1"
+        );
+        let mut fallback = self.connection.prepare(&sql)?;
+        fallback.start(&[Value::from(concrete_line_id)])?;
+        while fallback.step_row()? {
+            actions.push(fallback.column_text(0)?);
+        }
+        Ok(actions)
+    }
+
+    fn sample_drill_scenario_query(
+        &mut self,
+        stats: &SamplingStats,
+    ) -> Result<Option<DrillScenarioBenchmarkItem>, ToolError> {
+        let raw_table = drill_scenario_table_name(&stats.dimension.strategy);
+        if !table_exists(self.connection, &raw_table)? {
+            return Ok(None);
+        }
+        let Some(depth_column) = drill_depth_column(self.connection, &raw_table)? else {
+            return Ok(None);
+        };
+        let table = quote_identifier(&raw_table)?;
+        let count_sql = format!(
+            "SELECT COUNT(DISTINCT drill_name)
+             FROM {table}
+             WHERE player_count = ?1 AND {depth_column} = ?2"
+        );
+        let mut count_statement = self.connection.prepare(&count_sql)?;
+        count_statement.start(&[
+            Value::from(stats.dimension.player_count),
+            Value::from(stats.dimension.depth_bb),
+        ])?;
+        let row_count = if count_statement.step_row()? {
+            usize::try_from(count_statement.column_i64(0)).unwrap_or_default()
+        } else {
+            0
+        };
+        if row_count == 0 {
+            return Ok(None);
+        }
+        let offset = self.random.next_int(row_count);
+        let select_sql = format!(
+            "SELECT drill_name
+             FROM (
+               SELECT DISTINCT drill_name
+               FROM {table}
+               WHERE player_count = ?1 AND {depth_column} = ?2
+               ORDER BY drill_name
+             )
+             LIMIT 1 OFFSET ?3"
+        );
+        let mut select = self.connection.prepare(&select_sql)?;
+        select.start(&[
+            Value::from(stats.dimension.player_count),
+            Value::from(stats.dimension.depth_bb),
+            Value::from(offset),
+        ])?;
+        if !select.step_row()? {
+            return Ok(None);
+        }
+        Ok(Some(DrillScenarioBenchmarkItem {
+            strategy: stats.dimension.strategy.clone(),
+            drill_name: select.column_text(0)?,
+            player_count: stats.dimension.player_count,
+            drill_depth: stats.dimension.depth_bb,
+        }))
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -585,6 +777,45 @@ struct RawBenchmarkWorkload {
     batch_queries: Option<Vec<BatchBenchmarkItem>>,
     batch_size: Option<usize>,
     batch_queries_by_size: Option<BatchQueriesBySize>,
+    hands_by_actions_queries: Option<Vec<HandsByActionsBenchmarkItem>>,
+    drill_scenario_queries: Option<Vec<DrillScenarioBenchmarkItem>>,
+}
+
+pub(crate) fn table_exists(connection: &Connection, table_name: &str) -> Result<bool, ToolError> {
+    let mut statement = connection.prepare(
+        "SELECT EXISTS(
+           SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1
+         )",
+    )?;
+    statement.start(&[Value::from(table_name)])?;
+    Ok(statement.step_row()? && statement.column_i64(0) != 0)
+}
+
+pub(crate) fn drill_depth_column(
+    connection: &Connection,
+    table_name: &str,
+) -> Result<Option<&'static str>, ToolError> {
+    let table = quote_identifier(table_name)?;
+    let sql = format!("PRAGMA table_info({table})");
+    let mut statement = connection.prepare(&sql)?;
+    statement.start(&[])?;
+    let mut has_depth = false;
+    let mut has_drill_depth = false;
+    while statement.step_row()? {
+        let column = statement.column_text(1)?;
+        if column == "depth" {
+            has_depth = true;
+        } else if column == "drill_depth" {
+            has_drill_depth = true;
+        }
+    }
+    Ok(if has_drill_depth {
+        Some("drill_depth")
+    } else if has_depth {
+        Some("depth")
+    } else {
+        None
+    })
 }
 
 struct SeededRandom {

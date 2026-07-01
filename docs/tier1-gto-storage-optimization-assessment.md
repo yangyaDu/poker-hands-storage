@@ -18,11 +18,11 @@
 结论：
 
 - 数据体积已经进入几百 MB 级别。
-- 热查询主路径已经具备，并且批量查询明显优于 SQLite baseline。
+- 热查询主路径和两个业务场景 benchmark 已具备：批量查询、`hands-by-actions` 明显优于 SQLite baseline；drill metadata 查询结果一致但 runtime `meta.db` 当前慢于源 SQLite。
 - Docker 部署后的 HTTP API 已满足“查询 SDK / 查询接口”中的查询接口要求。
 - 全量 cross verify 已通过，源 SQLite 与 Range Strata Binary 当前产物一致。
 - 冷启动对比报告已基于同一查询口径重生成。
-- 后续还需要补齐缺失业务场景 benchmark、构建工具断点续跑、发布和回滚流程细化。
+- 后续还需要补齐构建工具断点续跑、发布和回滚流程细化，并评估 drill metadata 索引优化。
 
 ## 数据口径
 
@@ -48,18 +48,18 @@
 | --- | --- | --- |
 | 存储核心 | `range-store-core` | 已实现 |
 | HTTP API 服务 | `service` | 已实现 |
-| 离线构建、验证、benchmark 工具 | `storage-tools` | 已实现，需增强 |
+| 离线构建、验证、benchmark 工具 | `storage-tools` | 已实现，build resume 需增强 |
 | 二进制运行目录 | `data/range-strata` | 已生成 |
 | API 契约文档 | `docs/api-business-contract.md` | 已有 |
 | 二进制存储设计 | `docs/range-db-binary-storage-design.md` | 已有 |
 | 验证说明 | `docs/data-verification-and-format-validation.md` | 已有 |
 | Docker 部署说明 | `docs/docker-deployment-guide.md` | 已有 |
 | 架构调研 | `docs/storage-architecture-research.md` | 已有 |
-| SQLite vs Binary benchmark 总报告 | `docs/binary-vs-sqlite-benchmark-report.md` | 已刷新 cold compare |
+| SQLite vs Binary benchmark 总报告 | `docs/binary-vs-sqlite-benchmark-report.md` | 已刷新 hot/cold compare |
 | standalone verify 报告 | `reports/range-strata-verify-standalone.*` | 已有 |
 | sampled cross verify 报告 | `reports/range-strata-verify-cross.*` | 已有 |
 | full cross verify 报告 | `reports/range-strata-verify-cross-full.*` | 已有 |
-| hot benchmark 报告 | `reports/benchmark-range-strata-binary.*`、`reports/benchmark-sqlite.*`、`reports/benchmark-compare.*` | 已有 |
+| hot benchmark 报告 | `reports/benchmark-range-strata-binary.*`、`reports/benchmark-sqlite.*`、`reports/benchmark-compare.*` | 已刷新，包含 `hands-by-actions` 和 drill metadata |
 | cold benchmark 报告 | `reports/benchmark-cold-start.*`、`reports/benchmark-sqlite-cold-start.*`、`reports/benchmark-cold-compare.*` | 已刷新，同一查询口径 |
 | Agent 操作说明 | `.agents/SKILL.md`、`.agents/references/*` | 已有 |
 
@@ -76,11 +76,11 @@
 | 数据版本校验 | 已满足基础能力 | `manifest.sourceDbChecksum`、`build_info.source_checksum`、`builtAt` | 通过 | 发布流程补版本目录规范 |
 | 数据损坏检测机制 | 已满足 | manifest、idx/bin header、CRC32C、action schema checksum | 通过 | 无 |
 | 单个场景 + 单手牌查询 benchmark | 已满足 | `hand-strategy` benchmark | 通过 | 无 |
-| 单个行动线下全部起手牌查询 benchmark | API 已有，benchmark 缺失 | `/range/hands-by-actions` 已实现 | 部分通过 | 补 hands-by-actions benchmark |
-| Drill 高频随机查询 benchmark | API 已有，benchmark 缺失 | `/range/drill-scenarios` 已实现 | 部分通过 | 补 drill benchmark |
+| 单个行动线下全部起手牌查询 benchmark | 已满足 | `hands-by-actions` case，Binary/SQLite result count 一致 | 通过 | 无 |
+| Drill 高频随机 metadata benchmark | 已满足一致性，性能需优化 | `drill-scenarios-metadata` case，result count 一致；runtime `meta.db` 慢于源 SQLite | 通过/需优化 | 补 metadata 索引或缓存评估，不纳入核心二进制格式性能结论 |
 | 批量查询 benchmark | 已满足 | `batch-hand-strategy` 和 batch-size cases | 通过 | 无 |
-| P50/P95/P99 查询耗时 | 已满足主路径 | hot benchmark 报告包含 avg/p50/p95/p99/max/qps | 通过 | 新增场景需同样输出 |
-| 查询性能不低于 SQLite | 大部分满足，需要明确口径 | 批量和 p95/p99 优势明显；random 单手 p50 SQLite 更低 | 部分通过 | 在总报告中按场景解释 |
+| P50/P95/P99 查询耗时 | 已满足 | hot benchmark 报告包含全部 10 个 case 的 avg/p50/p95/p99/max/qps | 通过 | 无 |
+| 查询性能不低于 SQLite | 策略数据路径大部分满足，metadata 路径需单独优化 | 批量和 `hands-by-actions` 优势明显；random 单手 p50 SQLite 更低；drill metadata runtime `meta.db` 慢于源 SQLite | 部分通过 | 按场景解释，补 metadata 索引优化 |
 | 冷启动查询表现 | 已满足 | cold binary/sqlite/compare 已按同一查询口径刷新 | 通过 | 后续性能变更时重跑 |
 | 热缓存查询表现 | 已满足 | hot benchmark 报告 | 通过 | 无 |
 | 内存占用对比 | 已满足基础报告 | benchmark 报告包含 RSS 和 heap approximation | 通过 | Docker 内存可后续补 |
@@ -155,11 +155,15 @@ extraBinaryRecords = 0
 - Binary cold benchmark。
 - SQLite cold benchmark。
 - Binary vs SQLite cold compare。
-
-仍需要补充：
-
 - `hands-by-actions` 查询场景。
-- drill 高频随机查询场景。
+- drill 高频随机 metadata 查询场景。
+
+阶段 3-4 hot benchmark 结果摘要：
+
+| case | SQLite p95 | Binary/runtime p95 | result count | 结论 |
+| --- | ---: | ---: | ---: | --- |
+| `hands-by-actions` | 0.27 ms | 0.04 ms | 37,270 / 37,270 | Binary 约 9.45x QPS |
+| `drill-scenarios-metadata` | 0.20 ms | 1.81 ms | 62,149 / 62,149 | 结果一致，但 runtime `meta.db` 慢于源 SQLite |
 
 ## 阶段 0-2 已完成项
 
@@ -220,14 +224,15 @@ hand = 22
 
 ## 剩余主要差距
 
-### 业务场景 benchmark 缺失
+### Drill metadata 性能优化
 
-当前 benchmark 主要覆盖 `hand-strategy` 和 batch。需要新增：
+`drill-scenarios-metadata` 已经进入 compare 报告，且 Binary runtime `meta.db` 与源 SQLite 的 result count 一致。但当前 runtime `meta.db` 查询慢于源 SQLite。该接口新旧路径本质都是 SQLite 元数据表查询，不代表 `.idx/.bin` 二进制策略数据查询性能。
 
-- `hands-by-actions`：单行动线下全部起手牌查询。
-- `drill-scenarios`：drill 高频随机查询。
+建议后续优先评估：
 
-新增场景必须同时实现 binary 和 SQLite baseline，并进入 compare 报告。
+- `drill_scenario_lines_* (drill_name, player_count, drill_depth)` 组合索引。
+- service 层对常用 drill_name 的只读缓存。
+- 构建 `meta.db` 时同步创建 metadata 查询所需索引。
 
 ### 构建工具缺断点续跑
 
@@ -251,11 +256,10 @@ hand = 22
 
 ## 后续实施顺序
 
-1. 补 `hands-by-actions` benchmark。
-2. 补 drill 高频随机 benchmark。
-3. 为 `build` 增加 `--resume` 和 `build-state.json`。
-4. 补版本发布和回滚说明。
-5. 可选做进一步压缩实验。
+1. 为 `build` 增加 `--resume` 和 `build-state.json`。
+2. 补版本发布和回滚说明。
+3. 评估 drill metadata 索引或缓存优化。
+4. 可选做进一步压缩实验。
 
 ## 报告清理规则
 
@@ -278,7 +282,7 @@ hand = 22
 
 1. 本评估文档和现有五份主文档完成同步。
 2. 全量 cross verify 通过，失败数为 0。
-3. Benchmark 覆盖单手、行动线全部手牌、drill 高频随机、批量查询。
+3. Benchmark 覆盖单手、行动线全部手牌、drill 高频随机 metadata 查询、批量查询。
 4. Binary 与 SQLite 的性能结论按场景描述，不混用新旧报告。
 5. Docker 服务可重建、启动，并且 `/ready` 返回 ready。
 6. 数据发布和回滚流程可按文档执行。

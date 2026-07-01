@@ -3,11 +3,13 @@ use std::path::{Path, PathBuf};
 
 use crate::action_schema::{load_action_schemas, ActionDef, ActionSchemaLoadError};
 use crate::dimension::DimensionRef;
-use crate::hole_cards::{parse_hole_cards, HandDictError};
+use crate::hole_cards::{hand_code_from_id, parse_hole_cards, HandDictError};
 use crate::manifest::{queryable_dimensions, ManifestError};
 use crate::DimensionReader;
 
 use super::handle_pool::{HandlePool, HandlePoolError};
+
+pub const DEFAULT_HANDS_BY_ACTIONS_FREQUENCY: f64 = 0.005;
 
 /// A lightweight query service for Range Strata Binary stores.
 ///
@@ -227,6 +229,69 @@ impl StoreQueryService {
             .collect())
     }
 
+    /// Query all hands in a concrete line that match any requested action name.
+    ///
+    /// `action_names` uses OR semantics. An empty list means no action-name
+    /// restriction. `frequency` is always strict greater-than, matching the API
+    /// contract for `/range/hands-by-actions`.
+    pub fn query_hands_by_action_names(
+        &self,
+        dimension: &DimensionRef,
+        concrete_line_id: u32,
+        action_names: &[String],
+        frequency: Option<f64>,
+    ) -> Result<Vec<String>, StoreQueryError> {
+        let reader = self.pool.get_or_open(dimension)?;
+        let result = reader
+            .query_all(concrete_line_id, self.verify_checksums)
+            .map_err(|e| StoreQueryError::Io(e.to_string()))?;
+        let Some(result) = result else {
+            return Err(StoreQueryError::NotFound(format!(
+                "concrete_line_id={concrete_line_id} not found"
+            )));
+        };
+
+        let action_schema = self
+            .action_schemas
+            .get(&result.action_schema_id)
+            .ok_or_else(|| {
+                StoreQueryError::NotFound(format!(
+                    "Action schema {} not found",
+                    result.action_schema_id
+                ))
+            })?;
+        let action_name_filter = action_names
+            .iter()
+            .map(|name| name.as_str())
+            .collect::<HashSet<_>>();
+        let threshold = frequency.unwrap_or(DEFAULT_HANDS_BY_ACTIONS_FREQUENCY);
+        let action_filter_mask =
+            action_name_bitmask(action_schema, &action_name_filter).unwrap_or_default();
+
+        if !action_name_filter.is_empty() && action_filter_mask == 0 {
+            return Ok(Vec::new());
+        }
+
+        let mut hand_masks = [0u32; 169];
+        for cell in &result.pack.cells {
+            if !cell.exists || cell.frequency <= threshold || cell.action_id >= 32 {
+                continue;
+            }
+            let action_bit = 1u32 << cell.action_id;
+            if action_filter_mask == 0 || action_bit & action_filter_mask != 0 {
+                hand_masks[cell.hand_id as usize] |= action_bit;
+            }
+        }
+
+        Ok(result
+            .pack
+            .hand_ids
+            .into_iter()
+            .filter(|hand_id| hand_masks[*hand_id as usize] != 0)
+            .map(hand_code_from_id)
+            .collect())
+    }
+
     fn query_single(
         &self,
         reader: &DimensionReader,
@@ -293,6 +358,19 @@ impl StoreQueryService {
     pub fn known_dimensions(&self) -> Vec<String> {
         self.pool.known_dimensions()
     }
+}
+
+fn action_name_bitmask(action_schema: &[ActionDef], action_names: &HashSet<&str>) -> Option<u32> {
+    if action_names.is_empty() {
+        return Some(0);
+    }
+    let mut mask = 0u32;
+    for action in action_schema {
+        if action.action_id < 32 && action_names.contains(action.action_name.as_str()) {
+            mask |= 1u32 << action.action_id;
+        }
+    }
+    Some(mask)
 }
 
 /// Result of a single batch item.

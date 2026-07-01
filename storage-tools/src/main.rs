@@ -138,7 +138,7 @@ fn run_benchmark(args: Vec<String>) -> Result<(), ToolError> {
     println!("  Total iterations: {}", report.totals.iterations);
     println!("  Aggregate QPS: {:.2}", report.totals.avg_qps);
     println!("  Error count: {}", report.totals.error_count);
-    println!("  Result action count: {}", report.totals.result_count);
+    println!("  Result count: {}", report.totals.result_count);
     println!("  JSON report: {}", command.out_path.display());
     println!("  Markdown report: {}", command.md_path.display());
     if report.has_errors() {
@@ -191,7 +191,7 @@ fn run_benchmark_sqlite(args: Vec<String>) -> Result<(), ToolError> {
     println!("  Total iterations: {}", report.totals.iterations);
     println!("  Aggregate QPS: {:.2}", report.totals.avg_qps);
     println!("  Error count: {}", report.totals.error_count);
-    println!("  Result action count: {}", report.totals.result_count);
+    println!("  Result count: {}", report.totals.result_count);
     println!("  JSON report: {}", command.out_path.display());
     println!("  Markdown report: {}", command.md_path.display());
     if report.has_errors() {

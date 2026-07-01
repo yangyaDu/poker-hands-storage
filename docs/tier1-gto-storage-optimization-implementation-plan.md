@@ -9,8 +9,8 @@
 | 阶段 0：固定基线和报告口径 | 已完成 | sampled/full verify 文件名分离；正式 cold 报告按同名替换 |
 | 阶段 1：补全量 cross verify 报告 | 已完成 | `reports/range-strata-verify-cross-full.*` |
 | 阶段 2：刷新 cold compare 报告 | 已完成 | `reports/benchmark-cold-start.*`、`reports/benchmark-sqlite-cold-start.*`、`reports/benchmark-cold-compare.*` |
-| 阶段 3：补 `hands-by-actions` benchmark | 待实施 | - |
-| 阶段 4：补 drill 高频随机 benchmark | 待实施 | - |
+| 阶段 3：补 `hands-by-actions` benchmark | 已完成 | `reports/benchmark-range-strata-binary.*`、`reports/benchmark-sqlite.*`、`reports/benchmark-compare.*` |
+| 阶段 4：补 drill 高频随机 metadata benchmark | 已完成 | 同阶段 3 hot benchmark/compare 报告 |
 | 阶段 5：实现构建断点续跑 | 待实施 | - |
 | 阶段 6：补发布和回滚流程 | 待实施 | - |
 | 阶段 7：同步最终验收文档 | 部分完成 | 阶段 0-2 相关文档已同步 |
@@ -204,6 +204,30 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 ## 阶段 3：补 `hands-by-actions` benchmark
 
+状态：已完成。
+
+已实现：
+
+- `range-store-core::StoreQueryService::query_hands_by_action_names`
+- workload 字段 `handsByActionsQueries`
+- Binary hot case `hands-by-actions`
+- SQLite baseline case `hands-by-actions`
+- compare 报告同名 case
+
+本次 2026-07-01 release benchmark 结果：
+
+| 指标 | SQLite | Binary |
+| --- | ---: | ---: |
+| iterations | 1,000 | 1,000 |
+| p50 | 0.11 ms | 0.01 ms |
+| p95 | 0.27 ms | 0.04 ms |
+| p99 | 0.37 ms | 0.06 ms |
+| QPS | 7,654.75 | 72,340.06 |
+| result count | 37,270 | 37,270 |
+| errors | 0 | 0 |
+
+结论：Binary 与 SQLite result count 一致，且 `hands-by-actions` 在当前 workload 下 QPS 约为 SQLite 的 9.45x。
+
 ### 目的
 
 覆盖“单个行动线下全部起手牌查询”场景，满足验收要求。
@@ -253,11 +277,43 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
   - 多个 `action_name` 按 SQL `IN (...)` 语义取并集，任意一个 action 满足频率条件即可。
 - Binary 和 SQLite 的 result count 一致。
 
-## 阶段 4：补 drill 高频随机 benchmark
+## 阶段 4：补 drill 高频随机 metadata benchmark
+
+状态：已完成。
+
+已实现：
+
+- workload 字段 `drillScenarioQueries`
+- Binary runtime metadata case `drill-scenarios-metadata`
+- SQLite source metadata case `drill-scenarios-metadata`
+- source 表字段兼容 `depth`，runtime `meta.db` 字段兼容 `drill_depth`
+- compare 报告同名 case，并标记为 metadata path
+
+本次 2026-07-01 release benchmark 结果：
+
+| 指标 | SQLite source | Runtime meta.db |
+| --- | ---: | ---: |
+| iterations | 1,000 | 1,000 |
+| p50 | 0.08 ms | 1.28 ms |
+| p95 | 0.20 ms | 1.81 ms |
+| p99 | 0.27 ms | 2.22 ms |
+| QPS | 10,594.86 | 778.09 |
+| result count | 62,149 | 62,149 |
+| errors | 0 | 0 |
+
+结论：结果数量一致，满足一致性验收；但 runtime `meta.db` 的 drill metadata 查询慢于源 SQLite。该 case 不代表 `.idx/.bin` 二进制策略数据查询性能，后续如果 drill metadata 是高频路径，应补充 metadata 索引或缓存。
 
 ### 目的
 
 覆盖 `/range/drill-scenarios` 高频随机查询，满足 Drill 查询验收要求。
+
+该接口走的是 metadata path：
+
+- 旧源库查询 `drill_scenario_lines_*` SQLite 表。
+- 新运行目录查询 `data/range-strata/meta.db` 中的 `drill_scenario_lines_*` SQLite 表。
+- 不涉及 `.idx/.bin`、mmap pack decode，也不代表二进制策略数据查询性能。
+
+因此阶段 4 的报告定位为 metadata query benchmark 和一致性验证，不作为核心 Binary vs SQLite 存储性能结论。
 
 ### 实施步骤
 
@@ -267,9 +323,9 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
    - `drill_name`
    - `player_count`
    - `drill_depth`
-3. Binary runner 通过 `range-store-core` 查询 `meta.db`。
+3. Service/runtime runner 通过 `range-store-core` 查询 `meta.db`。
 4. SQLite runner 通过源 SQLite 查询对应 drill scenario。
-5. Compare 报告新增 `drill-scenarios` 场景。
+5. Compare 报告新增 `drill-scenarios` 场景，但标题和说明必须标记为 metadata path。
 6. 补单元测试：
    - 默认 `drill_name = rfi`
    - 默认 `drill_depth = 100`
@@ -278,8 +334,9 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 ### 验收条件
 
 - 报告包含 drill 场景 P50/P95/P99。
-- Binary 和 SQLite 的 abstract line 数量一致。
+- `meta.db` 和源 SQLite 的 abstract line 数量一致。
 - 默认参数和 Swagger/API 文档一致。
+- 总 benchmark 报告中不得把 drill metadata 查询写成 `.idx/.bin` 二进制格式性能优势或劣势。
 
 ## 阶段 5：实现构建断点续跑
 
@@ -438,7 +495,7 @@ Invoke-RestMethod http://127.0.0.1:3000/ready
 3. benchmark 覆盖：
    - 单手牌查询
    - 单行动线全部手牌查询
-   - drill 高频随机查询
+   - drill 高频随机 metadata 查询
    - 批量查询
 4. Binary vs SQLite 报告包含 P50/P95/P99、内存、冷启动、热查询。
 5. `storage-tools build --resume` 可从中断点继续。
@@ -449,10 +506,10 @@ Invoke-RestMethod http://127.0.0.1:3000/ready
 
 建议从风险最低、收益最高的项开始：
 
-1. 跑全量 cross verify。
-2. 重生成 cold compare。
-3. 补 `hands-by-actions` benchmark。
-4. 补 drill benchmark。
+1. 跑全量 cross verify。已完成。
+2. 重生成 cold compare。已完成。
+3. 补 `hands-by-actions` benchmark。已完成。
+4. 补 drill metadata benchmark。已完成。
 5. 实现 `build --resume`。
 6. 补发布和回滚文档。
 7. 重建 Docker 镜像并启动容器做最终 smoke test。

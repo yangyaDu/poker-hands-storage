@@ -1,3 +1,4 @@
+use crate::benchmark::hot::runner::drill_scenario_line_count;
 use crate::benchmark::memory_snapshot::{get_memory_snapshot, BenchmarkMemoryReport};
 use crate::benchmark::metrics::{build_totals, measure_benchmark_case, BenchmarkCaseResult};
 use crate::benchmark::report::{
@@ -6,12 +7,13 @@ use crate::benchmark::report::{
 };
 use crate::benchmark::sqlite::types::BenchmarkSqliteCommand;
 use crate::benchmark::types::{
-    range_table_name, BatchBenchmarkItem, BenchmarkWorkload, HandBenchmarkItem, WorkloadOptions,
-    WorkloadSource,
+    range_table_name, BatchBenchmarkItem, BenchmarkWorkload, DrillScenarioBenchmarkItem,
+    HandBenchmarkItem, HandsByActionsBenchmarkItem, WorkloadOptions, WorkloadSource,
 };
 use crate::benchmark::workload::{create_benchmark_workload, read_workload_json};
 use crate::errors::ToolError;
 use range_store_core::dimension::quote_identifier;
+use range_store_core::query::DEFAULT_HANDS_BY_ACTIONS_FREQUENCY;
 use range_store_core::sqlite::{Connection, Value};
 
 pub fn run_sqlite_benchmark(
@@ -44,6 +46,16 @@ pub fn run_sqlite_benchmark(
             command.warmup_iterations,
         ));
     }
+    cases.push(measure_hands_by_actions_case(
+        &connection,
+        &workload.hands_by_actions_queries,
+        command.warmup_iterations,
+    ));
+    cases.push(measure_drill_scenarios_case(
+        &connection,
+        &workload.drill_scenario_queries,
+        command.warmup_iterations,
+    ));
 
     let memory_after = get_memory_snapshot();
     let memory = BenchmarkMemoryReport::new(memory_before, memory_after);
@@ -78,6 +90,8 @@ pub fn run_sqlite_benchmark(
             result_verification: None,
             notes: vec![
                 "SQLite baseline benchmark; queries read and count action rows from source range_data tables.".to_owned(),
+                "`hands-by-actions` uses source SQLite DISTINCT hole_cards with action_name IN (...) and strict frequency threshold.".to_owned(),
+                "`drill-scenarios-metadata` reads source SQLite drill_scenario_lines_* metadata tables; compare only against the runtime meta.db metadata path.".to_owned(),
                 "No hard performance threshold is applied; compare reports from the same workload before drawing conclusions.".to_owned(),
             ],
         },
@@ -141,6 +155,36 @@ fn measure_batch_case(
     )
 }
 
+fn measure_hands_by_actions_case(
+    connection: &Connection,
+    queries: &[HandsByActionsBenchmarkItem],
+    warmup_iterations: usize,
+) -> BenchmarkCaseResult {
+    measure_benchmark_case(
+        "hands-by-actions",
+        "Count distinct source SQLite hole_cards matching any requested action_name.",
+        queries,
+        warmup_iterations,
+        |item, _| {
+            sqlite_hands_by_actions_count(connection, item).map_err(|error| error.to_string())
+        },
+    )
+}
+
+fn measure_drill_scenarios_case(
+    connection: &Connection,
+    queries: &[DrillScenarioBenchmarkItem],
+    warmup_iterations: usize,
+) -> BenchmarkCaseResult {
+    measure_benchmark_case(
+        "drill-scenarios-metadata",
+        "Read drill scenario abstract lines from source SQLite metadata tables.",
+        queries,
+        warmup_iterations,
+        |item, _| drill_scenario_line_count(connection, item).map_err(|error| error.to_string()),
+    )
+}
+
 fn query_hand_count(connection: &Connection, item: &HandBenchmarkItem) -> Result<usize, String> {
     sqlite_action_count(
         connection,
@@ -164,6 +208,39 @@ fn query_batch_count(connection: &Connection, item: &BatchBenchmarkItem) -> Resu
         .map_err(|error| error.to_string())?;
     }
     Ok(total)
+}
+
+fn sqlite_hands_by_actions_count(
+    connection: &Connection,
+    item: &HandsByActionsBenchmarkItem,
+) -> Result<usize, ToolError> {
+    let table = quote_identifier(&range_table_name(&item.dimension()))?;
+    let threshold = item.frequency.unwrap_or(DEFAULT_HANDS_BY_ACTIONS_FREQUENCY);
+    let mut values = vec![Value::from(item.concrete_line_id), Value::from(threshold)];
+    let action_clause = if item.actions.is_empty() {
+        String::new()
+    } else {
+        for action in &item.actions {
+            values.push(Value::from(action.as_str()));
+        }
+        let placeholders = (0..item.actions.len())
+            .map(|index| format!("?{}", index + 3))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(" AND action_name IN ({placeholders})")
+    };
+    let sql = format!(
+        "SELECT COUNT(DISTINCT hole_cards)
+         FROM {table}
+         WHERE concrete_line_id = ?1 AND frequency > ?2{action_clause}"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    statement.start(&values)?;
+    if statement.step_row()? {
+        Ok(usize::try_from(statement.column_i64(0)).unwrap_or_default())
+    } else {
+        Ok(0)
+    }
 }
 
 pub(crate) fn sqlite_action_count(

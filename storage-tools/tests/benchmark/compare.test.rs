@@ -101,6 +101,8 @@ fn report_input(avg_ms: f64, qps: f64, result_count: u64) -> ReportInput {
             batch_queries: Vec::new(),
             batch_size: 1,
             batch_queries_by_size: Vec::new(),
+            hands_by_actions_queries: Vec::new(),
+            drill_scenario_queries: Vec::new(),
         },
         workload_source: WorkloadSource::Loaded,
         workload_path: Some("workload.json".to_owned()),
