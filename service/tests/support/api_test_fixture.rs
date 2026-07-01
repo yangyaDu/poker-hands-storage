@@ -91,21 +91,24 @@ pub fn build_api_test_store(root: &Path) -> PathBuf {
         ],
     ).unwrap();
 
-    // Also add '72o' hand with fold-only action (0 frequency — used by router test
+    // Also add '72o' hand with fold-only action (0 frequency - used by router test
     // to verify hands-by-actions frequency threshold behaviour).
-    // For simplicity we put both hands (AA and 72o) in pack 1.
+    // Add KK as raise-only so router tests can distinguish OR from AND action matching.
+    // For simplicity we put all hands in pack 1.
 
     // Build PFSP .bin file with one pack for concrete_line_id=1
     // Pack layout: [hand_ids] [masks_u32_le] [freq_ev_f32_le...]
     //
-    // Hands: AA => hand_id=0, 72o => hand_id=162 (row=12,col=5 in 13x13)
+    // Hands: AA => hand_id=0, KK => hand_id=14, 72o => hand_id=162 (row=12,col=5 in 13x13)
     // Actions: fold=idx0, raise=idx1
     // AA: mask = fold|raise = 0b11, fold_freq=0.25, fold_ev=NaN, raise_freq=0.75, raise_ev=1.0
+    // KK: mask = raise = 0b10, fold_freq=0, fold_ev=NaN, raise_freq=0.6, raise_ev=0.8
     // 72o: mask = fold = 0b01, fold_freq=0.0, fold_ev=NaN, raise_freq=0, raise_ev=NaN
 
-    let hand_ids: Vec<u8> = vec![0, 162]; // AA=0, 72o=162
-    let masks: Vec<u32> = vec![0b11, 0b01]; // AA has both, 72o has only fold
+    let hand_ids: Vec<u8> = vec![0, 14, 162]; // AA=0, KK=14, 72o=162
+    let masks: Vec<u32> = vec![0b11, 0b10, 0b01]; // AA has both, KK has raise, 72o has fold
     let values_aa = [0.25f32, f32::NAN, 0.75f32, 1.0f32]; // fold_freq, fold_ev, raise_freq, raise_ev
+    let values_kk = [0.0f32, f32::NAN, 0.6f32, 0.8f32]; // fold_freq(unused), fold_ev, raise_freq, raise_ev
     let values_72o = [0.0f32, f32::NAN, 0.0f32, f32::NAN]; // fold_freq, fold_ev, raise_freq(unused), raise_ev(unused)
 
     let mut payload = Vec::new();
@@ -116,6 +119,9 @@ pub fn build_api_test_store(root: &Path) -> PathBuf {
         payload.extend_from_slice(&m.to_le_bytes());
     }
     for v in &values_aa {
+        payload.extend_from_slice(&v.to_le_bytes());
+    }
+    for v in &values_kk {
         payload.extend_from_slice(&v.to_le_bytes());
     }
     for v in &values_72o {
