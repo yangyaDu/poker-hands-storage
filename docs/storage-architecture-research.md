@@ -1,6 +1,6 @@
 # 存储架构调研报告
 
-更新日期：2026-06-28
+更新日期：2026-07-01
 
 ## 结论
 
@@ -116,6 +116,38 @@ Rust 的优势不只是性能，还包括：
 - Docker 镜像只需要 service 和 core，`storage-tools` 不进入运行镜像。
 - 运行时错误可以统一映射为 HTTP 状态码和业务错误码。
 
+## 业务接入与 SDK 边界
+
+当前推荐的业务接入形态是 Docker 部署后的 HTTP API，而不是在本项目内额外提供多语言 SDK。
+
+原因是当前服务边界已经清楚：
+
+- `poker-hands-storage-service` 是独立只读查询服务。
+- 业务系统通过服务地址访问 `/range/*` API 即可完成查询。
+- OpenAPI/Swagger 和 `docs/api-business-contract.md` 已经承担接口契约说明。
+- Rust 项目继续聚焦存储格式、查询服务、验证、benchmark 和 Docker 运行时，避免同时维护 TypeScript、Java、Python 等客户端包。
+
+因此，对“查询 SDK / 查询接口”的当前交付口径是：本项目提供查询接口，不单独提供 SDK。Docker 化 HTTP API 是业务侧统一查询入口。
+
+如果后续业务方希望进一步封装调用，优先建议在后端业务项目中实现 `RangeServiceClient` 或同等适配层，统一处理：
+
+- `baseUrl`、服务 IP、域名和多环境配置。
+- HTTP 超时、重试、熔断和降级。
+- 鉴权、内部服务 token、trace id、日志和监控。
+- `{ code, data, message }` 响应解析。
+- HTTP 状态码和业务错误码到后端业务异常的映射。
+
+这层封装属于调用方基础设施适配，放在后端业务项目中更合适。业务代码不应到处直接拼接 `http://host:port/range/...`，而应通过后端项目内的统一 client 调用。
+
+只有在以下场景成立时，才考虑在本项目或独立仓库提供正式 SDK：
+
+- 多个独立系统需要长期接入同一服务。
+- 需要发布正式客户端包，例如 TypeScript、Java 或 Python package。
+- SDK 可以从 OpenAPI 自动生成，并有明确版本管理和兼容策略。
+- 团队愿意把客户端包作为服务契约的一部分长期维护。
+
+即使需要正式 SDK，也建议优先使用独立仓库或平级 `clients/` 目录，不把客户端实现混入 `range-store-core`、`service` 或 `storage-tools` 的职责边界。
+
 ## 冷启动估算口径
 
 本报告不写具体冷启动耗时，只记录架构层面的影响方向。
@@ -141,4 +173,3 @@ Rust 的优势不只是性能，还包括：
 4. 发布前必须跑 standalone verify 和 source cross verify。
 5. Docker/Kubernetes 使用只读数据挂载和 readiness probe。
 6. benchmark 数字单独维护，记录数据集、环境、命令和时间，不写进选型调研的固定结论中。
-
