@@ -221,14 +221,18 @@ fn init_meta_db(connection: &Connection, dimensions: &[DimensionSpec]) -> Result
         ))?;
     }
     for dimension in dimensions {
-        let table = quote_identifier(&dimension.concrete_table())?;
+        let raw_table = dimension.concrete_table();
+        let table = quote_identifier(&raw_table)?;
+        let concrete_line_index = quote_identifier(&format!("idx_{raw_table}_concrete_line"))?;
         connection.exec(&format!(
             "CREATE TABLE {table} (
                concrete_line_id INTEGER PRIMARY KEY,
                abstract_line TEXT NOT NULL,
                concrete_line TEXT NOT NULL,
                UNIQUE(abstract_line, concrete_line)
-             );"
+             );
+             CREATE INDEX {concrete_line_index}
+               ON {table}(concrete_line);"
         ))?;
     }
     Ok(())

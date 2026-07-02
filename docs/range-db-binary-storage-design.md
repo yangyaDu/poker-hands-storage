@@ -70,7 +70,7 @@ data/range-strata/
 | `action_schemas` | 存储 action 组合定义，供 `.idx` 中的 `action_schema_id` 引用 |
 | `dimension_action_schemas` | 记录每个维度引用了哪些 action schema |
 | `drill_scenario_lines_{strategy}` | drill scenario 到 abstract line 的查询表 |
-| `concrete_lines_{strategy}_{N}max_{BB}BB` | abstract line 到 concrete line 的查询表 |
+| `concrete_lines_{strategy}_{N}max_{BB}BB` | abstract line 到 concrete line 的查询表，也支持 concrete line 精确定位 `concrete_line_id` |
 
 `action_schemas.action_blob` 的编码是每个 action 9 字节：
 
@@ -193,6 +193,8 @@ byte_length = hand_count * (5 + action_count * 8)
 
 `POST /range/hands-by-actions` 会完整解码一个 pack，按 action 和 frequency 过滤手牌。
 
+业务侧如果只有具体行动线字符串，应先通过 `meta.db` 的 `concrete_lines_*` 表精确查询 `concrete_line_id`，再进入上述 `.idx/.bin` 查询流程。新生成的 runtime `meta.db` 会为 `concrete_line` 建单列索引，避免该 lookup 走全表扫描。
+
 ## 当前维度文件大小
 
 | 维度 | concrete lines | `.bin` bytes | `.idx` bytes | 合计 bytes | `.idx` 占维度 |
@@ -238,4 +240,3 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build 
 - 发布新数据应使用新目录，验证通过后切换挂载或重启服务。
 - `PHS_MAX_OPEN_HANDLES` 控制同时打开的维度 handle 数量。
 - mmap 不等于立即把整个 `.bin` 文件读入物理内存，实际 RSS 会随访问页增长。
-

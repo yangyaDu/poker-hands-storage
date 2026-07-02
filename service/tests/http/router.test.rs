@@ -58,6 +58,21 @@ async fn serves_query_and_metadata_workflows() {
             ["default"],
         json!("rfi")
     );
+    assert!(
+        openapi["components"]["schemas"]["ConcreteLinesRequest"]["properties"]
+            .get("concrete_line")
+            .is_some()
+    );
+    assert_eq!(
+        openapi["components"]["schemas"]["ConcreteLinesRequest"]["properties"]["abstract_line"]
+            ["type"],
+        json!("string")
+    );
+    assert_eq!(
+        openapi["components"]["schemas"]["ConcreteLinesRequest"]["properties"]["concrete_line"]
+            ["type"],
+        json!("string")
+    );
 
     let (status, swagger) = call_text(&app, Method::GET, "/swagger").await;
     assert_eq!(status, StatusCode::OK);
@@ -236,6 +251,68 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["code"], 0);
     assert_eq!(result["data"]["lines"][0]["concrete_line_id"], 1);
+
+    let concrete_line_lookup = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "concrete_line": "F-F-F"
+    });
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(concrete_line_lookup),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["lines"][0]["concrete_line_id"], 1);
+    assert_eq!(result["data"]["lines"][0]["abstract_line"], "F-F-F");
+    assert_eq!(result["data"]["lines"][0]["concrete_line"], "F-F-F");
+
+    let concrete_line_lookup_with_abstract = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "abstract_line": "F-F-F",
+        "concrete_line": "F-F-F"
+    });
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(concrete_line_lookup_with_abstract),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["lines"].as_array().unwrap().len(), 1);
+
+    let missing_concrete_line = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "concrete_line": "F-F-F-R2"
+    });
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(missing_concrete_line),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error["code"], error_code::NOT_FOUND);
+    assert!(error["data"].is_null());
+    assert_no_details(&error);
+    assert_error_message_contains(
+        &error,
+        &[
+            "Concrete line not found: concrete_line=F-F-F-R2",
+            "dimension=default:6:100",
+        ],
+    );
 
     let drill_lines = json!({});
     let (status, result) = call_json(
@@ -751,6 +828,62 @@ async fn returns_boundary_validation_messages_for_range_endpoints() {
         &error,
         &["strategy", "player_count", "depth_bb", "abstract_line"],
     );
+
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(json!({
+            "strategy": "default",
+            "player_count": 6,
+            "depth_bb": 100
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], error_code::BAD_REQUEST);
+    assert_no_details(&error);
+    assert_error_message_contains(
+        &error,
+        &[
+            "abstract_line/concrete_line",
+            "one of abstract_line or concrete_line must be provided",
+        ],
+    );
+
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(json!({
+            "strategy": "default",
+            "player_count": 6,
+            "depth_bb": 100,
+            "concrete_line": ""
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], error_code::BAD_REQUEST);
+    assert_no_details(&error);
+    assert_error_message_contains(&error, &["concrete_line", "must not be empty"]);
+
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(json!({
+            "strategy": "default",
+            "player_count": 6,
+            "depth_bb": 100,
+            "concrete_line": null
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], error_code::BAD_REQUEST);
+    assert_no_details(&error);
+    assert_error_message_contains(&error, &["concrete_line", "invalid type: null"]);
 
     let (status, error) = call_json(
         &app,

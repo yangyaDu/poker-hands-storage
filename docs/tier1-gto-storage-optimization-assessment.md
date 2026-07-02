@@ -22,7 +22,7 @@
 - Docker 部署后的 HTTP API 已满足“查询 SDK / 查询接口”中的查询接口要求。
 - 全量 cross verify 已通过，源 SQLite 与 Range Strata Binary 当前产物一致。
 - 冷启动对比报告已基于同一查询口径重生成。
-- 后续还需要补齐构建工具断点续跑、发布和回滚流程细化，并评估 drill metadata 索引优化。
+- 后续还需要补齐构建工具断点续跑、发布和回滚流程细化，并用隔离 benchmark 复核 drill metadata 查询性能。
 
 ## 数据口径
 
@@ -77,10 +77,10 @@
 | 数据损坏检测机制 | 已满足 | manifest、idx/bin header、CRC32C、action schema checksum | 通过 | 无 |
 | 单个场景 + 单手牌查询 benchmark | 已满足 | `hand-strategy` benchmark | 通过 | 无 |
 | 单个行动线下全部起手牌查询 benchmark | 已满足 | `hands-by-actions` case，Binary/SQLite result count 一致 | 通过 | 无 |
-| Drill 高频随机 metadata benchmark | 已满足一致性，性能需优化 | `drill-scenarios-metadata` case，result count 一致；runtime `meta.db` 慢于源 SQLite | 通过/需优化 | 补 metadata 索引或缓存评估，不纳入核心二进制格式性能结论 |
+| Drill 高频随机 metadata benchmark | 已满足一致性，性能需复核 | `drill-scenarios-metadata` case，result count 一致；当前 runner 口径下 runtime `meta.db` 慢于源 SQLite | 通过/需复核 | 补隔离 microbenchmark，不纳入核心二进制格式性能结论 |
 | 批量查询 benchmark | 已满足 | `batch-hand-strategy` 和 batch-size cases | 通过 | 无 |
 | P50/P95/P99 查询耗时 | 已满足 | hot benchmark 报告包含全部 10 个 case 的 avg/p50/p95/p99/max/qps | 通过 | 无 |
-| 查询性能不低于 SQLite | 策略数据路径大部分满足，metadata 路径需单独优化 | 批量和 `hands-by-actions` 优势明显；random 单手 p50 SQLite 更低；drill metadata runtime `meta.db` 慢于源 SQLite | 部分通过 | 按场景解释，补 metadata 索引优化 |
+| 查询性能不低于 SQLite | 策略数据路径满足，metadata 路径需单独复核 | 批量、单手和 `hands-by-actions` 优势明显；drill metadata 当前 runner 口径下 runtime `meta.db` 慢于源 SQLite | 部分通过 | 按场景解释，补隔离 metadata microbenchmark |
 | 冷启动查询表现 | 已满足 | cold binary/sqlite/compare 已按同一查询口径刷新 | 通过 | 后续性能变更时重跑 |
 | 热缓存查询表现 | 已满足 | hot benchmark 报告 | 通过 | 无 |
 | 内存占用对比 | 已满足基础报告 | benchmark 报告包含 RSS 和 heap approximation | 通过 | Docker 内存可后续补 |
@@ -224,15 +224,35 @@ hand = 22
 
 ## 剩余主要差距
 
-### Drill metadata 性能优化
+### 真实业务 line-transition benchmark 缺失
+
+当前 `hands-by-actions` 已覆盖“单个 concrete line 下筛选手牌集合”，但还没有覆盖真实业务的行动线转移查询。
+
+更贴近业务的 benchmark 应以完整具体行动线为输入，例如 6 人桌、100BB、2 人对战下：
+
+```text
+F-F-F-R2-F-R7-R15
+```
+
+该行动线可解释为 `BB vs BTN 4bet` 节点。业务侧实际需要：
+
+- 查询前序行动线 `F-F-F-R2-F-R7` 中 BTN 的手牌范围。
+- 查询完整行动线 `F-F-F-R2-F-R7-R15` 中 BB 的手牌范围。
+- 查询完整行动线中 BB 当前可选 actions。
+- 下注尺度和位置归属根据具体行动线与位置映射规则解析。
+
+因此后续应新增 `line-transition` workload，而不是使用同一 `abstract_line` 下 concrete ids 轮转来代表真实访问模式。
+
+### Drill metadata 性能复核
 
 `drill-scenarios-metadata` 已经进入 compare 报告，且 Binary runtime `meta.db` 与源 SQLite 的 result count 一致。但当前 runtime `meta.db` 查询慢于源 SQLite。该接口新旧路径本质都是 SQLite 元数据表查询，不代表 `.idx/.bin` 二进制策略数据查询性能。
 
-建议后续优先评估：
+由于 source 和 runtime 虽然都是 SQLite，但数据库文件、schema、索引顺序、runner 进程上下文不同，不能直接把差异归因成“meta.db 缺索引”。建议后续优先评估：
 
-- `drill_scenario_lines_* (drill_name, player_count, drill_depth)` 组合索引。
+- 隔离的 drill metadata microbenchmark。
+- 缓存 schema resolution 和 prepared SQL 后的 runner 结果。
 - service 层对常用 drill_name 的只读缓存。
-- 构建 `meta.db` 时同步创建 metadata 查询所需索引。
+- 如隔离结果仍慢，再评估额外索引。
 
 ### 构建工具缺断点续跑
 
@@ -256,10 +276,11 @@ hand = 22
 
 ## 后续实施顺序
 
-1. 为 `build` 增加 `--resume` 和 `build-state.json`。
-2. 补版本发布和回滚说明。
-3. 评估 drill metadata 索引或缓存优化。
-4. 可选做进一步压缩实验。
+1. 补 `line-transition` 业务 workload benchmark。
+2. 为 `build` 增加 `--resume` 和 `build-state.json`。
+3. 补版本发布和回滚说明。
+4. 用隔离 benchmark 复核 drill metadata 查询性能，再决定索引或缓存优化。
+5. 可选做进一步压缩实验。
 
 ## 报告清理规则
 

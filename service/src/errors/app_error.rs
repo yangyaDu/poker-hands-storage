@@ -89,6 +89,35 @@ impl AppError {
         )
     }
 
+    pub fn concrete_line_value_not_found(
+        strategy: &str,
+        player_count: u32,
+        depth_bb: u32,
+        concrete_line: &str,
+    ) -> Self {
+        Self::new(
+            "CONCRETE_LINE_NOT_FOUND",
+            format!(
+                "Concrete line not found: concrete_line={concrete_line}, dimension={strategy}:{player_count}:{depth_bb}"
+            ),
+        )
+    }
+
+    pub fn concrete_line_filter_not_found(
+        strategy: &str,
+        player_count: u32,
+        depth_bb: u32,
+        abstract_line: &str,
+        concrete_line: &str,
+    ) -> Self {
+        Self::new(
+            "CONCRETE_LINE_NOT_FOUND",
+            format!(
+                "Concrete line not found: abstract_line={abstract_line}, concrete_line={concrete_line}, dimension={strategy}:{player_count}:{depth_bb}"
+            ),
+        )
+    }
+
     pub fn hand_outside_action_line(
         hole_cards: &str,
         concrete_line_id: u32,

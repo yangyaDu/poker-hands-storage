@@ -11,6 +11,7 @@
 | 阶段 2：刷新 cold compare 报告 | 已完成 | `reports/benchmark-cold-start.*`、`reports/benchmark-sqlite-cold-start.*`、`reports/benchmark-cold-compare.*` |
 | 阶段 3：补 `hands-by-actions` benchmark | 已完成 | `reports/benchmark-range-strata-binary.*`、`reports/benchmark-sqlite.*`、`reports/benchmark-compare.*` |
 | 阶段 4：补 drill 高频随机 metadata benchmark | 已完成 | 同阶段 3 hot benchmark/compare 报告 |
+| 阶段 4.5：补真实业务 `line-transition` benchmark | 待实施 | - |
 | 阶段 5：实现构建断点续跑 | 待实施 | - |
 | 阶段 6：补发布和回滚流程 | 待实施 | - |
 | 阶段 7：同步最终验收文档 | 部分完成 | 阶段 0-2 相关文档已同步 |
@@ -247,11 +248,9 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 1. 扩展 workload 结构，增加 `HandsByActionsBenchmarkItem`。
 2. 从 SQLite 中抽取可用样本：
    - `strategy`
-   - `table_size`
-   - `stack_depth`
    - `player_count`
-   - `abstract_line`
-   - `concrete_line`
+   - `depth_bb`
+   - `concrete_line_id`
    - `action_name` 列表
    - `frequency`
 3. Binary runner 通过 `range-store-core` 执行和 API 一致的查询逻辑。
@@ -301,7 +300,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 | result count | 62,149 | 62,149 |
 | errors | 0 | 0 |
 
-结论：结果数量一致，满足一致性验收；但 runtime `meta.db` 的 drill metadata 查询慢于源 SQLite。该 case 不代表 `.idx/.bin` 二进制策略数据查询性能，后续如果 drill metadata 是高频路径，应补充 metadata 索引或缓存。
+结论：结果数量一致，满足一致性验收；但当前 runner 口径下 runtime `meta.db` 的 drill metadata 查询慢于源 SQLite。该 case 不代表 `.idx/.bin` 二进制策略数据查询性能，也不能直接归因为 SQLite 表结构或索引缺失。后续如果 drill metadata 是高频路径，应先补隔离 microbenchmark，再决定是否需要 prepared statement 缓存、schema resolution 缓存、额外索引或 service 层缓存。
 
 ### 目的
 
@@ -323,7 +322,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
    - `drill_name`
    - `player_count`
    - `drill_depth`
-3. Service/runtime runner 通过 `range-store-core` 查询 `meta.db`。
+3. Service/runtime runner 查询运行目录 `meta.db`。
 4. SQLite runner 通过源 SQLite 查询对应 drill scenario。
 5. Compare 报告新增 `drill-scenarios` 场景，但标题和说明必须标记为 metadata path。
 6. 补单元测试：
@@ -337,6 +336,55 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 - `meta.db` 和源 SQLite 的 abstract line 数量一致。
 - 默认参数和 Swagger/API 文档一致。
 - 总 benchmark 报告中不得把 drill metadata 查询写成 `.idx/.bin` 二进制格式性能优势或劣势。
+
+## 阶段 4.5：补真实业务 `line-transition` benchmark
+
+状态：待实施。
+
+### 目的
+
+当前 `hands-by-actions` benchmark 覆盖的是“单个 concrete line 下按 action/frequency 筛选手牌”。真实业务还有一类更关键的访问模式：根据完整具体行动线推导当前节点和前序节点，然后分别查询不同玩家的范围和当前行动者 actions。
+
+### 业务例子
+
+6 人桌、100BB、2 人对战，完整具体行动线：
+
+```text
+F-F-F-R2-F-R7-R15
+```
+
+该行动线可解释为 `BB vs BTN 4bet` 节点。业务侧需要：
+
+- 前序行动线 `F-F-F-R2-F-R7` 中 BTN 的手牌范围。
+- 完整行动线 `F-F-F-R2-F-R7-R15` 中 BB 的手牌范围。
+- 完整行动线中 BB 当前可选 actions。
+
+下注尺度和位置归属通过具体行动线和位置映射规则解析。该模式不是同一 `abstract_line` 下 concrete ids 轮转，因此不能用 `abstract-local` 作为真实业务替代。
+
+### 实施步骤
+
+1. 新增 workload item：`LineTransitionBenchmarkItem`。
+2. 从 `concrete_lines_*` 中抽样完整 `concrete_line`，生成：
+   - `full_concrete_line`
+   - `prefix_concrete_line`
+   - `full_concrete_line_id`
+   - `prefix_concrete_line_id`
+   - 当前行动者位置
+   - 前序范围所属位置
+3. 增加位置/行动者解析模块，先支持当前 preflop line 语法。
+4. Binary runner 执行：
+   - prefix line 的 hand range 查询。
+   - full line 的 hand range 查询。
+   - full line 的 actions 查询。
+5. SQLite baseline 执行等价查询。
+6. compare 报告新增 `line-transition` case。
+
+### 验收条件
+
+- 报告包含 `line-transition` 的 P50/P95/P99。
+- Binary 和 SQLite 的 prefix range result count 一致。
+- Binary 和 SQLite 的 full line range/actions result count 一致。
+- 文档明确该场景才是主要业务 workload，`abstract-local` 仅保留为非主验收压力场景。
 
 ## 阶段 5：实现构建断点续跑
 
@@ -495,6 +543,7 @@ Invoke-RestMethod http://127.0.0.1:3000/ready
 3. benchmark 覆盖：
    - 单手牌查询
    - 单行动线全部手牌查询
+   - 真实业务 line-transition 查询
    - drill 高频随机 metadata 查询
    - 批量查询
 4. Binary vs SQLite 报告包含 P50/P95/P99、内存、冷启动、热查询。
@@ -510,8 +559,9 @@ Invoke-RestMethod http://127.0.0.1:3000/ready
 2. 重生成 cold compare。已完成。
 3. 补 `hands-by-actions` benchmark。已完成。
 4. 补 drill metadata benchmark。已完成。
-5. 实现 `build --resume`。
-6. 补发布和回滚文档。
-7. 重建 Docker 镜像并启动容器做最终 smoke test。
+5. 补真实业务 `line-transition` benchmark。
+6. 实现 `build --resume`。
+7. 补发布和回滚文档。
+8. 重建 Docker 镜像并启动容器做最终 smoke test。
 
 每完成一项，都先更新对应报告，再更新评估文档状态。

@@ -8,7 +8,7 @@ use utoipa::ToSchema;
 use crate::errors::AppError;
 use crate::query::dimension_handle_pool::HandlePool;
 use crate::storage::manifest::{load_manifest, queryable_dimensions};
-use crate::storage::metadata::{ConcreteLineRow, MetadataReader};
+use crate::storage::metadata::{ConcreteLineFilter, ConcreteLineRow, MetadataReader};
 use range_store_core::action_schema::{ActionDef, ActionName};
 use range_store_core::dimension::DimensionRef;
 use range_store_core::hole_cards::{hand_code_from_id, parse_hole_cards, ParsedHand};
@@ -449,13 +449,13 @@ impl QueryService {
     pub fn get_concrete_lines(
         &self,
         dimension: &DimensionRef,
-        abstract_line: &str,
+        filter: ConcreteLineFilter<'_>,
     ) -> Result<Vec<ConcreteLineRow>, AppError> {
         self.metadata.get_concrete_lines(
             &dimension.strategy,
             dimension.player_count,
             dimension.depth_bb,
-            abstract_line,
+            filter,
         )
     }
 
