@@ -1,6 +1,6 @@
 # Docker 部署流程
 
-更新日期：2026-06-28
+更新日期：2026-07-02
 
 ## 部署目标
 
@@ -141,50 +141,121 @@ http://127.0.0.1:8080/api-docs/openapi.json
 
 ## 发布前数据准备
 
-构建数据：
+建议每次发布都生成一个新的版本化数据目录，不要覆盖正在运行的目录：
+
+```text
+data/
+  range-strata-releases/
+    2026-07-02T230000Z/
+      manifest.json
+      meta.db
+      *.idx
+      *.bin
+      build-state.json
+    2026-07-03T010000Z/
+      manifest.json
+      meta.db
+      *.idx
+      *.bin
+      build-state.json
+```
+
+构建新版本数据：
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
   --source-db data\sqlite\range.db `
-  --out-dir data\range-strata `
+  --out-dir data\range-strata-releases\2026-07-02T230000Z `
+  --resume
+```
+
+如果构建中断，使用相同命令继续。`--resume` 会读取输出目录中的 `build-state.json`，跳过已完成且 size/checksum 匹配的维度。
+
+如果确认要从零重建某个版本目录，使用 `--overwrite`，不要和 `--resume` 同时使用：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
+  --source-db data\sqlite\range.db `
+  --out-dir data\range-strata-releases\2026-07-02T230000Z `
   --overwrite
 ```
 
-验证数据：
+发布前必须验证数据：
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
   --mode standalone `
-  --dir data\range-strata `
+  --dir data\range-strata-releases\2026-07-02T230000Z `
   --verify-checksum
 
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
   --mode cross `
-  --dir data\range-strata `
+  --dir data\range-strata-releases\2026-07-02T230000Z `
   --source data\sqlite\range.db `
-  --sample-size 10000 `
+  --sample-size 0 `
   --verify-checksum
 ```
 
-严格发布建议使用 `--sample-size 0` 做全量 cross verify。
+发布验收口径：
+
+- standalone verify 必须通过。
+- full cross verify 推荐使用 `--sample-size 0`，失败数必须为 0。
+- 如果源 SQLite 不在生产环境，需要在离线构建环境完成 cross verify 后再发布数据目录。
 
 ## 推荐部署流程
 
-1. 从源 SQLite 构建新的 Range Strata 数据目录。
-2. 对新目录执行 standalone verify。
-3. 如果源 SQLite 可用，对新目录执行 cross verify。
-4. 构建 Docker 镜像。
-5. 用新数据目录启动容器。
-6. 检查 `/health`、`/ready`。
-7. 执行至少一个 `hand-strategy` smoke 查询。
-8. 切正式流量。
+1. 选择新 release id，例如 `2026-07-02T230000Z`。
+2. 用 `build --resume` 构建到新版本目录。
+3. 对新目录执行 standalone verify。
+4. 对新目录执行 full cross verify。
+5. 构建 Docker 镜像。
+6. 设置 `PHS_HOST_DATA_DIR` 指向新版本目录。
+7. 启动或重建容器。
+8. 检查 `/health`、`/ready`。
+9. 执行至少一个 `concrete-lines` 和一个 `hands-by-actions` smoke 查询。
+10. 切正式流量。
 
 命令示例：
 
 ```powershell
-docker compose -f .docker\docker-compose.yml up --build -d
+$env:PHS_HOST_DATA_DIR = "C:\Users\Duyang\Desktop\elysia_project\poker-hands-storage\data\range-strata-releases\2026-07-02T230000Z"
+
+docker compose -f .docker\docker-compose.yml build
+docker compose -f .docker\docker-compose.yml up -d
 docker compose -f .docker\docker-compose.yml ps
 Invoke-RestMethod http://127.0.0.1:8080/ready
+```
+
+Smoke 查询：
+
+```powershell
+$lineBody = @{
+  strategy = "default"
+  player_count = 6
+  depth_bb = 100
+  concrete_line = "F-F-F"
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:8080/range/concrete-lines `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $lineBody
+
+$rangeBody = @{
+  strategy = "default"
+  player_count = 6
+  depth_bb = 100
+  concrete_line_id = 1
+  actions = @()
+  frequency = 0.005
+} | ConvertTo-Json
+
+Invoke-RestMethod `
+  -Uri http://127.0.0.1:8080/range/hands-by-actions `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $rangeBody
 ```
 
 ## Kubernetes 部署
@@ -247,19 +318,35 @@ Compose 当前配置：
 推荐使用版本化数据目录：
 
 ```text
-range-strata-v1/
-range-strata-v2/
-current -> range-strata-v2
+data/range-strata-releases/
+  2026-07-02T230000Z/
+  2026-07-03T010000Z/
 ```
 
-回滚时切回旧目录并重启容器：
+回滚时切回旧目录并重启容器。Compose 使用 `PHS_HOST_DATA_DIR` 控制宿主机数据目录：
 
 ```powershell
-$env:PHS_HOST_DATA_DIR = "C:\path\to\range-strata-v1"
+$env:PHS_HOST_DATA_DIR = "C:\Users\Duyang\Desktop\elysia_project\poker-hands-storage\data\range-strata-releases\2026-07-02T230000Z"
 docker compose -f .docker\docker-compose.yml up -d
+docker compose -f .docker\docker-compose.yml ps
+Invoke-RestMethod http://127.0.0.1:8080/ready
 ```
 
+回滚验收：
+
+- 容器重新进入 healthy。
+- `/ready` 返回 `code=0`。
+- smoke 查询返回正常结果。
+
 不要在已有容器正在 mmap 的目录中原地覆盖 `.idx/.bin` 文件。应发布新目录并重启或滚动替换容器。
+
+## 发布注意事项
+
+- `build-state.json` 是构建恢复和审计文件，建议随数据目录一起保留。
+- `manifest.json` 是服务入口，缺失或格式错误会导致 `/ready` 失败。
+- `meta.db`、`.idx`、`.bin` 必须来自同一次构建，不要跨版本混用。
+- 发布前不要只跑 sampled cross verify 作为最终验收；正式发布建议 full cross verify。
+- 如果新版本启动失败，不要在同一目录内修补文件，重新构建一个新 release 目录。
 
 ## 常见问题
 
@@ -299,4 +386,3 @@ Windows 本机运行时可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`，Docker
 - `PHS_VERIFY_CHECKSUMS=true` 增加了 pack 读取和计算。
 
 先用较小 prewarm 集合验证，再逐步增加。
-

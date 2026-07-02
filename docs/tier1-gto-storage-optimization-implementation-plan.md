@@ -1,6 +1,6 @@
 # 档位一：GTO 数据瘦身与查询性能优化实施方案
 
-更新日期：2026-07-01
+更新日期：2026-07-02
 
 ## 当前执行状态
 
@@ -11,9 +11,10 @@
 | 阶段 2：刷新 cold compare 报告 | 已完成 | `reports/benchmark-cold-start.*`、`reports/benchmark-sqlite-cold-start.*`、`reports/benchmark-cold-compare.*` |
 | 阶段 3：补 `hands-by-actions` benchmark | 已完成 | `reports/benchmark-range-strata-binary.*`、`reports/benchmark-sqlite.*`、`reports/benchmark-compare.*` |
 | 阶段 4：补 drill 高频随机 metadata benchmark | 已完成 | 同阶段 3 hot benchmark/compare 报告 |
-| 阶段 4.5：补真实业务 `line-transition` benchmark | 待实施 | - |
-| 阶段 5：实现构建断点续跑 | 待实施 | - |
-| 阶段 6：补发布和回滚流程 | 待实施 | - |
+| 阶段 4.4：收束具体行动线 lookup 原子接口 | 已完成 | `/range/concrete-lines` 支持 `concrete_line` 精确查询 |
+| 阶段 4.5：补真实业务 `line-transition` 访问链路 benchmark | 待实施 | - |
+| 阶段 5：实现构建断点续跑 | 已完成 | `storage-tools build --resume`、`build-state.json` |
+| 阶段 6：补发布和回滚流程 | 已完成 | `docs/docker-deployment-guide.md` |
 | 阶段 7：同步最终验收文档 | 部分完成 | 阶段 0-2 相关文档已同步 |
 
 ## 目标
@@ -37,6 +38,58 @@ data/range-strata      约 345MB Range Strata Binary 运行目录
 - 不删除 `data/` 下 SQLite 或 Range Strata 数据文件。
 - 涉及代码改动时先补测试，再跑对应测试，最后再跑 workspace 级检查。
 - Docker 只作为最终服务验收，不把 `storage-tools` 放进运行镜像。
+
+## line-transition 实现边界收束
+
+本项目第一版不实现新的“决策树 range payload 存储”，也不新建一套用于策略数据的树形 `.idx/.bin`。
+
+当前收束后的职责边界是：
+
+```text
+业务后端:
+  full_line = F-F-F-R2-F-R7-R15
+  prefix_line = F-F-F-R2-F-R7
+  根据位置映射解释 BTN/BB、3bet/4bet、下注尺度等业务语义
+
+本项目:
+  /range/concrete-lines:
+    concrete_line -> concrete_line_id
+
+  /range/hands-by-actions:
+    concrete_line_id -> hole_cards
+
+内部存储:
+  meta.db:
+    concrete_line -> concrete_line_id
+
+  现有 .idx/.bin:
+    concrete_line_id -> range/action payload
+```
+
+因此真实业务调用链第一版是：
+
+```text
+prefix_id = /range/concrete-lines(prefix_line)
+full_id   = /range/concrete-lines(full_line)
+
+BTN range = /range/hands-by-actions(prefix_id, actions=[], frequency=0.005)
+BB range  = /range/hands-by-actions(full_id, actions=[], frequency=0.005)
+```
+
+同一个维度不会天然造成额外延迟；同维度会复用 handle pool、action schema 和 OS page cache。更主要的延迟来源是多次 HTTP/JSON 往返，尤其是 4 次串行调用。后续优化优先级是：
+
+1. 保持 `meta.db concrete_line` 精确索引，新构建的 runtime `meta.db` 已补 `concrete_line` 单列索引。
+2. 补 batch 原子接口，先把 4 次串行 HTTP 降到 2 次或 1 次。
+3. 如果 benchmark 证明 `concrete_line -> concrete_line_id` lookup 仍是瓶颈，再考虑轻量 path index。
+
+轻量 path index 的边界只能是：
+
+```text
+concrete_line/path node -> concrete_line_id
+parent_node -> prefix concrete_line_id
+```
+
+它不复制 169 手牌策略数据，不替代现有 `.idx/.bin`，也不承担 abstract line 到 concrete line 的映射。抽象行动线和 drill metadata 继续由 `meta.db` 负责。
 
 ## 阶段 0：固定基线和报告口径
 
@@ -337,13 +390,58 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 - 默认参数和 Swagger/API 文档一致。
 - 总 benchmark 报告中不得把 drill metadata 查询写成 `.idx/.bin` 二进制格式性能优势或劣势。
 
-## 阶段 4.5：补真实业务 `line-transition` benchmark
+## 阶段 4.4：收束具体行动线 lookup 原子接口
+
+状态：已完成。
+
+### 目的
+
+让业务后端可以用具体行动线字符串精确拿到 `concrete_line_id`，避免把 abstract line 查询结果拿到业务侧再做本地过滤。
+
+### 已实现
+
+- `/range/concrete-lines` 请求体新增 `concrete_line`。
+- `abstract_line` 和 `concrete_line` 都是可选字段，但业务校验要求二者至少传一个。
+- 两者都不传返回 400。
+- 空字符串返回 400。
+- `null` 返回 400；OpenAPI 中这两个字段展示为可省略的 `string`，不展示为 `string | null`。
+- 只传 `abstract_line` 时保持原有行为。
+- 只传 `concrete_line` 时做精确查询，返回匹配的 `concrete_line_id`。
+- 两者同时传时按两个条件同时匹配。
+- 新构建的 runtime `meta.db` 会给 `concrete_line` 建单列索引。
+
+### 当前 API 组合
+
+业务后端根据完整具体行动线生成 prefix：
+
+```text
+full_line   = F-F-F-R2-F-R7-R15
+prefix_line = F-F-F-R2-F-R7
+```
+
+然后调用：
+
+```text
+prefix_id = /range/concrete-lines(concrete_line=prefix_line)
+full_id   = /range/concrete-lines(concrete_line=full_line)
+
+prefix range = /range/hands-by-actions(concrete_line_id=prefix_id, actions=[], frequency=0.005)
+full range   = /range/hands-by-actions(concrete_line_id=full_id, actions=[], frequency=0.005)
+```
+
+### 后续缺口
+
+如果业务还需要“当前节点可选 actions”，当前最接近的接口是 `/range/hand-strategy`，但它要求传入具体 `hole_cards`，不是纯粹的 line action schema 查询。后续需要评估是否补一个按 `concrete_line_id` 返回当前 action schema 的原子接口。
+
+## 阶段 4.5：补真实业务 `line-transition` 访问链路 benchmark
 
 状态：待实施。
 
 ### 目的
 
-当前 `hands-by-actions` benchmark 覆盖的是“单个 concrete line 下按 action/frequency 筛选手牌”。真实业务还有一类更关键的访问模式：根据完整具体行动线推导当前节点和前序节点，然后分别查询不同玩家的范围和当前行动者 actions。
+当前 `hands-by-actions` benchmark 覆盖的是“单个 concrete line 下按 action/frequency 筛选手牌”。真实业务还有一类更关键的访问模式：根据完整具体行动线推导当前节点和前序节点，然后分别查询不同玩家的范围，并在需要时查询当前节点 actions。
+
+本阶段先验证当前原子接口组合是否足够快，不先做树形 `.idx/.bin` 或新的 range payload 存储。
 
 ### 业务例子
 
@@ -369,86 +467,152 @@ F-F-F-R2-F-R7-R15
    - `prefix_concrete_line`
    - `full_concrete_line_id`
    - `prefix_concrete_line_id`
-   - 当前行动者位置
-   - 前序范围所属位置
-3. 增加位置/行动者解析模块，先支持当前 preflop line 语法。
-4. Binary runner 执行：
+3. 不在 `storage-tools` 中实现完整业务决策树解释；位置、3bet/4bet、下注尺度等解释由业务后端负责。
+4. 第一组 benchmark：模拟当前原子接口链路。
+   - prefix concrete_line 精确 lookup。
+   - full concrete_line 精确 lookup。
    - prefix line 的 hand range 查询。
    - full line 的 hand range 查询。
-   - full line 的 actions 查询。
-5. SQLite baseline 执行等价查询。
-6. compare 报告新增 `line-transition` case。
+5. 第二组 benchmark：测 batch 优化收益。
+   - 如果先补 `/range/hands-by-actions-batch`，则把两次 range 查询合并成一次。
+   - 如果再补 `/range/concrete-lines-batch`，则把两次 concrete line lookup 合并成一次。
+6. SQLite baseline 执行等价查询：
+   - `concrete_lines_* WHERE concrete_line = ?`
+   - `range_data_* WHERE concrete_line_id = ? AND frequency > ?`
+7. compare 报告新增 `line-transition` case，并区分：
+   - `line-transition-serial`
+   - `line-transition-batch-range`
+   - `line-transition-batch-lookup-and-range`
+8. 如果业务确实需要当前节点 actions，再增加一个独立 case 验证 action schema 查询路径；不要把它混进 range 查询耗时里。
 
 ### 验收条件
 
 - 报告包含 `line-transition` 的 P50/P95/P99。
 - Binary 和 SQLite 的 prefix range result count 一致。
-- Binary 和 SQLite 的 full line range/actions result count 一致。
+- Binary 和 SQLite 的 full line range result count 一致。
+- 报告能说明多次 HTTP/JSON 往返占总耗时的比例。
+- 报告能回答 batch 接口是否比树形 path index 更值得优先做。
 - 文档明确该场景才是主要业务 workload，`abstract-local` 仅保留为非主验收压力场景。
 
+### 暂不实施的内容
+
+- 不新增树形 range `.idx/.bin`。
+- 不复制现有 range/action payload。
+- 不把 `concrete_line` 直接映射到 `.bin` offset。
+- 不把 abstract line 到 concrete line 的映射迁移出 `meta.db`。
+- 不在本项目内实现完整业务决策树解释。
+
+### 可能的后续优化
+
+只有当阶段 4.5 benchmark 证明 lookup 本身成为瓶颈时，才考虑新增轻量 path index。它的职责限定为：
+
+```text
+full concrete_line -> full concrete_line_id
+full concrete_line -> parent/prefix concrete_line_id
+parent + token -> child concrete_line_id
+```
+
+该 index 可以先落在 `meta.db path_nodes` 表中；如果仍不满足性能，再考虑独立二进制 path index。无论哪种方式，都不替代现有 range `.idx/.bin`。
+
 ## 阶段 5：实现构建断点续跑
+
+状态：已完成。
 
 ### 目的
 
 满足“失败中断后重新执行”的验收要求，避免构建到中途失败后只能全量重跑。
 
-### 设计
-
-新增：
+### 已实现
 
 - `storage-tools build --resume`
-- `build-state.json`
-- per-dimension 临时文件
-- 完成后原子 rename
+- 输出目录中的 `build-state.json`
+- 每个维度成功后立即写入 state
+- 已完成维度恢复时校验：
+  - `.idx/.bin` 文件存在
+  - 文件 size 匹配
+  - 文件 SHA-256 匹配
+- source SQLite checksum 不一致时拒绝 resume
+- `--max-concrete-lines` 参数不一致时拒绝 resume
+- 选中维度集合不一致时拒绝 resume
+- 残留 `.tmp` 文件不会作为正式产物；pending 维度重建前会清理该维度 `.tmp`
+- `--resume` 和 `--overwrite` 互斥
 
-建议 `build-state.json` 记录：
+`build-state.json` 记录：
 
 ```json
 {
-  "source_db": "data/sqlite/range.db",
-  "source_checksum": "...",
-  "output_dir": "data/range-strata",
-  "started_at": "...",
-  "updated_at": "...",
+  "version": 1,
+  "sourceDb": "data\\sqlite\\range.db",
+  "sourceDbChecksum": "...",
+  "outputDir": "data\\range-strata",
+  "builtAt": "...",
+  "updatedAt": "...",
+  "maxConcreteLinesPerDimension": null,
   "dimensions": [
     {
       "strategy": "default",
-      "table_size": 6,
-      "stack_depth": 100,
+      "playerCount": 6,
+      "depthBb": 100,
       "status": "completed",
-      "idx_path": "...",
-      "bin_path": "...",
-      "record_count": 0,
-      "pack_count": 0,
-      "idx_size": 0,
-      "bin_size": 0,
-      "checksum": "..."
+      "concreteLineCount": 3737,
+      "packCount": 3737,
+      "binFile": "ranges_default_6max_100BB.bin",
+      "idxFile": "ranges_default_6max_100BB.idx",
+      "binFileSizeBytes": 2172204,
+      "idxFileSizeBytes": 82230,
+      "binFileChecksum": "...",
+      "idxFileChecksum": "...",
+      "completedAt": "..."
     }
   ]
 }
 ```
 
-### 实施步骤
+### 使用方式
 
-1. CLI 增加 `--resume` 参数。
-2. Builder 生成维度时先写 `.tmp` 文件。
-3. 单个维度成功后写入 state，并把 `.tmp` 原子 rename 成正式文件。
-4. `--resume` 模式下，跳过 state 中已完成且文件存在、size/checksum 匹配的维度。
-5. 如果 source checksum 不一致，拒绝 resume。
-6. 如果参数变更导致输出结构不一致，拒绝 resume。
-7. 增加测试：
-   - state 文件可写入。
-   - 已完成维度会跳过。
-   - checksum 不一致会拒绝。
-   - 中断后的 `.tmp` 不会被当作正式产物。
+新构建：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
+  --source-db data\sqlite\range.db `
+  --out-dir data\range-strata-next `
+  --resume
+```
+
+中断后继续：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
+  --source-db data\sqlite\range.db `
+  --out-dir data\range-strata-next `
+  --resume
+```
+
+强制从零重建：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
+  --source-db data\sqlite\range.db `
+  --out-dir data\range-strata-next `
+  --overwrite
+```
+
+注意：非空目录如果没有 `build-state.json`，`--resume` 会拒绝继续。该目录需要人工确认后用 `--overwrite` 重建或换新目录。
 
 ### 验收条件
 
-- 构建中断后重新执行 `--resume` 能继续处理未完成维度。
+- 构建中断后重新执行 `--resume` 能跳过已完成维度并继续处理未完成维度。
 - 完整构建结果与不使用 `--resume` 的结果一致。
 - 错误信息能说明为什么不能 resume。
+- 已补测试：
+  - state 文件可写入。
+  - 已完成维度可复用。
+  - pending 维度可重建。
+  - source checksum 不一致会拒绝。
 
 ## 阶段 6：补发布和回滚流程
+
+状态：已完成。
 
 ### 目的
 
@@ -482,15 +646,16 @@ Docker 部署通过 volume 映射和环境变量切换数据目录。
 
 ### 实施步骤
 
-1. 更新 `docs/docker-deployment-guide.md`：
-   - 数据版本目录
-   - 发布前 verify
-   - 启动容器
-   - `/ready`
-   - 回滚
-2. 如果需要，补一个只负责整理发布目录的 storage-tools 子命令：
-   - `release prepare`
-   - `release validate`
+1. 已更新 `docs/docker-deployment-guide.md`：
+   - 数据版本目录。
+   - `build --resume` 构建新版本。
+   - 发布前 standalone verify。
+   - 发布前 full cross verify。
+   - Compose 切换 `PHS_HOST_DATA_DIR`。
+   - `/ready` 验证。
+   - smoke 查询。
+   - 回滚到上一版本目录。
+2. 当前没有新增 release 子命令。阶段 6 先以文档化流程交付，避免在没有真实发布平台约束前过度封装。
 3. Docker engine 可用时执行：
 
 ```powershell
@@ -509,6 +674,7 @@ Invoke-RestMethod http://127.0.0.1:3000/ready
 - 新版本发布前必须有 standalone verify 和 cross verify 结果。
 - `/ready` 返回 ready 后才对外接流量。
 - 回滚只需要切回上一版本数据目录并重启容器。
+- 不允许在容器正在 mmap 的目录中原地覆盖 `.idx/.bin`。
 
 ## 阶段 7：同步最终验收文档
 
@@ -543,13 +709,14 @@ Invoke-RestMethod http://127.0.0.1:3000/ready
 3. benchmark 覆盖：
    - 单手牌查询
    - 单行动线全部手牌查询
-   - 真实业务 line-transition 查询
+   - 真实业务 line-transition 访问链路查询
    - drill 高频随机 metadata 查询
    - 批量查询
-4. Binary vs SQLite 报告包含 P50/P95/P99、内存、冷启动、热查询。
+4. Binary vs SQLite 报告包含 P50/P95/P99、内存、冷启动、热查询，并能区分 range payload、metadata lookup 和 HTTP/JSON 往返成本。
 5. `storage-tools build --resume` 可从中断点继续。
 6. Docker 镜像可重建，容器可启动，`/ready` 返回 ready。
 7. 发布和回滚流程可按文档执行。
+8. 不把轻量 path index 或树形 lookup 当成档位一通过前置条件；只有 benchmark 证明需要时再进入后续优化。
 
 ## 建议执行顺序
 
@@ -559,9 +726,11 @@ Invoke-RestMethod http://127.0.0.1:3000/ready
 2. 重生成 cold compare。已完成。
 3. 补 `hands-by-actions` benchmark。已完成。
 4. 补 drill metadata benchmark。已完成。
-5. 补真实业务 `line-transition` benchmark。
-6. 实现 `build --resume`。
-7. 补发布和回滚文档。
-8. 重建 Docker 镜像并启动容器做最终 smoke test。
+5. 收束 `/range/concrete-lines` 的 `concrete_line` 精确 lookup。已完成。
+6. 补真实业务 `line-transition` 访问链路 benchmark。
+7. 根据 benchmark 决定是否先补 batch 原子接口。
+8. 实现 `build --resume`。已完成。
+9. 补发布和回滚文档。已完成。
+10. 重建 Docker 镜像并启动容器做最终 smoke test。
 
 每完成一项，都先更新对应报告，再更新评估文档状态。

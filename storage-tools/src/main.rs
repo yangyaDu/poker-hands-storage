@@ -59,6 +59,7 @@ fn run_build(args: Vec<String>) -> Result<(), ToolError> {
     let mut dimensions = Vec::new();
     let mut max_concrete_lines = None;
     let mut overwrite = false;
+    let mut resume = false;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -71,6 +72,7 @@ fn run_build(args: Vec<String>) -> Result<(), ToolError> {
                 })?)
             }
             "--overwrite" => overwrite = true,
+            "--resume" => resume = true,
             option => {
                 return Err(ToolError::invalid_argument(format!(
                     "Unknown build option: {option}"
@@ -86,6 +88,7 @@ fn run_build(args: Vec<String>) -> Result<(), ToolError> {
         dimensions,
         max_concrete_lines_per_dimension: max_concrete_lines,
         overwrite,
+        resume,
     })?;
     println!("manifest={}", summary.manifest_path.display());
     for dimension in summary.dimensions {
@@ -367,7 +370,7 @@ fn print_help() {
 Commands:
   build --source-db <range.db> --out-dir <dir>
         [--dimension strategy:player_count:depth_bb]
-        [--max-concrete-lines <count>] [--overwrite]
+        [--max-concrete-lines <count>] [--overwrite] [--resume]
 
   verify --dir <dir> [--mode standalone|cross] [--source <range.db>]
          [--verify-checksum] [--sample-size <n>] [--max-failures <n>]
