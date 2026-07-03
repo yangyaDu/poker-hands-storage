@@ -1,6 +1,6 @@
 use axum::extract::State;
 use axum::Json;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use utoipa::ToSchema;
 
 use crate::http::blocking_task::run_blocking;
@@ -10,7 +10,7 @@ use crate::http::request_validation::{
     ALLOWED_STRATEGIES,
 };
 use crate::http::{ApiResponse, AppState, HttpError};
-use crate::storage::metadata::ConcreteLineRow;
+use crate::storage::metadata::{ConcreteLineFilter, ConcreteLineRow};
 use range_store_core::dimension::DimensionRef;
 
 #[derive(Deserialize, ToSchema)]
@@ -28,9 +28,13 @@ pub struct ConcreteLinesRequest {
     #[serde(default = "default_depth_bb")]
     depth_bb: u32,
     /// Abstract action line used to find concrete lines.
-    #[schema(example = "F-F-F")]
-    #[serde(default)]
-    abstract_line: String,
+    #[schema(example = "F-F-F", nullable = false)]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    abstract_line: Option<String>,
+    /// Concrete action line used for exact concrete-line lookup.
+    #[schema(example = "F-F-F-R2-F-R7-R15", nullable = false)]
+    #[serde(default, deserialize_with = "deserialize_optional_string")]
+    concrete_line: Option<String>,
 }
 
 #[derive(Serialize, ToSchema)]
@@ -89,7 +93,18 @@ impl ValidateRequest for ConcreteLinesRequest {
             ALLOWED_DEPTH_BB,
             "must be one of 100, 200, 300",
         );
-        validate_required_string(&mut errors, "abstract_line", &self.abstract_line);
+        if self.abstract_line.is_none() && self.concrete_line.is_none() {
+            errors.push(
+                "abstract_line/concrete_line",
+                "one of abstract_line or concrete_line must be provided",
+            );
+        }
+        if let Some(abstract_line) = &self.abstract_line {
+            validate_required_string(&mut errors, "abstract_line", abstract_line);
+        }
+        if let Some(concrete_line) = &self.concrete_line {
+            validate_required_string(&mut errors, "concrete_line", concrete_line);
+        }
         errors.finish()
     }
 }
@@ -166,6 +181,13 @@ fn default_drill_name() -> String {
     "rfi".to_owned()
 }
 
+fn deserialize_optional_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    String::deserialize(deserializer).map(Some)
+}
+
 #[utoipa::path(
     post,
     path = "/range/concrete-lines",
@@ -192,8 +214,20 @@ async fn concrete_lines_impl(
     let service = state.service;
     let response = run_blocking(move || {
         let dimension = DimensionRef::new(request.strategy, request.player_count, request.depth_bb);
+        let filter = match (
+            request.abstract_line.as_deref(),
+            request.concrete_line.as_deref(),
+        ) {
+            (Some(abstract_line), Some(concrete_line)) => ConcreteLineFilter::AbstractAndConcrete {
+                abstract_line,
+                concrete_line,
+            },
+            (Some(abstract_line), None) => ConcreteLineFilter::Abstract(abstract_line),
+            (None, Some(concrete_line)) => ConcreteLineFilter::Concrete(concrete_line),
+            (None, None) => unreachable!("ConcreteLinesRequest validation requires a line filter"),
+        };
         service
-            .get_concrete_lines(&dimension, &request.abstract_line)
+            .get_concrete_lines(&dimension, filter)
             .map(|lines| ConcreteLinesPayload { lines })
     })
     .await?;

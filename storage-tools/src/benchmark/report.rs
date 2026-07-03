@@ -32,6 +32,8 @@ pub struct BenchmarkWorkloadSummary {
     pub hand_queries: usize,
     pub batch_queries: usize,
     pub batch_size: usize,
+    pub hands_by_actions_queries: usize,
+    pub drill_scenario_queries: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -96,6 +98,8 @@ pub fn build_benchmark_report_for_engine(input: ReportInput, engine: &str) -> Be
             hand_queries: input.workload.hand_queries.len(),
             batch_queries: input.workload.batch_queries.len(),
             batch_size: input.workload.batch_size,
+            hands_by_actions_queries: input.workload.hands_by_actions_queries.len(),
+            drill_scenario_queries: input.workload.drill_scenario_queries.len(),
         },
         workload_source: input.workload_source.to_string(),
         workload_path: input.workload_path,
@@ -156,10 +160,7 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     ));
     markdown.push_str(&format!("- Aggregate QPS: {:.2}\n", report.totals.avg_qps));
     markdown.push_str(&format!("- Error count: {}\n", report.totals.error_count));
-    markdown.push_str(&format!(
-        "- Result action count: {}\n",
-        report.totals.result_count
-    ));
+    markdown.push_str(&format!("- Result count: {}\n", report.totals.result_count));
     if report.engine == "sqlite" {
         markdown.push_str("- Cold start: not measured by this command\n\n");
     } else {
@@ -181,6 +182,14 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
         report.workload.batch_queries
     ));
     markdown.push_str(&format!("- Batch size: {}\n", report.workload.batch_size));
+    markdown.push_str(&format!(
+        "- Hands-by-actions queries: {}\n",
+        report.workload.hands_by_actions_queries
+    ));
+    markdown.push_str(&format!(
+        "- Drill scenario metadata queries: {}\n",
+        report.workload.drill_scenario_queries
+    ));
     markdown.push_str(&format!(
         "- Warmup iterations: {}\n\n",
         report.options.warmup_iterations

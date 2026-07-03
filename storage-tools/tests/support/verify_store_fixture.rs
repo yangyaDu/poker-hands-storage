@@ -56,6 +56,7 @@ pub fn build_verify_fixture(root: &Path) -> (PathBuf, PathBuf) {
         }],
         max_concrete_lines_per_dimension: None,
         overwrite: false,
+        resume: false,
     })
     .unwrap();
 

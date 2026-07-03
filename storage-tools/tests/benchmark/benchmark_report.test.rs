@@ -36,6 +36,8 @@ fn benchmark_report_renders_latency_memory_and_verification() {
             batch_queries: Vec::new(),
             batch_size: 1,
             batch_queries_by_size: Vec::new(),
+            hands_by_actions_queries: Vec::new(),
+            drill_scenario_queries: Vec::new(),
         },
         workload_source: WorkloadSource::Generated,
         workload_path: None,
@@ -64,6 +66,8 @@ fn benchmark_report_renders_latency_memory_and_verification() {
     assert!(markdown.contains("hand-strategy"));
     assert!(markdown.contains("Result Verification"));
     assert!(markdown.contains("SQLite=3, rangeStrata=2"));
+    assert!(markdown.contains("Hands-by-actions queries"));
+    assert!(markdown.contains("Drill scenario metadata queries"));
     assert!(markdown.contains("Delta RSS"));
 }
 

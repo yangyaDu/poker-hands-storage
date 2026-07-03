@@ -75,7 +75,33 @@ impl BatchBenchmarkItem {
 
 pub type BatchQueriesBySize = Vec<(usize, Vec<BatchBenchmarkItem>)>;
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct HandsByActionsBenchmarkItem {
+    pub strategy: String,
+    pub player_count: u32,
+    pub depth_bb: u32,
+    pub concrete_line_id: u32,
+    pub actions: Vec<String>,
+    pub frequency: Option<f64>,
+}
+
+impl HandsByActionsBenchmarkItem {
+    pub fn dimension(&self) -> DimensionRef {
+        DimensionRef::new(self.strategy.clone(), self.player_count, self.depth_bb)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct DrillScenarioBenchmarkItem {
+    pub strategy: String,
+    pub drill_name: String,
+    pub player_count: u32,
+    pub drill_depth: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct BenchmarkWorkload {
     pub seed: u64,
@@ -85,6 +111,8 @@ pub struct BenchmarkWorkload {
     pub batch_queries: Vec<BatchBenchmarkItem>,
     pub batch_size: usize,
     pub batch_queries_by_size: BatchQueriesBySize,
+    pub hands_by_actions_queries: Vec<HandsByActionsBenchmarkItem>,
+    pub drill_scenario_queries: Vec<DrillScenarioBenchmarkItem>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +170,10 @@ pub fn concrete_lines_table_name(dimension: &DimensionRef) -> String {
         "concrete_lines_{}_{}max_{}BB",
         dimension.strategy, dimension.player_count, dimension.depth_bb
     )
+}
+
+pub fn drill_scenario_table_name(strategy: &str) -> String {
+    range_store_core::dimension::get_drill_scenario_table_name(strategy)
 }
 
 pub fn dimension_matches_requested(

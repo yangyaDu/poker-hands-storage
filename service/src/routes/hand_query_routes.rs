@@ -95,12 +95,13 @@ pub struct HandsByActionsRequest {
     #[serde(default)]
     concrete_line_id: u32,
     /// Optional list of action-name filters. Omitted or empty means all hands in the concrete line.
+    /// When multiple actions are provided, a hand is included when any listed action matches.
     /// Supported names: fold, call, check, bet, raise, allin. Amount suffixes such as raise2.5
     /// are also accepted for exact action-size filtering.
     #[schema(nullable, example = json!(["fold", "raise"]))]
     actions: Option<Vec<String>>,
-    /// Optional frequency threshold. Only hands with frequency >= this value are included.
-    #[schema(nullable, example = 0.005, default = 0.0)]
+    /// Optional frequency threshold. Omitted requests use frequency > 0.005.
+    #[schema(nullable, example = 0.005, default = 0.005)]
     frequency: Option<f64>,
 }
 

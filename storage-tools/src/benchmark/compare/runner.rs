@@ -86,6 +86,18 @@ fn compatibility_notes(binary: &BenchmarkRunReport, sqlite: &BenchmarkRunReport)
             binary.workload.batch_size, sqlite.workload.batch_size
         ));
     }
+    if binary.workload.hands_by_actions_queries != sqlite.workload.hands_by_actions_queries {
+        notes.push(format!(
+            "hands-by-actions query counts differ: binary={}, sqlite={}",
+            binary.workload.hands_by_actions_queries, sqlite.workload.hands_by_actions_queries
+        ));
+    }
+    if binary.workload.drill_scenario_queries != sqlite.workload.drill_scenario_queries {
+        notes.push(format!(
+            "drill scenario query counts differ: binary={}, sqlite={}",
+            binary.workload.drill_scenario_queries, sqlite.workload.drill_scenario_queries
+        ));
+    }
     if binary.options.workload_mode != sqlite.options.workload_mode {
         notes.push(format!(
             "workload modes differ: binary={}, sqlite={}",

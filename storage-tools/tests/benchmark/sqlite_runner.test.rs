@@ -37,13 +37,21 @@ fn sqlite_runner_writes_reports_for_clean_fixture() {
 
     assert_eq!(report.engine, "sqlite");
     assert!(!report.has_errors());
-    assert_eq!(report.cases.len(), 3);
+    assert_eq!(report.cases.len(), 5);
     assert!(report.cases.iter().any(|case| case.name == "hand-strategy"));
     assert!(report
         .cases
         .iter()
         .any(|case| case.name == "batch-hand-strategy"));
     assert!(report.cases.iter().any(|case| case.name == "batch-size-1"));
+    assert!(report
+        .cases
+        .iter()
+        .any(|case| case.name == "hands-by-actions"));
+    assert!(report
+        .cases
+        .iter()
+        .any(|case| case.name == "drill-scenarios-metadata"));
     assert!(report.totals.result_count > 0);
     assert!(report_path.is_file());
     assert!(markdown_path.is_file());

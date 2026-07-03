@@ -7,14 +7,17 @@ use crate::benchmark::report::{
     BenchmarkOptionsSummary, BenchmarkRunReport, ReportInput,
 };
 use crate::benchmark::types::{
-    BatchBenchmarkItem, BenchmarkWorkload, HandBenchmarkItem, WorkloadOptions, WorkloadSource,
+    drill_scenario_table_name, BatchBenchmarkItem, BenchmarkWorkload, DrillScenarioBenchmarkItem,
+    HandBenchmarkItem, HandsByActionsBenchmarkItem, WorkloadOptions, WorkloadSource,
 };
 use crate::benchmark::workload::{
-    create_benchmark_workload, read_workload_json, write_workload_json,
+    create_benchmark_workload, drill_depth_column, read_workload_json, table_exists,
+    write_workload_json,
 };
 use crate::errors::ToolError;
-use range_store_core::dimension::DimensionRef;
+use range_store_core::dimension::{quote_identifier, DimensionRef};
 use range_store_core::query::StoreQueryService;
+use range_store_core::sqlite::{Connection, Value};
 
 pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunReport, ToolError> {
     let (workload, workload_source) = load_or_create_workload(command)?;
@@ -26,6 +29,7 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
         100,
         command.verify_checksums,
     )?;
+    let meta_connection = Connection::open(&command.meta, true)?;
 
     prewarm_workload_dimensions(&service, &workload)?;
 
@@ -51,6 +55,16 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
             command.warmup_iterations,
         ));
     }
+    cases.push(measure_hands_by_actions_case(
+        &service,
+        &workload.hands_by_actions_queries,
+        command.warmup_iterations,
+    ));
+    cases.push(measure_drill_scenarios_case(
+        &meta_connection,
+        &workload.drill_scenario_queries,
+        command.warmup_iterations,
+    ));
 
     let memory_after = get_memory_snapshot();
     let memory = BenchmarkMemoryReport::new(memory_before, memory_after);
@@ -59,7 +73,12 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
     let mut notes = vec![
         "Rust Range Strata Binary hot benchmark; cold-start phase accounting lives in benchmark-cold."
             .to_owned(),
-        "Result counts sum decoded action entries so query work is consumed.".to_owned(),
+        "Result counts are case-specific: action entries for strategy lookups, matching hands for hands-by-actions, and abstract lines for drill metadata."
+            .to_owned(),
+        "`hands-by-actions` decodes binary packs through range-store-core and counts matching hands."
+            .to_owned(),
+        "`drill-scenarios-metadata` reads runtime meta.db SQLite tables; it is metadata-path evidence, not .idx/.bin strategy-pack performance."
+            .to_owned(),
         "No hard performance threshold is applied; use reports for local comparison and regression observation."
             .to_owned(),
     ];
@@ -176,6 +195,34 @@ fn measure_batch_case(
     )
 }
 
+fn measure_hands_by_actions_case(
+    service: &StoreQueryService,
+    queries: &[HandsByActionsBenchmarkItem],
+    warmup_iterations: usize,
+) -> BenchmarkCaseResult {
+    measure_benchmark_case(
+        "hands-by-actions",
+        "Decode all hands for one concrete line and count hands matching any requested action_name.",
+        queries,
+        warmup_iterations,
+        |item, _| query_hands_by_actions_count(service, item),
+    )
+}
+
+fn measure_drill_scenarios_case(
+    connection: &Connection,
+    queries: &[DrillScenarioBenchmarkItem],
+    warmup_iterations: usize,
+) -> BenchmarkCaseResult {
+    measure_benchmark_case(
+        "drill-scenarios-metadata",
+        "Read drill scenario abstract lines from runtime meta.db SQLite metadata tables.",
+        queries,
+        warmup_iterations,
+        |item, _| drill_scenario_line_count(connection, item).map_err(|error| error.to_string()),
+    )
+}
+
 fn query_hand_count(
     service: &StoreQueryService,
     item: &HandBenchmarkItem,
@@ -208,6 +255,55 @@ fn query_batch_count(
         }
     }
     Ok(total)
+}
+
+fn query_hands_by_actions_count(
+    service: &StoreQueryService,
+    item: &HandsByActionsBenchmarkItem,
+) -> Result<usize, String> {
+    service
+        .query_hands_by_action_names(
+            &item.dimension(),
+            item.concrete_line_id,
+            &item.actions,
+            item.frequency,
+        )
+        .map(|hands| hands.len())
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn drill_scenario_line_count(
+    connection: &Connection,
+    item: &DrillScenarioBenchmarkItem,
+) -> Result<usize, ToolError> {
+    let raw_table = drill_scenario_table_name(&item.strategy);
+    if !table_exists(connection, &raw_table)? {
+        return Err(ToolError::invalid_format(format!(
+            "Drill scenario table not found: {raw_table}"
+        )));
+    }
+    let depth_column = drill_depth_column(connection, &raw_table)?.ok_or_else(|| {
+        ToolError::invalid_format(format!(
+            "Drill scenario table {raw_table} must contain depth or drill_depth"
+        ))
+    })?;
+    let table = quote_identifier(&raw_table)?;
+    let sql = format!(
+        "SELECT COUNT(DISTINCT abstract_line)
+         FROM {table}
+         WHERE drill_name = ?1 AND player_count = ?2 AND {depth_column} = ?3"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    statement.start(&[
+        Value::from(item.drill_name.as_str()),
+        Value::from(item.player_count),
+        Value::from(item.drill_depth),
+    ])?;
+    if statement.step_row()? {
+        Ok(usize::try_from(statement.column_i64(0)).unwrap_or_default())
+    } else {
+        Ok(0)
+    }
 }
 
 fn parse_workload_dimension(value: &str) -> Result<DimensionRef, ToolError> {

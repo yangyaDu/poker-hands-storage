@@ -8,10 +8,12 @@ use utoipa::ToSchema;
 use crate::errors::AppError;
 use crate::query::dimension_handle_pool::HandlePool;
 use crate::storage::manifest::{load_manifest, queryable_dimensions};
-use crate::storage::metadata::{ConcreteLineRow, MetadataReader};
+use crate::storage::metadata::{ConcreteLineFilter, ConcreteLineRow, MetadataReader};
 use range_store_core::action_schema::{ActionDef, ActionName};
 use range_store_core::dimension::DimensionRef;
 use range_store_core::hole_cards::{hand_code_from_id, parse_hole_cards, ParsedHand};
+
+const DEFAULT_HANDS_BY_ACTIONS_FREQUENCY: f64 = 0.005;
 
 /// Parsed action filter for the hands-by-actions endpoint.
 #[derive(Debug, Clone, PartialEq)]
@@ -447,13 +449,13 @@ impl QueryService {
     pub fn get_concrete_lines(
         &self,
         dimension: &DimensionRef,
-        abstract_line: &str,
+        filter: ConcreteLineFilter<'_>,
     ) -> Result<Vec<ConcreteLineRow>, AppError> {
         self.metadata.get_concrete_lines(
             &dimension.strategy,
             dimension.player_count,
             dimension.depth_bb,
-            abstract_line,
+            filter,
         )
     }
 
@@ -511,7 +513,7 @@ impl QueryService {
         let filters = action_filters.unwrap_or_default();
         let frequency_filter = FrequencyFilter::from_request(frequency);
         let actions_text = format_action_filters(&filters);
-        let required_group_masks = resolve_action_filter_bitmasks(
+        let action_filter_mask = resolve_action_filter_bitmask(
             action_schema,
             &filters,
             &actions_text,
@@ -520,7 +522,7 @@ impl QueryService {
             concrete_line_id,
         )?;
 
-        // Bitmask per hand: bit N set = action N matched frequency + filter criteria
+        // Bitmask per hand: bit N set = action N matched frequency + filter criteria.
         let mut hand_masks = [0u32; 169];
         for cell in &result.pack.cells {
             if !cell.exists || !frequency_filter.matches(cell.frequency) {
@@ -528,11 +530,7 @@ impl QueryService {
             }
             if cell.action_id < 32 {
                 let action_bit = 1u32 << cell.action_id;
-                if required_group_masks.is_empty()
-                    || required_group_masks
-                        .iter()
-                        .any(|&mask| action_bit & mask != 0)
-                {
+                if action_filter_mask == 0 || action_bit & action_filter_mask != 0 {
                     hand_masks[cell.hand_id as usize] |= action_bit;
                 }
             }
@@ -541,10 +539,7 @@ impl QueryService {
         let mut hands = Vec::new();
         for hand_id in result.pack.hand_ids {
             let mask = hand_masks[hand_id as usize];
-            if mask != 0
-                && (required_group_masks.is_empty()
-                    || required_group_masks.iter().all(|&group| mask & group != 0))
-            {
+            if mask != 0 {
                 hands.push(hand_code_from_id(hand_id));
             }
         }
@@ -589,73 +584,59 @@ fn require_file(path: &Path) -> Result<(), AppError> {
 
 struct FrequencyFilter {
     threshold: f64,
-    include_equal: bool,
 }
 
 impl FrequencyFilter {
     fn from_request(frequency: Option<f64>) -> Self {
-        match frequency {
-            Some(threshold) => Self {
-                threshold,
-                include_equal: true,
-            },
-            None => Self {
-                threshold: 0.0,
-                include_equal: false,
-            },
+        Self {
+            threshold: frequency.unwrap_or(DEFAULT_HANDS_BY_ACTIONS_FREQUENCY),
         }
     }
 
     fn matches(&self, value: f64) -> bool {
-        if self.include_equal {
-            value >= self.threshold
-        } else {
-            value > self.threshold
-        }
+        value > self.threshold
     }
 
     fn description(&self) -> String {
-        if self.include_equal {
-            format!(">={}", self.threshold)
-        } else {
+        if self.threshold == 0.0 {
             ">0".to_owned()
+        } else {
+            format!(">{}", self.threshold)
         }
     }
 }
 
-/// Resolve action filters into u32 bitmasks for O(1) bitwise matching.
+/// Resolve action filters into a single u32 bitmask for O(1) bitwise matching.
 ///
-/// Each filter maps to a bitmask where bit N is set if action_id N matches
-/// the filter. Returns empty Vec when no filters are specified.
-fn resolve_action_filter_bitmasks(
+/// Bit N is set if action_id N matches any requested action filter. Returns 0
+/// when no filters are specified, which means no action-name restriction.
+fn resolve_action_filter_bitmask(
     action_schema: &[ActionDef],
     filters: &[ActionFilter],
     actions_text: &str,
     frequency_filter: &FrequencyFilter,
     dimension: &DimensionRef,
     concrete_line_id: u32,
-) -> Result<Vec<u32>, AppError> {
-    let mut masks = Vec::with_capacity(filters.len());
+) -> Result<u32, AppError> {
+    let mut combined_mask = 0u32;
     for filter in filters {
-        let mut mask = 0u32;
         for action in action_schema {
             if action_matches_filter(action, filter) && action.action_id < 32 {
-                mask |= 1u32 << action.action_id;
+                combined_mask |= 1u32 << action.action_id;
             }
         }
-        if mask == 0 {
-            return Err(AppError::no_hands_found(
-                actions_text,
-                &frequency_filter.description(),
-                concrete_line_id,
-                &dimension.strategy,
-                dimension.player_count,
-                dimension.depth_bb,
-            ));
-        }
-        masks.push(mask);
     }
-    Ok(masks)
+    if !filters.is_empty() && combined_mask == 0 {
+        return Err(AppError::no_hands_found(
+            actions_text,
+            &frequency_filter.description(),
+            concrete_line_id,
+            &dimension.strategy,
+            dimension.player_count,
+            dimension.depth_bb,
+        ));
+    }
+    Ok(combined_mask)
 }
 
 fn line_lookup_open_error(

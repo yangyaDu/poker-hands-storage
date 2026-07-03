@@ -51,12 +51,27 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(
         openapi["components"]["schemas"]["HandsByActionsRequest"]["properties"]["frequency"]
             ["default"],
-        json!(0.0)
+        json!(0.005)
     );
     assert_eq!(
         openapi["components"]["schemas"]["DrillScenarioLinesRequest"]["properties"]["drill_name"]
             ["default"],
         json!("rfi")
+    );
+    assert!(
+        openapi["components"]["schemas"]["ConcreteLinesRequest"]["properties"]
+            .get("concrete_line")
+            .is_some()
+    );
+    assert_eq!(
+        openapi["components"]["schemas"]["ConcreteLinesRequest"]["properties"]["abstract_line"]
+            ["type"],
+        json!("string")
+    );
+    assert_eq!(
+        openapi["components"]["schemas"]["ConcreteLinesRequest"]["properties"]["concrete_line"]
+            ["type"],
+        json!("string")
     );
 
     let (status, swagger) = call_text(&app, Method::GET, "/swagger").await;
@@ -237,6 +252,68 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(result["code"], 0);
     assert_eq!(result["data"]["lines"][0]["concrete_line_id"], 1);
 
+    let concrete_line_lookup = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "concrete_line": "F-F-F"
+    });
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(concrete_line_lookup),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["lines"][0]["concrete_line_id"], 1);
+    assert_eq!(result["data"]["lines"][0]["abstract_line"], "F-F-F");
+    assert_eq!(result["data"]["lines"][0]["concrete_line"], "F-F-F");
+
+    let concrete_line_lookup_with_abstract = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "abstract_line": "F-F-F",
+        "concrete_line": "F-F-F"
+    });
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(concrete_line_lookup_with_abstract),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["lines"].as_array().unwrap().len(), 1);
+
+    let missing_concrete_line = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "concrete_line": "F-F-F-R2"
+    });
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(missing_concrete_line),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error["code"], error_code::NOT_FOUND);
+    assert!(error["data"].is_null());
+    assert_no_details(&error);
+    assert_error_message_contains(
+        &error,
+        &[
+            "Concrete line not found: concrete_line=F-F-F-R2",
+            "dimension=default:6:100",
+        ],
+    );
+
     let drill_lines = json!({});
     let (status, result) = call_json(
         &app,
@@ -293,7 +370,7 @@ async fn serves_query_and_metadata_workflows() {
     .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["code"], 0);
-    assert_eq!(result["data"]["hands"], json!(["AA"]));
+    assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
     assert!(result["data"].get("concrete_line_id").is_none());
     assert!(result["data"].get("actions").is_none());
 
@@ -313,7 +390,7 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["data"]["hands"], json!(["AA"]));
+    assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
 
     // hands-by-actions: filter by action "fold" (no amount)
     let hands_by_actions_fold = json!({
@@ -333,7 +410,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["data"]["hands"], json!(["AA"]));
 
-    // hands-by-actions: action names are intersected, and amount-bearing names match any size
+    // hands-by-actions: action names use OR semantics, and amount-bearing names match any size
     let hands_by_actions_raise = json!({
         "strategy": "default",
         "player_count": 6,
@@ -349,7 +426,25 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["data"]["hands"], json!(["AA"]));
+    assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
+
+    // hands-by-actions: absent action names do not suppress other action matches
+    let hands_by_actions_raise_with_absent = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "concrete_line_id": 1,
+        "actions": ["raise", "check"]
+    });
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/hands-by-actions",
+        Some(hands_by_actions_raise_with_absent),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
 
     // hands-by-actions: filter with action absent from schema returns 404
     let hands_by_actions_none = json!({
@@ -373,7 +468,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_error_message_contains(
         &error,
         &[
-            "No hands found for actions=check at frequency>0",
+            "No hands found for actions=check at frequency>0.005",
             "concrete_line_id=1",
             "dimension=default:6:100",
         ],
@@ -395,7 +490,36 @@ async fn serves_query_and_metadata_workflows() {
     )
     .await;
     assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["data"]["hands"], json!(["AA"]));
+    assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
+
+    // hands-by-actions: explicit frequency is strict greater-than, not greater-than-or-equal
+    let hands_by_actions_freq_strict = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "concrete_line_id": 1,
+        "actions": ["fold"],
+        "frequency": 0.25
+    });
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/hands-by-actions",
+        Some(hands_by_actions_freq_strict),
+    )
+    .await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert_eq!(error["code"], error_code::NOT_FOUND);
+    assert!(error["data"].is_null());
+    assert_no_details(&error);
+    assert_error_message_contains(
+        &error,
+        &[
+            "No hands found for actions=fold at frequency>0.25",
+            "concrete_line_id=1",
+            "dimension=default:6:100",
+        ],
+    );
 
     // hands-by-actions: filters resolve but no hands meet frequency
     let hands_by_actions_no_hands = json!({
@@ -420,7 +544,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_error_message_contains(
         &error,
         &[
-            "No hands found for actions=raise2.5 at frequency>=0.9",
+            "No hands found for actions=raise2.5 at frequency>0.9",
             "concrete_line_id=1",
             "dimension=default:6:100",
         ],
@@ -704,6 +828,62 @@ async fn returns_boundary_validation_messages_for_range_endpoints() {
         &error,
         &["strategy", "player_count", "depth_bb", "abstract_line"],
     );
+
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(json!({
+            "strategy": "default",
+            "player_count": 6,
+            "depth_bb": 100
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], error_code::BAD_REQUEST);
+    assert_no_details(&error);
+    assert_error_message_contains(
+        &error,
+        &[
+            "abstract_line/concrete_line",
+            "one of abstract_line or concrete_line must be provided",
+        ],
+    );
+
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(json!({
+            "strategy": "default",
+            "player_count": 6,
+            "depth_bb": 100,
+            "concrete_line": ""
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], error_code::BAD_REQUEST);
+    assert_no_details(&error);
+    assert_error_message_contains(&error, &["concrete_line", "must not be empty"]);
+
+    let (status, error) = call_json(
+        &app,
+        Method::POST,
+        "/range/concrete-lines",
+        Some(json!({
+            "strategy": "default",
+            "player_count": 6,
+            "depth_bb": 100,
+            "concrete_line": null
+        })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], error_code::BAD_REQUEST);
+    assert_no_details(&error);
+    assert_error_message_contains(&error, &["concrete_line", "invalid type: null"]);
 
     let (status, error) = call_json(
         &app,

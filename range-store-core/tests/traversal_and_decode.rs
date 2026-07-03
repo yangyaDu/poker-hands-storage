@@ -99,7 +99,7 @@ fn idx_reader_record_at_and_records_iterate_in_file_order() {
             checksum: 100,
         },
         IdxRecord {
-            concrete_line_id: 20,
+            concrete_line_id: 11,
             action_schema_id: 2,
             hand_count: 3,
             offset: 58,
@@ -111,14 +111,14 @@ fn idx_reader_record_at_and_records_iterate_in_file_order() {
     let reader = IdxReader::open(&path).unwrap();
 
     assert_eq!(reader.record_at(0).unwrap().concrete_line_id, 10);
-    assert_eq!(reader.record_at(1).unwrap().concrete_line_id, 20);
+    assert_eq!(reader.record_at(1).unwrap().concrete_line_id, 11);
     assert!(reader.record_at(2).is_none());
     assert_eq!(
         reader
             .records()
             .map(|record| record.concrete_line_id)
             .collect::<Vec<_>>(),
-        vec![10, 20]
+        vec![10, 11]
     );
 }
 

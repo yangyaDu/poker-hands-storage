@@ -251,18 +251,30 @@ fn check_index_headers(
         for index in 0..record_count as usize {
             let offset = IDX_HEADER_SIZE + index * IDX_RECORD_SIZE;
             let record = decode_idx_record(&raw[offset..offset + IDX_RECORD_SIZE]);
-            if previous.is_some_and(|value| record.concrete_line_id <= value) {
-                failures.push(VerifyFailure {
-                    layer: VerifyLayer::IndexHeader,
-                    check: check.clone(),
-                    reason: "OUT_OF_ORDER".to_owned(),
-                    message: format!(
-                        ".idx record {index}: concreteLineId={} is not strictly greater than previous {}",
-                        record.concrete_line_id,
-                        previous.unwrap_or_default()
-                    ),
-                    context: None,
-                });
+            if let Some(previous_id) = previous {
+                if record.concrete_line_id <= previous_id {
+                    failures.push(VerifyFailure {
+                        layer: VerifyLayer::IndexHeader,
+                        check: check.clone(),
+                        reason: "OUT_OF_ORDER".to_owned(),
+                        message: format!(
+                            ".idx record {index}: concreteLineId={} is not strictly greater than previous {previous_id}",
+                            record.concrete_line_id
+                        ),
+                        context: None,
+                    });
+                } else if previous_id.checked_add(1) != Some(record.concrete_line_id) {
+                    failures.push(VerifyFailure {
+                        layer: VerifyLayer::IndexHeader,
+                        check: check.clone(),
+                        reason: "NON_DENSE_CONCRETE_LINE_ID".to_owned(),
+                        message: format!(
+                            ".idx record {index}: concreteLineId={} is not contiguous after previous {previous_id}",
+                            record.concrete_line_id
+                        ),
+                        context: None,
+                    });
+                }
             }
             previous = Some(record.concrete_line_id);
             if record.hand_count > 169 {

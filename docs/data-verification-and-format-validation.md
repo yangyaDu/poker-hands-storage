@@ -1,6 +1,6 @@
 # SQLite 与二进制数据一致性验证报告
 
-更新日期：2026-06-28
+更新日期：2026-07-01
 
 ## 目标
 
@@ -33,6 +33,19 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
   --verify-checksum
 ```
 
+全量 Cross 验证：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
+  --mode cross `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --sample-size 0 `
+  --verify-checksum `
+  --out reports\range-strata-verify-cross-full.json `
+  --md reports\range-strata-verify-cross-full.md
+```
+
 说明：
 
 - `--mode standalone` 不依赖源 SQLite。
@@ -49,6 +62,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
 | --- | --- | --- |
 | `reports/range-strata-verify-standalone.md` | 2026-06-26T15:10:25Z | 通过 |
 | `reports/range-strata-verify-cross.md` | 2026-06-26T15:11:32Z | 通过 |
+| `reports/range-strata-verify-cross-full.md` | 2026-07-01T14:52:14Z | 通过 |
 
 Standalone 摘要：
 
@@ -61,12 +75,12 @@ Standalone 摘要：
 | Pack Files OK | 9 / 9 |
 | Index-Pack Cross Failures | 0 |
 
-Cross 摘要：
+Full Cross 摘要：
 
 | 指标 | 值 |
 | --- | ---: |
 | Dimensions | 9 |
-| Checked Source Records | 9,996 |
+| Checked Source Records | 23,806,716 |
 | Failed Source Records | 0 |
 | Extra Binary Records | 0 |
 | Failures | 0 |
@@ -75,10 +89,10 @@ Float32 精度摘要：
 
 | 字段 | checked | null | bit exact | mismatch | max implementation abs error |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| `frequency` | 9,996 | 0 | 9,996 | 0 | 0 |
-| `hand_ev` | 8,095 | 1,901 | 8,095 | 0 | 0 |
+| `frequency` | 23,806,716 | 0 | 23,806,716 | 0 | 0 |
+| `hand_ev` | 18,956,044 | 4,850,672 | 18,956,044 | 0 | 0 |
 
-这说明当前抽样中没有发现编码、解码、字节序或 Float32 转换引入的额外误差。
+这说明全量源数据比对中没有发现编码、解码、字节序或 Float32 转换引入的额外误差。
 
 ## Standalone 验证内容
 
@@ -132,6 +146,7 @@ Standalone 验证只检查输出目录自身，不读取源 SQLite。
 - header size 为 `16`。
 - 文件长度覆盖 `record_count * 22`。
 - `concrete_line_id` 严格升序。
+- `concrete_line_id` 在同一维度内连续递增，满足 dense 下标 lookup 前提。
 - `hand_count <= 169`。
 - `action_schema_id` 必须存在于 `meta.db.action_schemas`。
 
@@ -244,15 +259,14 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
 
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
   --mode cross --dir data\range-strata --source data\sqlite\range.db `
-  --sample-size 10000 --verify-checksum
+  --sample-size 0 --verify-checksum
 ```
 
-严格数据发布建议把 cross verify 的 `--sample-size` 设置为 `0` 做全量扫描。
+严格数据发布使用 `--sample-size 0` 做全量扫描。日常开发可用 `--sample-size 10000` 做快速抽样回归。
 
 ## 局限
 
-- 抽样 cross verify 不能证明未抽中 rows 一定正确。
+- 抽样 cross verify 不能证明未抽中 rows 一定正确；正式发布以全量 cross verify 为准。
 - Cross verify 依赖源 SQLite 和二进制产物来自同一数据版本。
 - `sourceDbChecksum` 可用于人工核对，但工具链仍应保证构建和验证使用同一源库。
 - `PHS_VERIFY_CHECKSUMS=true` 会让运行时查询也做 CRC32C 检查，但会增加每次查询成本。
-

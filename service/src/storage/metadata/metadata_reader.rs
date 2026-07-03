@@ -26,6 +26,16 @@ pub struct ConcreteLineRow {
     pub concrete_line: String,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub enum ConcreteLineFilter<'a> {
+    Abstract(&'a str),
+    Concrete(&'a str),
+    AbstractAndConcrete {
+        abstract_line: &'a str,
+        concrete_line: &'a str,
+    },
+}
+
 impl MetadataReader {
     pub fn new(path: impl Into<PathBuf>) -> Self {
         Self { path: path.into() }
@@ -97,7 +107,7 @@ impl MetadataReader {
         strategy: &str,
         player_count: u32,
         depth_bb: u32,
-        abstract_line: &str,
+        filter: ConcreteLineFilter<'_>,
     ) -> Result<Vec<ConcreteLineRow>, AppError> {
         let table = quote_identifier(&get_concrete_lines_table_name(
             strategy,
@@ -105,16 +115,31 @@ impl MetadataReader {
             depth_bb,
         ))?;
         let connection = self.open()?;
+        let (where_clause, values) = match filter {
+            ConcreteLineFilter::Abstract(abstract_line) => {
+                ("abstract_line = ?1", vec![Value::from(abstract_line)])
+            }
+            ConcreteLineFilter::Concrete(concrete_line) => {
+                ("concrete_line = ?1", vec![Value::from(concrete_line)])
+            }
+            ConcreteLineFilter::AbstractAndConcrete {
+                abstract_line,
+                concrete_line,
+            } => (
+                "abstract_line = ?1 AND concrete_line = ?2",
+                vec![Value::from(abstract_line), Value::from(concrete_line)],
+            ),
+        };
         let sql = format!(
             "SELECT concrete_line_id, abstract_line, concrete_line
              FROM {table}
-             WHERE abstract_line = ?1
+             WHERE {where_clause}
              ORDER BY concrete_line_id"
         );
         let mut statement = connection.prepare(&sql).map_err(|_| {
-            AppError::abstract_line_not_found(strategy, player_count, depth_bb, abstract_line)
+            concrete_line_filter_not_found(strategy, player_count, depth_bb, filter)
         })?;
-        statement.start(&[Value::from(abstract_line)])?;
+        statement.start(&values)?;
         let mut lines = Vec::new();
         while statement.step_row()? {
             lines.push(ConcreteLineRow {
@@ -124,11 +149,11 @@ impl MetadataReader {
             });
         }
         if lines.is_empty() {
-            return Err(AppError::abstract_line_not_found(
+            return Err(concrete_line_filter_not_found(
                 strategy,
                 player_count,
                 depth_bb,
-                abstract_line,
+                filter,
             ));
         }
         Ok(lines)
@@ -174,5 +199,31 @@ impl MetadataReader {
 
     fn open(&self) -> Result<Connection, AppError> {
         Connection::open(&self.path, true).map_err(AppError::from)
+    }
+}
+
+fn concrete_line_filter_not_found(
+    strategy: &str,
+    player_count: u32,
+    depth_bb: u32,
+    filter: ConcreteLineFilter<'_>,
+) -> AppError {
+    match filter {
+        ConcreteLineFilter::Abstract(abstract_line) => {
+            AppError::abstract_line_not_found(strategy, player_count, depth_bb, abstract_line)
+        }
+        ConcreteLineFilter::Concrete(concrete_line) => {
+            AppError::concrete_line_value_not_found(strategy, player_count, depth_bb, concrete_line)
+        }
+        ConcreteLineFilter::AbstractAndConcrete {
+            abstract_line,
+            concrete_line,
+        } => AppError::concrete_line_filter_not_found(
+            strategy,
+            player_count,
+            depth_bb,
+            abstract_line,
+            concrete_line,
+        ),
     }
 }

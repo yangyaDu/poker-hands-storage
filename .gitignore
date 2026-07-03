@@ -18,9 +18,13 @@ reports/
 
 data/sqlite/*.wal
 data/sqlite/*.shm
+data/sqlite/*-wal
+data/sqlite/*-shm
 # Environment
 .env
 .env.local
 
 nul
 .brooks-lint-history.json
+
+.tmp/
