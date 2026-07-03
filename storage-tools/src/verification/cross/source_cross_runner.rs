@@ -5,7 +5,6 @@ use range_store_core::bin_reader::BinReader;
 use range_store_core::crc32c::crc32c;
 use range_store_core::idx_reader::IdxReader;
 use range_store_core::pack_codec::decode_pack;
-use range_store_core::types::IdxRecord;
 
 use crate::errors::ToolError;
 use crate::metadata::load_action_schemas;
@@ -195,10 +194,6 @@ fn verify_dimension_rows(
             return;
         }
     };
-    let idx_records: HashMap<u32, IdxRecord> = idx
-        .records()
-        .map(|record| (record.concrete_line_id, record))
-        .collect();
     let mut by_line: BTreeMap<u32, Vec<SourceRow>> = BTreeMap::new();
     for row in rows {
         by_line.entry(row.concrete_line_id).or_default().push(row);
@@ -207,7 +202,7 @@ fn verify_dimension_rows(
     let mut dimension_checked = 0u64;
     let mut dimension_failed = 0u64;
     for (concrete_line_id, old_rows) in by_line {
-        let Some(record) = idx_records.get(&concrete_line_id).cloned() else {
+        let Some(record) = idx.find(concrete_line_id) else {
             for row in old_rows {
                 result.checked_records += 1;
                 result.failed_records += 1;

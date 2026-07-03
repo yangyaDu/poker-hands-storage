@@ -146,6 +146,7 @@ Standalone 验证只检查输出目录自身，不读取源 SQLite。
 - header size 为 `16`。
 - 文件长度覆盖 `record_count * 22`。
 - `concrete_line_id` 严格升序。
+- `concrete_line_id` 在同一维度内连续递增，满足 dense 下标 lookup 前提。
 - `hand_count <= 169`。
 - `action_schema_id` 必须存在于 `meta.db.action_schemas`。
 

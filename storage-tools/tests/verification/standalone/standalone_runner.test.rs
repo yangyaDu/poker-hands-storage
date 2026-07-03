@@ -158,6 +158,30 @@ fn standalone_verify_reports_idx_out_of_order() {
 }
 
 #[test]
+fn standalone_verify_reports_non_dense_idx_concrete_line_ids() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_, output_path) = build_verify_fixture(directory.path());
+    let idx_path = output_path.join("ranges_default_6max_100BB.idx");
+    let mut raw = fs::read(&idx_path).unwrap();
+    let second_record = 16 + 22;
+    raw[second_record..second_record + 4].copy_from_slice(&3u32.to_le_bytes());
+    fs::write(&idx_path, raw).unwrap();
+
+    let report = run_standalone_verify(&StandaloneVerifyOptions {
+        dir: output_path,
+        verify_checksums: false,
+        out_path: None,
+        md_path: None,
+    })
+    .unwrap();
+
+    assert!(report
+        .failures
+        .iter()
+        .any(|failure| failure.reason == "NON_DENSE_CONCRETE_LINE_ID"));
+}
+
+#[test]
 fn standalone_verify_reports_pack_size_mismatch() {
     let directory = tempfile::tempdir().unwrap();
     let (_, output_path) = build_verify_fixture(directory.path());

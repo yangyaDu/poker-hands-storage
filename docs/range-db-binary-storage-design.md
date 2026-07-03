@@ -110,7 +110,7 @@ Header 固定 16 字节：
 | 8 | record_count | `u32 LE` | 记录数 |
 | 12 | header_size | `u16 LE` | 当前为 `16` |
 
-Record 固定 22 字节，按 `concrete_line_id` 升序排列：
+Record 固定 22 字节，按 `concrete_line_id` 升序排列。当前正式数据要求同一维度内 `.idx` 的 `concrete_line_id` 连续递增，每个 `concrete_line_id` 都对应一个 range pack：
 
 | 偏移 | 字段 | 类型 | 说明 |
 | ---: | --- | --- | --- |
@@ -121,7 +121,14 @@ Record 固定 22 字节，按 `concrete_line_id` 升序排列：
 | 14 | `byte_length` | `u32 LE` | pack 字节长度 |
 | 18 | `checksum` | `u32 LE` | pack payload 的 CRC32C |
 
-查询时对 `.idx` 做二分查找，复杂度为 `O(log n)`。
+运行时只走 dense 下标读取：
+
+```text
+index = concrete_line_id - first_concrete_line_id
+record_offset = header_size + index * 22
+```
+
+`IdxReader::open()` 会校验 `.idx` 中 `concrete_line_id` 必须连续递增；不满足 dense 布局的 `.idx` 会被视为格式错误。读取 record 后仍会校验 `record.concrete_line_id == concrete_line_id`，但不会退回二分查找。standalone verify 也会检查正式 `.idx` 的 `concrete_line_id` 连续性，构建或发布前应先通过验证。
 
 ### `.bin` 文件
 
@@ -167,33 +174,32 @@ byte_length = hand_count * (5 + action_count * 8)
 
 其中：
 
-- `hand_id` 使用固定 169 手牌字典。
 - `frequency` 使用 Float32 little-endian。
-- `hand_ev` 使用 Float32 little-endian。
-- `hand_ev = null` 编码为 NaN，解码时 NaN 转回 `null`。
+- `hand_ev` 使用 Float32 little-endian，`null` 编码为 NaN。
 - `action_count` 来自 `.idx.action_schema_id` 对应的 `action_schemas.action_count`。
 - `action_mask` 决定某手牌哪些 action 实际存在。
+- hand_id 定义见 [`data-flow-overview.md#四-hand_id-说明`](./data-flow-overview.md#四hand_id-说明)。
 
 ## 查询流程
 
-`POST /range/hand-strategy` 的核心读取流程：
+`POST /range/hand-strategy` 的核心读取流程详见 [`data-flow-overview.md`](./data-flow-overview.md#23-单次查询-query)。
+
+简要概括：
 
 ```text
-1. 根据 strategy/player_count/depth_bb 找到维度。
-2. 通过 HandlePool 获取或打开该维度的 DimensionReader。
-3. `.idx` 二分查找 concrete_line_id。
-4. 从 `.idx` record 得到 action_schema_id、hand_count、offset、byte_length、checksum。
-5. 从 `.bin` 读取 offset..offset+byte_length 的 pack。
-6. 如果启用 checksum，计算 CRC32C 并和 `.idx.checksum` 比对。
-7. 在 pack 的 hand_ids 中二分查找目标 hand_id。
-8. 读取该 hand 的 action_mask 和 cells。
-9. 用 `meta.db.action_schemas` 把 action_id 解释成 action_name、action_size、amount_bb。
-10. 返回 API 业务结构。
+1. 根据 strategy/player_count/depth_bb 定位维度
+2. HandlePool 获取 DimensionReader
+3. .idx dense 下标定位 concrete_line_id
+4. .bin 按 offset/length 读取 pack
+5. 在 pack 的 hand_ids 中查找目标 hand_id（详见 data-flow-overview.md 第五节）
+6. 解码目标 hand 的 action cells
+7. meta.db action_schemas 解释 action_id
+8. 返回 API 业务结构
 ```
 
 `POST /range/hands-by-actions` 会完整解码一个 pack，按 action 和 frequency 过滤手牌。
 
-业务侧如果只有具体行动线字符串，应先通过 `meta.db` 的 `concrete_lines_*` 表精确查询 `concrete_line_id`，再进入上述 `.idx/.bin` 查询流程。新生成的 runtime `meta.db` 会为 `concrete_line` 建单列索引，避免该 lookup 走全表扫描。
+业务侧如果只有具体行动线字符串，应先通过 `meta.db` 的 `concrete_lines_*` 表精确查询 `concrete_line_id`，再进入上述 `.idx/.bin` 查询流程。
 
 ## 当前维度文件大小
 

@@ -1,4 +1,4 @@
-//! .idx file reader — mmap + binary search for O(log n) record lookup.
+//! .idx file reader — mmap + direct dense-index lookup.
 //!
 //! The .idx file layout:
 //!   [0..16)   header  (magic PFXI, version, recordCount, headerSize)
@@ -19,6 +19,8 @@ pub struct IdxReader {
     _file: File,
     mmap: Mmap,
     record_count: u32,
+    first_concrete_line_id: Option<u32>,
+    last_concrete_line_id: Option<u32>,
 }
 
 impl IdxReader {
@@ -66,10 +68,14 @@ impl IdxReader {
             ));
         }
 
+        let metadata = validate_dense_index_layout(&mmap, header.record_count)?;
+
         Ok(Self {
             _file: file,
             mmap,
             record_count: header.record_count,
+            first_concrete_line_id: metadata.first_concrete_line_id,
+            last_concrete_line_id: metadata.last_concrete_line_id,
         })
     }
 
@@ -77,6 +83,22 @@ impl IdxReader {
     #[inline]
     pub fn record_count(&self) -> u32 {
         self.record_count
+    }
+
+    /// Whether this .idx has records and passed dense layout validation.
+    #[inline]
+    pub fn has_dense_index_layout(&self) -> bool {
+        self.record_count > 0
+    }
+
+    #[inline]
+    pub fn first_concrete_line_id(&self) -> Option<u32> {
+        self.first_concrete_line_id
+    }
+
+    #[inline]
+    pub fn last_concrete_line_id(&self) -> Option<u32> {
+        self.last_concrete_line_id
     }
 
     /// Return the record at `index` in on-disk order.
@@ -117,7 +139,11 @@ impl IdxReader {
         ids
     }
 
-    /// Binary search for `concrete_line_id`.
+    /// Find `concrete_line_id`.
+    ///
+    /// `.idx` records are required to be dense and contiguous at open time, so
+    /// lookup is a direct index calculation:
+    /// `record_index = concrete_line_id - first_concrete_line_id`.
     ///
     /// Returns `None` if not found.
     pub fn find(&self, concrete_line_id: u32) -> Option<IdxRecord> {
@@ -125,30 +151,77 @@ impl IdxReader {
             return None;
         }
 
-        let records_base = &self.mmap[IDX_HEADER_SIZE..];
-        let n = self.record_count as usize;
-        let mut lo = 0usize;
-        let mut hi = n;
+        self.find_by_dense_index(concrete_line_id)
+    }
 
-        while lo < hi {
-            let mid = (lo + hi) / 2;
-            let offset = mid * IDX_RECORD_SIZE;
-
-            // Read concreteLineId from offset 0 of the record (little-endian u32)
-            let mid_line_id = u32_from_le(&records_base[offset..offset + 4]);
-
-            if mid_line_id < concrete_line_id {
-                lo = mid + 1;
-            } else if mid_line_id > concrete_line_id {
-                hi = mid;
-            } else {
-                let record = decode_idx_record_at(records_base, offset);
-                return Some(record);
-            }
+    fn find_by_dense_index(&self, concrete_line_id: u32) -> Option<IdxRecord> {
+        let first_id = self.first_concrete_line_id?;
+        let index = concrete_line_id.checked_sub(first_id)?;
+        if index >= self.record_count {
+            return None;
         }
 
-        None
+        let records_base = &self.mmap[IDX_HEADER_SIZE..];
+        let offset = index as usize * IDX_RECORD_SIZE;
+        let record = decode_idx_record_at(records_base, offset);
+        if record.concrete_line_id == concrete_line_id {
+            Some(record)
+        } else {
+            None
+        }
     }
+}
+
+struct DenseIndexMetadata {
+    first_concrete_line_id: Option<u32>,
+    last_concrete_line_id: Option<u32>,
+}
+
+fn validate_dense_index_layout(mmap: &[u8], record_count: u32) -> io::Result<DenseIndexMetadata> {
+    if record_count == 0 {
+        return Ok(DenseIndexMetadata {
+            first_concrete_line_id: None,
+            last_concrete_line_id: None,
+        });
+    }
+
+    let records_base = &mmap[IDX_HEADER_SIZE..];
+    let first_id = concrete_line_id_at(records_base, 0);
+    let mut expected_id = first_id;
+    let mut last_id = first_id;
+
+    for index in 0..record_count as usize {
+        let offset = index * IDX_RECORD_SIZE;
+        let actual_id = concrete_line_id_at(records_base, offset);
+        if actual_id != expected_id {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    ".idx concreteLineId must be contiguous for dense lookup: record {index} has {actual_id}, expected {expected_id}"
+                ),
+            ));
+        }
+
+        last_id = actual_id;
+        if index + 1 < record_count as usize {
+            expected_id = expected_id.checked_add(1).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    ".idx concreteLineId overflows u32 while validating dense lookup layout",
+                )
+            })?;
+        }
+    }
+
+    Ok(DenseIndexMetadata {
+        first_concrete_line_id: Some(first_id),
+        last_concrete_line_id: Some(last_id),
+    })
+}
+
+#[inline]
+fn concrete_line_id_at(records_base: &[u8], offset: usize) -> u32 {
+    u32_from_le(&records_base[offset..offset + 4])
 }
 
 /// Decode a single IdxRecord from `data[offset..offset + 22]`.
@@ -249,18 +322,53 @@ mod tests {
         path
     }
 
+    fn record(concrete_line_id: u32, action_schema_id: u32) -> IdxRecord {
+        IdxRecord {
+            concrete_line_id,
+            action_schema_id,
+            hand_count: 100,
+            offset: concrete_line_id * 100,
+            byte_length: 5000,
+            checksum: 0xDEADBEEF,
+        }
+    }
+
     #[test]
     fn test_open_empty_idx() {
         let dir = tempfile::TempDir::new().unwrap();
         let path = make_test_idx(dir.path(), "test.idx", &[]);
         let reader = IdxReader::open(&path).unwrap();
         assert_eq!(reader.record_count(), 0);
+        assert!(!reader.has_dense_index_layout());
+        assert_eq!(reader.first_concrete_line_id(), None);
+        assert_eq!(reader.last_concrete_line_id(), None);
         assert!(reader.find(1).is_none());
         drop(reader);
     }
 
     #[test]
-    fn test_binary_search() {
+    fn test_dense_index_lookup() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let records = vec![record(10, 1), record(11, 2), record(12, 3)];
+
+        let path = make_test_idx(dir.path(), "test.idx", &records);
+        let reader = IdxReader::open(&path).unwrap();
+        assert_eq!(reader.record_count(), 3);
+        assert!(reader.has_dense_index_layout());
+        assert_eq!(reader.first_concrete_line_id(), Some(10));
+        assert_eq!(reader.last_concrete_line_id(), Some(12));
+
+        let r = reader.find(11).unwrap();
+        assert_eq!(r.concrete_line_id, 11);
+        assert_eq!(r.action_schema_id, 2);
+
+        assert!(reader.find(9).is_none());
+        assert!(reader.find(13).is_none());
+        drop(reader);
+    }
+
+    #[test]
+    fn test_sparse_index_is_rejected() {
         let dir = tempfile::TempDir::new().unwrap();
         let records = vec![
             IdxRecord {
@@ -290,25 +398,33 @@ mod tests {
         ];
 
         let path = make_test_idx(dir.path(), "test.idx", &records);
+        let err = IdxReader::open(&path).unwrap_err();
+        assert!(err
+            .to_string()
+            .contains("concreteLineId must be contiguous"));
+    }
+
+    #[test]
+    fn test_single_record_is_dense_candidate() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let path = make_test_idx(dir.path(), "test.idx", &[record(1, 7)]);
         let reader = IdxReader::open(&path).unwrap();
-        assert_eq!(reader.record_count(), 3);
 
-        // Found
-        let r = reader.find(10).unwrap();
-        assert_eq!(r.concrete_line_id, 10);
-        assert_eq!(r.action_schema_id, 1);
-        assert_eq!(r.hand_count, 100);
-        assert_eq!(r.checksum, 0xDEADBEEF);
+        assert!(reader.has_dense_index_layout());
+        assert_eq!(reader.first_concrete_line_id(), Some(1));
+        assert_eq!(reader.last_concrete_line_id(), Some(1));
+        assert_eq!(reader.find(1).unwrap().action_schema_id, 7);
+        assert!(reader.find(2).is_none());
+    }
 
-        let r = reader.find(30).unwrap();
-        assert_eq!(r.concrete_line_id, 30);
+    #[test]
+    fn test_internal_gap_or_duplicate_is_rejected() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let records = vec![record(10, 1), record(12, 2), record(12, 3)];
 
-        // Not found
-        assert!(reader.find(5).is_none());
-        assert!(reader.find(15).is_none());
-        assert!(reader.find(25).is_none());
-        assert!(reader.find(35).is_none());
-        drop(reader);
+        let path = make_test_idx(dir.path(), "test.idx", &records);
+        let err = IdxReader::open(&path).unwrap_err();
+        assert!(err.to_string().contains("record 1 has 12, expected 11"));
     }
 
     #[test]
