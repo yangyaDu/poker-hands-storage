@@ -21,6 +21,39 @@ function fromNativeAction(action) {
   };
 }
 
+function fromNativeConcreteLine(line) {
+  return {
+    concreteLineId: line.concreteLineId,
+    abstractLine: line.abstractLine,
+    concreteLine: line.concreteLine,
+  };
+}
+
+function apiErrorResult(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /^([^:]+):(\d+):\s*(.*)$/.exec(message);
+  if (match) {
+    return {
+      code: Number.parseInt(match[2], 10),
+      data: null,
+      message: match[3] || message,
+    };
+  }
+  return {
+    code: 500,
+    data: null,
+    message,
+  };
+}
+
+function normalizeApiResult(result) {
+  return {
+    code: result.code,
+    data: result.data ?? null,
+    message: result.message ?? null,
+  };
+}
+
 export class PokerHandsRange {
   #native;
 
@@ -32,25 +65,102 @@ export class PokerHandsRange {
     });
   }
 
-  getConcreteLineId(request) {
-    return this.#native.getConcreteLineId({
+  getConcreteLineIdRaw(request) {
+    return this.#native.getConcreteLineIdRaw({
       ...toNativeDimension(request),
       concreteLine: request.concreteLine,
     });
   }
 
+  getConcreteLines(request) {
+    try {
+      return normalizeApiResult(
+        this.#native.getConcreteLines({
+          ...toNativeDimension(request),
+          abstractLine: request.abstractLine,
+          concreteLine: request.concreteLine,
+        }),
+      );
+    } catch (error) {
+      return apiErrorResult(error);
+    }
+  }
+
+  getConcreteLinesRaw(request) {
+    const result = this.#native.getConcreteLinesRaw({
+      ...toNativeDimension(request),
+      abstractLine: request.abstractLine,
+      concreteLine: request.concreteLine,
+    });
+    return {
+      lines: result.lines.map(fromNativeConcreteLine),
+    };
+  }
+
+  getAbstractLines(request) {
+    try {
+      return normalizeApiResult(
+        this.#native.getAbstractLines({
+          strategy: request.strategy,
+          drillName: request.drillName,
+          playerCount: request.playerCount,
+          drillDepth: request.drillDepth,
+        }),
+      );
+    } catch (error) {
+      return apiErrorResult(error);
+    }
+  }
+
+  getAbstractLinesRaw(request) {
+    return this.#native.getAbstractLinesRaw({
+      strategy: request.strategy,
+      drillName: request.drillName,
+      playerCount: request.playerCount,
+      drillDepth: request.drillDepth,
+    });
+  }
+
   handsByActions(request) {
-    const result = this.#native.handsByActions({
+    try {
+      return normalizeApiResult(
+        this.#native.handsByActions({
+          ...toNativeDimension(request),
+          concreteLineId: request.concreteLineId,
+          actions: request.actions,
+          frequency: request.frequency,
+        }),
+      );
+    } catch (error) {
+      return apiErrorResult(error);
+    }
+  }
+
+  handsByActionsRaw(request) {
+    return this.#native.handsByActionsRaw({
       ...toNativeDimension(request),
       concreteLineId: request.concreteLineId,
       actions: request.actions,
       frequency: request.frequency,
     });
-    return { holeCards: result.holeCards };
   }
 
   queryHandStrategy(request) {
-    const result = this.#native.queryHandStrategy({
+    try {
+      return normalizeApiResult(
+        this.#native.queryHandStrategy({
+          ...toNativeDimension(request),
+          concreteLineId: request.concreteLineId,
+          holeCards: request.holeCards,
+        }),
+      );
+    } catch (error) {
+      return apiErrorResult(error);
+    }
+  }
+
+  queryHandStrategyRaw(request) {
+    const result = this.#native.queryHandStrategyRaw({
       ...toNativeDimension(request),
       concreteLineId: request.concreteLineId,
       holeCards: request.holeCards,
@@ -63,7 +173,23 @@ export class PokerHandsRange {
   }
 
   queryBatch(request) {
-    const result = this.#native.queryBatch({
+    try {
+      return normalizeApiResult(
+        this.#native.queryBatch({
+          ...toNativeDimension(request),
+          items: request.items.map((item) => ({
+            concreteLineId: item.concreteLineId,
+            holeCards: item.holeCards,
+          })),
+        }),
+      );
+    } catch (error) {
+      return apiErrorResult(error);
+    }
+  }
+
+  queryBatchRaw(request) {
+    const result = this.#native.queryBatchRaw({
       ...toNativeDimension(request),
       items: request.items.map((item) => ({
         concreteLineId: item.concreteLineId,

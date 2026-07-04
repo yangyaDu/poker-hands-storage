@@ -12,7 +12,7 @@
 - `range-store-core` 新增 `RangeStoreFacade`，封装 metadata lookup 和 range 查询。
 - `service` 的 metadata 读取改为复用 `range-store-core::metadata`。
 - 新增 `range-store-native` workspace crate 和 npm 包骨架。
-- `range-store-native` 已暴露 `PokerHandsRange`、`getConcreteLineId`、`handsByActions`、`queryHandStrategy`、`queryBatch`、`prewarm`、`stats`。
+- `range-store-native` 已暴露 `PokerHandsRange`、`getConcreteLines`、`getAbstractLines`、`handsByActions`、`queryHandStrategy`、`queryBatch`、`prewarm`、`stats`。
 - Windows MSVC 目标下已通过 Rust workspace test、clippy 和 Bun native smoke。
 
 尚未完成：
@@ -82,7 +82,7 @@ backend_framework(Bun/TypeScript)
 2. 查询逻辑继续复用 `range-store-core`，不在 TypeScript 中重写 `.idx/.bin` 解码。
 3. RangeDB 数据只读访问，支持多个 backend Pod 同时挂载同一份数据。
 4. 查询语义和现有 HTTP API 保持一致，包括：
-   - `concrete_line -> concrete_line_id`
+   - `abstract_line/concrete_line -> concrete line rows`
    - `concrete_line_id + actions + frequency -> hole_cards`
    - 单手牌策略查询
    - 批量查询
@@ -205,12 +205,16 @@ const ranges = new PokerHandsRange({
   verifyChecksums: false,
 });
 
-const concreteLineId = ranges.getConcreteLineId({
+const concreteLineResult = ranges.getConcreteLines({
   strategy: "default",
   playerCount: 6,
   depthBb: 100,
   concreteLine: "F-F-F-R2-F-R7-R15",
 });
+if (concreteLineResult.code !== 0) {
+  throw new Error(concreteLineResult.message ?? "concrete line lookup failed");
+}
+const concreteLineId = concreteLineResult.data.lines[0].concreteLineId;
 
 const result = ranges.handsByActions({
   strategy: "default",
@@ -220,6 +224,10 @@ const result = ranges.handsByActions({
   actions: [],
   frequency: 0.005,
 });
+if (result.code !== 0) {
+  throw new Error(result.message ?? "range query failed");
+}
+const holeCards = result.data.holeCards;
 ```
 
 第一阶段建议暴露这些接口：
@@ -250,6 +258,48 @@ type HandsByActionsRequest = DimensionInput & {
 type HandsByActionsResponse = {
   holeCards: string[];
 };
+
+type ApiResponse<T> = {
+  code: number;
+  data: T | null;
+  message: string | null;
+};
+
+type ActionResult = {
+  actionName: string;
+  actionSize: number;
+  amountBb: number;
+  frequency: number;
+  handEv?: number;
+};
+
+type ConcreteLinesData = {
+  lines: Array<{
+    concreteLineId: number;
+    abstractLine: string;
+    concreteLine: string;
+  }>;
+};
+
+type AbstractLinesData = {
+  abstractLines: string[];
+};
+
+type QueryHandStrategyData = {
+  actions: ActionResult[];
+};
+
+type QueryBatchData = {
+  results: Array<{
+    concreteLineId: number;
+    holeCards: string;
+    actions?: ActionResult[];
+    error?: {
+      code: number;
+      message: string;
+    };
+  }>;
+};
 ```
 
 方法建议：
@@ -258,11 +308,62 @@ type HandsByActionsResponse = {
 class PokerHandsRange {
   constructor(options: PokerHandsRangeOptions);
 
-  getConcreteLineId(request: ConcreteLineIdRequest): number;
+  // Raw shortcut for lower-level callers. Business code should use getConcreteLines.
+  getConcreteLineIdRaw(request: ConcreteLineIdRequest): number;
 
-  handsByActions(request: HandsByActionsRequest): HandsByActionsResponse;
+  getConcreteLines(request: {
+    strategy?: string;
+    playerCount: 6 | 8 | 9;
+    depthBb: 100 | 200 | 300;
+    abstractLine?: string;
+    concreteLine?: string;
+  }): ApiResponse<ConcreteLinesData>;
+
+  getConcreteLinesRaw(request: {
+    strategy?: string;
+    playerCount: 6 | 8 | 9;
+    depthBb: 100 | 200 | 300;
+    abstractLine?: string;
+    concreteLine?: string;
+  }): ConcreteLinesData;
+
+  getAbstractLines(request: {
+    strategy?: string;
+    drillName?: string;
+    playerCount: 6 | 8 | 9;
+    drillDepth: 100 | 200 | 300;
+  }): ApiResponse<AbstractLinesData>;
+
+  getAbstractLinesRaw(request: {
+    strategy?: string;
+    drillName?: string;
+    playerCount: 6 | 8 | 9;
+    drillDepth: 100 | 200 | 300;
+  }): AbstractLinesData;
+
+  handsByActions(request: HandsByActionsRequest): ApiResponse<HandsByActionsResponse>;
+  handsByActionsRaw(request: HandsByActionsRequest): HandsByActionsResponse;
 
   queryHandStrategy(request: {
+    strategy?: string;
+    playerCount: 6 | 8 | 9;
+    depthBb: 100 | 200 | 300;
+    concreteLineId: number;
+    holeCards: string;
+  }): ApiResponse<QueryHandStrategyData>;
+
+  queryBatch(request: {
+    strategy?: string;
+    playerCount: 6 | 8 | 9;
+    depthBb: 100 | 200 | 300;
+    items: Array<{
+      concreteLineId: number;
+      holeCards: string;
+    }>;
+  }): ApiResponse<QueryBatchData>;
+
+  // Raw response variants are kept for diagnostics and lower-level benchmark work.
+  queryHandStrategyRaw(request: {
     strategy?: string;
     playerCount: 6 | 8 | 9;
     depthBb: 100 | 200 | 300;
@@ -278,6 +379,16 @@ class PokerHandsRange {
       handEv?: number;
     }>;
   };
+
+  queryBatchRaw(request: {
+    strategy?: string;
+    playerCount: 6 | 8 | 9;
+    depthBb: 100 | 200 | 300;
+    items: Array<{
+      concreteLineId: number;
+      holeCards: string;
+    }>;
+  }): QueryBatchResponse;
 
   prewarm(request: DimensionInput): { openHandleCount: number };
 
@@ -344,12 +455,12 @@ impl NativePokerHandsRange {
         // open manifest/meta.db, validate files, initialize handle pool
     }
 
-    #[napi(js_name = "getConcreteLineId")]
-    pub fn get_concrete_line_id(
+    #[napi(js_name = "getConcreteLines")]
+    pub fn get_concrete_lines(
         &self,
-        request: ConcreteLineIdRequest,
-    ) -> napi::Result<u32> {
-        // meta.db exact lookup
+        request: ConcreteLinesRequest,
+    ) -> ConcreteLinesEnvelope {
+        // meta.db abstract lookup or exact concrete-line lookup
     }
 
     #[napi(js_name = "handsByActions")]
@@ -377,7 +488,7 @@ impl NativePokerHandsRange {
 
 保守做法：
 
-- `getConcreteLineId`、`handsByActions`、`queryHandStrategy` 先提供同步接口。
+- `getConcreteLines`、`handsByActions`、`queryHandStrategy` 先提供同步接口。
 - 大批量接口后续可以提供 `queryBatchAsync`，通过 `napi-rs` task 或 Bun worker 隔离。
 
 ## 只读数据和 mmap
@@ -560,8 +671,8 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 
 - 单个场景 + 单手牌查询。
 - 单个行动线下全部起手牌查询。
-- `concrete_line -> concrete_line_id`。
-- `concrete_line -> concrete_line_id -> handsByActions` 组合链路。
+- `getConcreteLines({ concreteLine }) -> concreteLineId`。
+- `getConcreteLines({ concreteLine }) -> concreteLineId -> handsByActions` 组合链路。
 - batch 查询。
 - 冷启动首次查询。
 - 热查询 p50 / p95 / p99。
@@ -582,8 +693,8 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 | --- | --- | --- |
 | 阶段 1：核心能力下沉 | 已完成最小闭环 | metadata 和 `RangeStoreFacade` 已进入 `range-store-core` |
 | 阶段 2：新增 range-store-native 最小版本 | 已完成最小闭环 | `PokerHandsRange` 已支持 concrete line lookup、hands-by-actions、单手牌查询、prewarm、stats |
-| 阶段 3：业务接口补齐 | 部分完成 | `queryBatch`、amount-aware action filter、multi-action OR 语义已完成；错误对象进一步结构化仍待补 |
-| 阶段 4：native benchmark | 未完成 | 后续应由 `storage-tools` 编排 |
+| 阶段 3：业务接口补齐 | 已完成当前口径 | 默认业务方法 `queryHandStrategy`、`queryBatch`、`handsByActions`、metadata 查询均返回业务码 envelope；`getConcreteLines` 同时覆盖 abstract line 列表查询和 concrete line 精确查 id；直接返回/抛异常版本统一使用 `Raw` 后缀 |
+| 阶段 4：native benchmark | 已完成 direct/sdk 区分 | `storage-tools benchmark-native` 已同时输出 `native-direct:*` 和 `native-sdk:*` case、冷启动分解和 Bun 子进程内存观察 |
 | 阶段 5：Kubernetes 接入验证 | 未完成 | 需要 Linux `.node` 和业务后端容器验证 |
 
 ### 阶段 1：核心能力下沉
@@ -616,7 +727,7 @@ cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D war
 2. 接入 `napi-rs`。已完成。
 3. 输出 `.node` 文件。已完成 Windows MSVC 本地构建。
 4. 暴露 `PokerHandsRange` 构造函数。已完成。
-5. 暴露 `getConcreteLineId`。已完成。
+5. 暴露 `getConcreteLines`。已完成。
 6. 暴露 `handsByActions`。已完成。
 7. 补 TypeScript 类型声明。已完成。
 8. 补 Bun smoke test。已手动验证，后续需要沉淀成自动化测试。
@@ -636,10 +747,14 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 
 1. 暴露 `queryHandStrategy`。已完成。
 2. 暴露 `queryBatch`。已完成。
-3. 暴露 `prewarm`。
-4. 暴露 `stats`。
-5. 统一 JS Error 结构。
-6. 文档补充 Bun 后端接入示例。
+3. 默认 `queryHandStrategy` 返回 `{ code, data: { actions }, message }`，直接返回 full payload 的版本为 `queryHandStrategyRaw`。已完成。
+4. 默认 `queryBatch` 返回 `{ code, data: { results }, message }`，每个 result 保留 `concreteLineId`、`holeCards`、`actions` 或 `error`；直接返回 full payload 的版本为 `queryBatchRaw`。已完成。
+5. `handsByActions` 使用业务码 envelope。已完成，`data` 只包含 `{ holeCards }`。
+6. 暴露 `prewarm`。已完成。
+7. 暴露 `stats`。已完成。
+8. metadata 高频路径加缓存。已完成：`RangeStoreFacade` 缓存 `concrete_line -> concrete_line_id` 和 drill scenario abstract lines。
+9. 暴露 `getConcreteLines`、`getAbstractLines` 的 envelope 版本及对应 `Raw` 版本；`getConcreteLineIdRaw` 只保留为底层快捷入口。已完成。
+10. 文档补充 Bun 后端接入示例。
 
 验收：
 
@@ -652,13 +767,51 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 
 任务：
 
-1. 在 `storage-tools` 中新增 native benchmark 编排入口。
-2. 由 `range-store-native` 提供 Bun native 被测入口。
-3. 对比 SQLite local、Rust core direct、Bun native binary、Rust HTTP binary。
-4. 输出 p50 / p95 / p99。
-5. 输出冷启动分解。
-6. 输出内存观察结果。
-7. 输出 native SDK 与 HTTP service 的结果一致性抽样。
+1. 在 `storage-tools` 中新增 native benchmark 编排入口。已完成：`benchmark-native`。
+2. 由 `range-store-native` 提供 Bun native 被测入口。已完成：worker 同时加载 `range-store-native/index.node` 和 `range-store-native/index.js`。
+3. 对比 SQLite local、Rust core direct、Bun native binary、Rust HTTP binary。已具备 Bun native 报告输出；对比时复用同一个 workload JSON。
+4. 输出 p50 / p95 / p99。已完成，复用 `BenchmarkRunReport` case 指标。
+5. 输出冷启动分解。已完成，记录 dynamic import、`PokerHandsRange` 构造、首次 hand query。
+6. 输出内存观察结果。已完成，记录 Bun 子进程 `process.memoryUsage()` 前后值。
+7. 输出 native SDK 与 HTTP service 的结果一致性抽样。待补：当前基础版本验证 worker error count 和 result count，未直接调用 HTTP service 做逐项一致性比较。
+
+命令示例：
+
+```powershell
+cargo run -p poker-hands-storage-tools -- benchmark-native `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --dimension default:6:100 `
+  --iterations 1000 `
+  --batch-iterations 200 `
+  --out reports\benchmark-bun-native.json `
+  --md reports\benchmark-bun-native.md
+```
+
+常用参数：
+
+| 参数 | 说明 |
+| --- | --- |
+| `--native-entry` | Bun SDK JS 入口，默认 `range-store-native/index.js` |
+| `--bun` | Bun 可执行文件，默认 `bun` |
+| `--max-open-handles` | 传给 `PokerHandsRange` 的 handle pool 上限，默认 8 |
+| `--verify-checksum` | 构造 native store 时启用 checksum 验证 |
+| `--workload` / `--write-workload` | 读取或写出共享 workload，便于和 SQLite / Rust core direct 使用同一批查询 |
+
+当前覆盖的 native case：
+
+- `native-direct:*`：直接调用 `index.node` 的默认业务 envelope 方法，用于观察 N-API 固定成本。
+- `native-sdk:*`：调用 `index.js` SDK 包装，用于观察 JS SDK 包装成本。
+- `*:concrete-lines-exact`：通过 `getConcreteLines({ concreteLine })` 精确查询 concrete line 并读取 `concreteLineId`。
+- `*:hand-strategy`：单个 `concrete_line_id + hand` 业务 envelope 查询。
+- `*:batch` 和 `*:batch-size-*`：批量业务 envelope 查询。
+- `*:hands-by-actions`：单行动线手牌范围查询。
+- `*:line-to-hands-by-actions`：`getConcreteLines({ concreteLine }) -> concreteLineId -> handsByActions` 组合链路。
+
+暂未覆盖：
+
+- `drill-scenarios` metadata benchmark 查询。native SDK 已暴露 `getAbstractLines`，后续可把该 case 加入 native benchmark。
+- native SDK 与 HTTP service 的逐项一致性抽样。后续可以在 `storage-tools` 中增加 HTTP 被测端或复用 service client。
 
 验收：
 
@@ -701,7 +854,7 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 
 ```text
 range-store-core 下沉 metadata + facade
-range-store-native 暴露 PokerHandsRange + getConcreteLineId + handsByActions
+range-store-native 暴露 PokerHandsRange + getConcreteLines + handsByActions
 Bun smoke test 验证能在进程内读现有 data/range-strata
 ```
 

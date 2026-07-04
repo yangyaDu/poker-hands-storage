@@ -65,6 +65,16 @@ pub enum StoreQueryError {
     Internal(String),
 }
 
+impl StoreQueryError {
+    pub fn public_code(&self) -> i32 {
+        match self {
+            Self::HandParse(_) | Self::ActionFilter(_) => 1000,
+            Self::HandlePool(_) | Self::NotFound(_) => 404,
+            Self::Manifest(_) | Self::ActionSchema(_) | Self::Io(_) | Self::Internal(_) => 500,
+        }
+    }
+}
+
 impl std::fmt::Display for StoreQueryError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
@@ -242,6 +252,36 @@ impl StoreQueryService {
             .collect())
     }
 
+    pub fn query_batch_detailed(
+        &self,
+        dimension: &DimensionRef,
+        requests: &[(u32, String)],
+    ) -> Result<Vec<DetailedBatchItemResult>, StoreQueryError> {
+        let reader = self.pool.get_or_open(dimension)?;
+        Ok(requests
+            .iter()
+            .map(|(concrete_line_id, hole_cards)| {
+                match self.query_single(&reader, dimension, *concrete_line_id, hole_cards) {
+                    Ok(result) => DetailedBatchItemResult {
+                        concrete_line_id: *concrete_line_id,
+                        hole_cards: hole_cards.clone(),
+                        actions: Some(result.actions),
+                        error: None,
+                    },
+                    Err(error) => DetailedBatchItemResult {
+                        concrete_line_id: *concrete_line_id,
+                        hole_cards: hole_cards.clone(),
+                        actions: None,
+                        error: Some(BatchItemError {
+                            code: error.public_code(),
+                            message: error.to_string(),
+                        }),
+                    },
+                }
+            })
+            .collect())
+    }
+
     /// Query all hands in a concrete line that match the requested action filters.
     ///
     /// Empty filters mean no action restriction. Non-empty filters use OR
@@ -369,6 +409,20 @@ pub struct BatchItemResult {
     pub input_hole_cards: String,
     pub actions: Option<Vec<ActionResult>>,
     pub error: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DetailedBatchItemResult {
+    pub concrete_line_id: u32,
+    pub hole_cards: String,
+    pub actions: Option<Vec<ActionResult>>,
+    pub error: Option<BatchItemError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchItemError {
+    pub code: i32,
+    pub message: String,
 }
 
 fn require_file(path: &Path) -> Result<(), StoreQueryError> {

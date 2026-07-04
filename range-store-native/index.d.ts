@@ -2,12 +2,27 @@
 /* eslint-disable */
 export declare class PokerHandsRange {
   constructor(options: PokerHandsRangeOptions)
-  getConcreteLineId(request: ConcreteLineIdRequest): number
-  handsByActions(request: HandsByActionsRequest): HandsByActionsResponse
-  queryHandStrategy(request: QueryHandStrategyRequest): QueryHandStrategyResponse
-  queryBatch(request: QueryBatchRequest): QueryBatchResponse
+  getConcreteLineIdRaw(request: ConcreteLineIdRequest): number
+  getConcreteLines(request: ConcreteLinesRequest): ApiResponse<ConcreteLinesData>
+  getConcreteLinesRaw(request: ConcreteLinesRequest): ConcreteLinesData
+  getAbstractLines(request: AbstractLinesRequest): ApiResponse<AbstractLinesData>
+  getAbstractLinesRaw(request: AbstractLinesRequest): AbstractLinesData
+  handsByActions(request: HandsByActionsRequest): ApiResponse<HandsByActionsResponse>
+  handsByActionsRaw(request: HandsByActionsRequest): HandsByActionsResponse
+  queryHandStrategy(
+    request: QueryHandStrategyRequest,
+  ): ApiResponse<QueryHandStrategyData>
+  queryHandStrategyRaw(request: QueryHandStrategyRequest): QueryHandStrategyResponse
+  queryBatch(request: QueryBatchRequest): ApiResponse<QueryBatchData>
+  queryBatchRaw(request: QueryBatchRequest): QueryBatchResponse
   prewarm(request: DimensionInput): PrewarmResponse
   stats(): StatsResponse
+}
+
+export interface ApiResponse<T> {
+  code: number
+  data: T | null
+  message: string | null
 }
 
 export interface ActionResult {
@@ -23,6 +38,35 @@ export interface ConcreteLineIdRequest {
   playerCount: number
   depthBb: number
   concreteLine: string
+}
+
+export interface ConcreteLinesRequest {
+  strategy?: string
+  playerCount: number
+  depthBb: number
+  abstractLine?: string
+  concreteLine?: string
+}
+
+export interface ConcreteLineInfo {
+  concreteLineId: number
+  abstractLine: string
+  concreteLine: string
+}
+
+export interface ConcreteLinesData {
+  lines: Array<ConcreteLineInfo>
+}
+
+export interface AbstractLinesRequest {
+  strategy?: string
+  drillName?: string
+  playerCount: number
+  drillDepth: number
+}
+
+export interface AbstractLinesData {
+  abstractLines: Array<string>
 }
 
 export interface DimensionInput {
@@ -62,6 +106,10 @@ export interface QueryHandStrategyResponse {
   actions: Array<ActionResult>
 }
 
+export interface QueryHandStrategyData {
+  actions: Array<ActionResult>
+}
+
 export interface BatchQueryItem {
   concreteLineId: number
   holeCards: string
@@ -83,6 +131,22 @@ export interface QueryBatchItemResponse {
 
 export interface QueryBatchResponse {
   results: Array<QueryBatchItemResponse>
+}
+
+export interface QueryBatchItem {
+  concreteLineId: number
+  holeCards: string
+  actions?: Array<ActionResult>
+  error?: BatchItemError
+}
+
+export interface QueryBatchData {
+  results: Array<QueryBatchItem>
+}
+
+export interface BatchItemError {
+  code: number
+  message: string
 }
 
 export interface PokerHandsRangeOptions {
