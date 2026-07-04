@@ -451,12 +451,12 @@ impl QueryService {
         dimension: &DimensionRef,
         filter: ConcreteLineFilter<'_>,
     ) -> Result<Vec<ConcreteLineRow>, AppError> {
-        self.metadata.get_concrete_lines(
+        Ok(self.metadata.get_concrete_lines(
             &dimension.strategy,
             dimension.player_count,
             dimension.depth_bb,
             filter,
-        )
+        )?)
     }
 
     pub fn get_drill_scenario_lines(

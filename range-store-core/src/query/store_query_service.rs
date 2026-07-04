@@ -15,6 +15,7 @@ pub const DEFAULT_HANDS_BY_ACTIONS_FREQUENCY: f64 = 0.005;
 ///
 /// This provides the core query logic without any HTTP/API dependencies.
 /// The `service` crate wraps this with HTTP error handling and OpenAPI types.
+#[derive(Debug)]
 pub struct StoreQueryService {
     action_schemas: HashMap<u32, Vec<ActionDef>>,
     pool: HandlePool,

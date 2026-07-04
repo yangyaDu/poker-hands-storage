@@ -1,0 +1,23 @@
+{
+  "name": "@poker-hands-storage/range-store-native",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./index.js",
+  "types": "./index.d.ts",
+  "scripts": {
+    "build:native": "bun run build:native:win",
+    "build:native:win": "bunx @napi-rs/cli build --release --target x86_64-pc-windows-msvc --dts native.d.ts",
+    "build:native:linux": "bunx @napi-rs/cli build --release --target x86_64-unknown-linux-gnu --dts native.d.ts",
+    "build:native:debug": "bunx @napi-rs/cli build --target x86_64-pc-windows-msvc --dts native.d.ts"
+  },
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "native.d.ts",
+    "*.node"
+  ],
+  "devDependencies": {
+    "@napi-rs/cli": "^3.0.0"
+  }
+}

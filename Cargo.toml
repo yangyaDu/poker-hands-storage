@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "range-store-core",
+    "range-store-native",
     "service",
     "storage-tools",
 ]

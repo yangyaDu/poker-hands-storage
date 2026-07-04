@@ -4,7 +4,7 @@
 
 ## 结论
 
-当前业务建议采用“瘦身后的 SQLite 元数据 + `.idx/.bin` 二进制策略数据 + Rust 独立 HTTP 服务”的混合方案。
+当前业务建议采用“瘦身后的 SQLite 元数据 + `.idx/.bin` 二进制策略数据 + Rust core 复用层”的混合方案。运行入口可以是 Rust 独立 HTTP 服务，也可以是 Bun/TypeScript 后端进程内 native SDK。
 
 这个方案的核心判断是：
 
@@ -12,7 +12,7 @@
 - 线上运行目录只包含 `manifest.json`、`meta.db`、每个维度一组 `.idx/.bin` 文件。
 - 热路径查询避开 SQL range 表扫描和大量行对象构造，通过 `.idx` 定位 pack，再从 `.bin` 解码目标手牌。
 - `meta.db` 保留 drill scenario、concrete line、action schema 这类强元数据能力，避免把所有业务元数据也手写成自定义二进制格式。
-- Rust 负责存储读取、格式校验、HTTP 服务和离线工具，减少 JS/Native 边界和跨语言格式实现漂移。
+- Rust 负责存储读取、格式校验、HTTP 服务、native SDK 和离线工具，减少跨语言格式实现漂移。
 
 第一阶段调研报告只给架构估算和风险判断，不记录具体冷启动耗时。冷启动数字依赖数据版本、Docker 资源、OS page cache、是否 prewarm、benchmark 模式和查询样本，应放在 benchmark 或部署验收报告中。
 
@@ -104,8 +104,8 @@ drill_name / abstract_line
 | 语言或形态 | 优点 | 问题 | 结论 |
 | --- | --- | --- | --- |
 | TypeScript/Bun 服务 | 与原项目一致，迭代快 | 热路径对象构造和 JS/Native 边界成本明显，二进制格式校验和 mmap 安全边界更难收束 | 不作为独立服务主实现 |
-| Rust N-API 插件 | 可保留 JS 服务，同时把热路径下沉 Rust | 仍有 Node/Bun 与 Native 边界，部署链路更复杂 | 适合旧项目内嵌优化，不适合作为 Docker 独立服务最终形态 |
-| Rust 独立服务 | 内存安全、mmap 和字节解析能力强，单进程 HTTP 服务，Docker 部署清晰，测试和工具可共用 core | 需要维护 Rust HTTP 和工具链，SQLite 动态库仍要处理 | 当前推荐 |
+| Rust N-API 插件 | 可保留 Bun/TypeScript 业务进程，同时把热路径下沉 Rust | 需要维护 native addon 构建产物和 JS/Native 边界 | Bun 后端进程内访问的推荐形态 |
+| Rust 独立服务 | 内存安全、mmap 和字节解析能力强，单进程 HTTP 服务，Docker 部署清晰，测试和工具可共用 core | 需要维护 Rust HTTP 和工具链，业务后端访问时仍有 HTTP 往返 | 已实现，适合作为独立部署、调试和兼容路径 |
 | Go 独立服务 | 部署简单，HTTP 成熟 | 自定义二进制解析、mmap、Float32 bit-exact 验证和已有 Rust core 复用不如 Rust 直接 | 不优先 |
 | C/C++ 服务 | 性能和底层控制力强 | 安全和维护成本高，业务迭代风险大 | 不采用 |
 
@@ -113,40 +113,31 @@ Rust 的优势不只是性能，还包括：
 
 - `range-store-core` 可以同时服务 API、验证、benchmark 和构建工具。
 - `.idx/.bin` 解析、CRC32C、Float32 bit-exact 校验可以集中在一套实现里。
-- Docker 镜像只需要 service 和 core，`storage-tools` 不进入运行镜像。
+- HTTP service 镜像只需要 service 和 core，`storage-tools` 不进入运行镜像；Bun 后端形态则需要携带 `range-store-native` 产物。
 - 运行时错误可以统一映射为 HTTP 状态码和业务错误码。
 
 ## 业务接入与 SDK 边界
 
-当前推荐的业务接入形态是 Docker 部署后的 HTTP API，而不是在本项目内额外提供多语言 SDK。
+当前已实现形态是 Docker 部署后的 HTTP API：`poker-hands-storage-service` 作为独立只读查询服务，业务系统通过 `/range/*` API 访问。
 
-原因是当前服务边界已经清楚：
+如果业务后端是 Bun/TypeScript，并且希望像 SQLite 一样在业务进程内直接访问只读 RangeDB，则推荐新增进程内 native SDK，而不是继续新增 HTTP SDK。详细草案见 `bun-native-sdk-implementation-draft.md`。
 
-- `poker-hands-storage-service` 是独立只读查询服务。
-- 业务系统通过服务地址访问 `/range/*` API 即可完成查询。
-- OpenAPI/Swagger 和 `docs/api-business-contract.md` 已经承担接口契约说明。
-- Rust 项目继续聚焦存储格式、查询服务、验证、benchmark 和 Docker 运行时，避免同时维护 TypeScript、Java、Python 等客户端包。
+两种接入形态的定位如下：
 
-因此，对“查询 SDK / 查询接口”的当前交付口径是：本项目提供查询接口，不单独提供 SDK。Docker 化 HTTP API 是业务侧统一查询入口。
+| 接入形态 | 定位 | 是否推荐作为 Bun 后端主路径 |
+| --- | --- | --- |
+| HTTP API | 已实现，可独立部署，适合 Swagger 调试、服务化部署、兼容验证 | 可保留，但不是进程内访问的最优路径 |
+| HTTP SDK | 仅封装 HTTP 请求、超时、重试、错误映射 | 不优先，因为仍然依赖独立查询服务 |
+| Native SDK | Bun 进程内加载 Rust `.node` addon，直接复用 `range-store-core` 读取只读 RangeDB | 推荐 |
 
-如果后续业务方希望进一步封装调用，优先建议在后端业务项目中实现 `RangeServiceClient` 或同等适配层，统一处理：
+因此，“查询 SDK / 查询接口”的新口径是：
 
-- `baseUrl`、服务 IP、域名和多环境配置。
-- HTTP 超时、重试、熔断和降级。
-- 鉴权、内部服务 token、trace id、日志和监控。
-- `{ code, data, message }` 响应解析。
-- HTTP 状态码和业务错误码到后端业务异常的映射。
+- 本项目继续保留 HTTP 查询接口。
+- 若业务后端选择进程内访问，应在本项目新增 `range-store-native`，提供 Bun/Node 可调用的 native SDK。
+- native SDK 不重新实现二进制解析，只封装 `range-store-core`。
+- `service`、`storage-tools`、`range-store-native` 三者保持平级，且只依赖 `range-store-core`。
 
-这层封装属于调用方基础设施适配，放在后端业务项目中更合适。业务代码不应到处直接拼接 `http://host:port/range/...`，而应通过后端项目内的统一 client 调用。
-
-只有在以下场景成立时，才考虑在本项目或独立仓库提供正式 SDK：
-
-- 多个独立系统需要长期接入同一服务。
-- 需要发布正式客户端包，例如 TypeScript、Java 或 Python package。
-- SDK 可以从 OpenAPI 自动生成，并有明确版本管理和兼容策略。
-- 团队愿意把客户端包作为服务契约的一部分长期维护。
-
-即使需要正式 SDK，也建议优先使用独立仓库或平级 `clients/` 目录，不把客户端实现混入 `range-store-core`、`service` 或 `storage-tools` 的职责边界。
+多语言 SDK 暂不作为当前目标。只有多个独立系统长期接入、需要正式发布 TypeScript/Java/Python 客户端包，并有版本兼容维护能力时，才考虑额外建设独立客户端 SDK。
 
 ## 冷启动估算口径
 

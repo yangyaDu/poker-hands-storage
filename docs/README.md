@@ -1,6 +1,6 @@
 # Poker Hands Storage 文档地图
 
-更新日期：2026-07-03
+更新日期：2026-07-04
 
 ## 收束原则
 
@@ -27,6 +27,7 @@
 | `data-verification-and-format-validation.md` | standalone/cross verify、Float32 策略、checksum、发布前验证建议 | 性能结论、接口契约 |
 | `binary-vs-sqlite-benchmark-report.md` | SQLite vs Binary 的 hot/cold benchmark、内存、体积和结果一致性摘要 | API 契约、部署 SOP |
 | `docker-deployment-guide.md` | 镜像构建、Compose/Kubernetes、版本化数据目录、发布、回滚、prewarm | 存储格式设计细节、benchmark 全量表 |
+| `bun-native-sdk-implementation-draft.md` | Bun/TypeScript 进程内 native SDK 方案、N-API 边界、Kubernetes 只读数据挂载建议 | 正式 benchmark 结论 |
 | `tier1-gto-storage-optimization-assessment.md` | 对档位一需求做当前状态评估，列剩余缺口 | 完整执行命令、长 benchmark 表 |
 | `tier1-gto-storage-optimization-implementation-plan.md` | 小步实施计划、阶段状态、下一步工作 | 已完成阶段的详细报告正文 |
 
@@ -35,8 +36,9 @@
 业务接口接入：
 
 1. `api-business-contract.md`
-2. `docker-deployment-guide.md`
-3. `tier1-gto-storage-optimization-assessment.md`
+2. `bun-native-sdk-implementation-draft.md`
+3. `docker-deployment-guide.md`
+4. `tier1-gto-storage-optimization-assessment.md`
 
 存储格式和体积判断：
 
@@ -80,10 +82,11 @@
 | 模块 | 职责 |
 | --- | --- |
 | `range-store-core` | 核心存储格式、读取、校验和查询能力 |
+| `range-store-native` | Bun/Node 进程内 native SDK，提供只读查询、prewarm、stats 和轻量启动校验 |
 | `service` | HTTP API、OpenAPI、请求校验、错误映射、Docker 运行时入口 |
 | `storage-tools` | 离线构建、验证、benchmark、存储方案分析工具 |
 
-`service` 和 `storage-tools` 不互相依赖业务代码；二者只复用 `range-store-core` 能力。
+`service`、`storage-tools` 和 `range-store-native` 不互相依赖业务代码；三者只复用 `range-store-core` 能力。
 
 ## line-transition 边界
 
