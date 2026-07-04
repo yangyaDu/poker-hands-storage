@@ -57,6 +57,33 @@ pub struct QueryHandStrategyRequest {
 }
 
 #[napi(object)]
+pub struct BatchQueryItem {
+    pub concrete_line_id: u32,
+    pub hole_cards: String,
+}
+
+#[napi(object)]
+pub struct QueryBatchRequest {
+    pub strategy: Option<String>,
+    pub player_count: u32,
+    pub depth_bb: u32,
+    pub items: Vec<BatchQueryItem>,
+}
+
+#[napi(object)]
+pub struct QueryBatchResponse {
+    pub results: Vec<QueryBatchItemResponse>,
+}
+
+#[napi(object)]
+pub struct QueryBatchItemResponse {
+    pub concrete_line_id: u32,
+    pub input_hole_cards: String,
+    pub actions: Option<Vec<ActionResult>>,
+    pub error: Option<String>,
+}
+
+#[napi(object)]
 pub struct QueryHandStrategyResponse {
     pub input_hole_cards: String,
     pub hand_code: String,
@@ -143,15 +170,35 @@ impl PokerHandsRange {
             actions: result
                 .actions
                 .into_iter()
-                .map(|action| ActionResult {
-                    action_name: action.action_name,
-                    action_size: f64::from(action.action_size),
-                    amount_bb: f64::from(action.amount_bb),
-                    frequency: action.frequency,
-                    hand_ev: action.hand_ev,
-                })
+                .map(action_result_from_core)
                 .collect(),
         })
+    }
+
+    #[napi(js_name = "queryBatch")]
+    pub fn query_batch(&self, request: QueryBatchRequest) -> Result<QueryBatchResponse> {
+        let dimension =
+            dimension_from_parts(request.strategy, request.player_count, request.depth_bb);
+        let requests = request
+            .items
+            .into_iter()
+            .map(|item| (item.concrete_line_id, item.hole_cards))
+            .collect::<Vec<_>>();
+        let results = self
+            .inner
+            .query_batch(&dimension, &requests)
+            .map_err(to_napi_error)?
+            .into_iter()
+            .map(|item| QueryBatchItemResponse {
+                concrete_line_id: item.concrete_line_id,
+                input_hole_cards: item.input_hole_cards,
+                actions: item
+                    .actions
+                    .map(|actions| actions.into_iter().map(action_result_from_core).collect()),
+                error: item.error,
+            })
+            .collect();
+        Ok(QueryBatchResponse { results })
     }
 
     #[napi]
@@ -184,6 +231,16 @@ fn dimension_from_parts(
         player_count,
         depth_bb,
     )
+}
+
+fn action_result_from_core(action: range_store_core::query::ActionResult) -> ActionResult {
+    ActionResult {
+        action_name: action.action_name,
+        action_size: f64::from(action.action_size),
+        amount_bb: f64::from(action.amount_bb),
+        frequency: action.frequency,
+        hand_ev: action.hand_ev,
+    }
 }
 
 fn to_napi_error(error: RangeStoreError) -> Error {

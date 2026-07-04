@@ -62,6 +62,24 @@ export class PokerHandsRange {
     };
   }
 
+  queryBatch(request) {
+    const result = this.#native.queryBatch({
+      ...toNativeDimension(request),
+      items: request.items.map((item) => ({
+        concreteLineId: item.concreteLineId,
+        holeCards: item.holeCards,
+      })),
+    });
+    return {
+      results: result.results.map((item) => ({
+        concreteLineId: item.concreteLineId,
+        inputHoleCards: item.inputHoleCards,
+        actions: item.actions?.map(fromNativeAction),
+        error: item.error,
+      })),
+    };
+  }
+
   prewarm(request) {
     const result = this.#native.prewarm(toNativeDimension(request));
     return { openHandleCount: result.openHandleCount };

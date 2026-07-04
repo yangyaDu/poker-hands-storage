@@ -12,12 +12,11 @@
 - `range-store-core` 新增 `RangeStoreFacade`，封装 metadata lookup 和 range 查询。
 - `service` 的 metadata 读取改为复用 `range-store-core::metadata`。
 - 新增 `range-store-native` workspace crate 和 npm 包骨架。
-- `range-store-native` 已暴露 `PokerHandsRange`、`getConcreteLineId`、`handsByActions`、`queryHandStrategy`、`prewarm`、`stats`。
+- `range-store-native` 已暴露 `PokerHandsRange`、`getConcreteLineId`、`handsByActions`、`queryHandStrategy`、`queryBatch`、`prewarm`、`stats`。
 - Windows MSVC 目标下已通过 Rust workspace test、clippy 和 Bun native smoke。
 
 尚未完成：
 
-- `queryBatch` native 接口。
 - native benchmark 编排和正式报告。
 - Linux 生产目标 `.node` 产物构建和容器化验证。
 - Kubernetes PVC 挂载验证。
@@ -583,7 +582,7 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 | --- | --- | --- |
 | 阶段 1：核心能力下沉 | 已完成最小闭环 | metadata 和 `RangeStoreFacade` 已进入 `range-store-core` |
 | 阶段 2：新增 range-store-native 最小版本 | 已完成最小闭环 | `PokerHandsRange` 已支持 concrete line lookup、hands-by-actions、单手牌查询、prewarm、stats |
-| 阶段 3：业务接口补齐 | 未完成 | 主要剩余 `queryBatch` 和错误对象进一步结构化 |
+| 阶段 3：业务接口补齐 | 部分完成 | `queryBatch` 已完成；错误对象进一步结构化、amount-aware action filter 仍待补 |
 | 阶段 4：native benchmark | 未完成 | 后续应由 `storage-tools` 编排 |
 | 阶段 5：Kubernetes 接入验证 | 未完成 | 需要 Linux `.node` 和业务后端容器验证 |
 
@@ -635,8 +634,8 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 
 任务：
 
-1. 暴露 `queryHandStrategy`。
-2. 暴露 `queryBatch`。
+1. 暴露 `queryHandStrategy`。已完成。
+2. 暴露 `queryBatch`。已完成。
 3. 暴露 `prewarm`。
 4. 暴露 `stats`。
 5. 统一 JS Error 结构。

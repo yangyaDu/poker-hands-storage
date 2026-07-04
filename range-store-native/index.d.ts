@@ -5,6 +5,7 @@ export declare class PokerHandsRange {
   getConcreteLineId(request: ConcreteLineIdRequest): number
   handsByActions(request: HandsByActionsRequest): HandsByActionsResponse
   queryHandStrategy(request: QueryHandStrategyRequest): QueryHandStrategyResponse
+  queryBatch(request: QueryBatchRequest): QueryBatchResponse
   prewarm(request: DimensionInput): PrewarmResponse
   stats(): StatsResponse
 }
@@ -59,6 +60,29 @@ export interface QueryHandStrategyResponse {
   inputHoleCards: string
   handCode: string
   actions: Array<ActionResult>
+}
+
+export interface BatchQueryItem {
+  concreteLineId: number
+  holeCards: string
+}
+
+export interface QueryBatchRequest {
+  strategy?: string
+  playerCount: number
+  depthBb: number
+  items: Array<BatchQueryItem>
+}
+
+export interface QueryBatchItemResponse {
+  concreteLineId: number
+  inputHoleCards: string
+  actions?: Array<ActionResult>
+  error?: string
+}
+
+export interface QueryBatchResponse {
+  results: Array<QueryBatchItemResponse>
 }
 
 export interface PokerHandsRangeOptions {
