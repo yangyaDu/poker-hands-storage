@@ -83,6 +83,7 @@ function measureCase(name, description, items, warmupIterations, operation) {
     totalMs,
     avgMs: safeRatio(totalMs, items.length),
     p50Ms: percentile(timesMs, 50),
+    p90Ms: percentile(timesMs, 90),
     p95Ms: percentile(timesMs, 95),
     p99Ms: percentile(timesMs, 99),
     maxMs: timesMs.length === 0 ? 0 : timesMs[timesMs.length - 1],
@@ -119,8 +120,15 @@ function requireApiData(response) {
   return response.data;
 }
 
+function readApiData(response) {
+  if (response && typeof response === "object" && "code" in response) {
+    return requireApiData(response);
+  }
+  return response;
+}
+
 function countBatchActionsEnvelope(response) {
-  const data = requireApiData(response);
+  const data = readApiData(response);
   let total = 0;
   for (const item of data.results) {
     if (item.error) {
@@ -145,11 +153,11 @@ function handsByActionsRequest(item, concreteLineId) {
 
 function callHandsByActions(mode, store, item, concreteLineId) {
   const request = handsByActionsRequest(item, concreteLineId);
-  return requireApiData(store.handsByActions(request)).holeCards.length;
+  return readApiData(store.handsByActions(request)).holeCards.length;
 }
 
 function resolveConcreteLineId(store, item) {
-  const data = requireApiData(
+  const data = readApiData(
     store.getConcreteLines({
       ...dimensionRequest(item),
       concreteLine: item.concreteLine,
@@ -187,7 +195,7 @@ function pushStoreCases(cases, mode, store) {
       input.workload.handQueries,
       input.warmupIterations,
       (item) =>
-        requireApiData(
+        readApiData(
           store.queryHandStrategy({
             ...dimensionRequest(item),
             concreteLineId: item.concreteLineId,
@@ -302,8 +310,8 @@ if (input.workload.handQueries.length > 0) {
     holeCards: firstQuery.holeCards,
   });
   directFirstQueryMs = performance.now() - directFirstQueryStart;
-  directFirstQueryResultCount = requireApiData(directResult).actions.length;
-  directStatsAfterFirstQuery = directStore.stats();
+  directFirstQueryResultCount = readApiData(directResult).actions.length;
+  directStatsAfterFirstQuery = readApiData(directStore.stats());
 
   const sdkFirstQueryStart = performance.now();
   const sdkResult = sdkStore.queryHandStrategy({
@@ -312,8 +320,8 @@ if (input.workload.handQueries.length > 0) {
     holeCards: firstQuery.holeCards,
   });
   sdkFirstQueryMs = performance.now() - sdkFirstQueryStart;
-  sdkFirstQueryResultCount = requireApiData(sdkResult).actions.length;
-  sdkStatsAfterFirstQuery = sdkStore.stats();
+  sdkFirstQueryResultCount = readApiData(sdkResult).actions.length;
+  sdkStatsAfterFirstQuery = readApiData(sdkStore.stats());
 }
 
 const cases = [];
@@ -321,8 +329,8 @@ pushStoreCases(cases, "direct", directStore);
 pushStoreCases(cases, "sdk", sdkStore);
 
 const memoryAfter = memorySnapshot("Bun process memory after native benchmark.");
-const directStatsAfterBenchmark = directStore.stats();
-const sdkStatsAfterBenchmark = sdkStore.stats();
+const directStatsAfterBenchmark = readApiData(directStore.stats());
+const sdkStatsAfterBenchmark = readApiData(sdkStore.stats());
 
 const output = {
   coldStart: {

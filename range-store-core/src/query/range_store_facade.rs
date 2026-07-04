@@ -1,48 +1,23 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::Arc;
 
 use crate::dimension::DimensionRef;
-use crate::metadata::{ConcreteLineFilter, ConcreteLineRow, MetadataError, MetadataReader};
-
-use super::hands_by_actions::{
+use crate::metadata::{CachedMetadataReader, ConcreteLineFilter, ConcreteLineRow};
+use crate::query::hands_by_actions::{
     format_action_filters, parse_action_filters, ActionFilter, ActionFilterParseError,
 };
-use super::store_query_service::{
+use crate::query::store_query_service::{
     BatchItemResult, DetailedBatchItemResult, QueryResult, StoreQueryError, StoreQueryService,
 };
 
 pub struct RangeStoreFacade {
-    metadata: MetadataReader,
-    metadata_cache: MetadataCache,
+    cached_metadata: Arc<CachedMetadataReader>,
     query_service: StoreQueryService,
-}
-
-#[derive(Debug, Default)]
-struct MetadataCache {
-    concrete_line_ids: Mutex<HashMap<ConcreteLineCacheKey, u32>>,
-    drill_scenario_lines: Mutex<HashMap<DrillScenarioCacheKey, Vec<String>>>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct ConcreteLineCacheKey {
-    strategy: String,
-    player_count: u32,
-    depth_bb: u32,
-    concrete_line: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct DrillScenarioCacheKey {
-    strategy: String,
-    drill_name: String,
-    player_count: u32,
-    drill_depth: u32,
 }
 
 #[derive(Debug)]
 pub enum RangeStoreError {
-    Metadata(MetadataError),
+    Metadata(crate::metadata::MetadataError),
     Query(StoreQueryError),
     NoHandsFound {
         actions: String,
@@ -73,7 +48,7 @@ impl RangeStoreFacade {
     ) -> Result<Self, RangeStoreError> {
         let data_dir = data_dir.into();
         let meta_path = meta_path.into();
-        let metadata = MetadataReader::new(meta_path.clone());
+        let cached_metadata = CachedMetadataReader::load(&data_dir, &meta_path)?;
         let query_service = StoreQueryService::open_with_meta(
             data_dir,
             meta_path,
@@ -81,8 +56,7 @@ impl RangeStoreFacade {
             verify_checksums,
         )?;
         Ok(Self {
-            metadata,
-            metadata_cache: MetadataCache::default(),
+            cached_metadata: Arc::new(cached_metadata),
             query_service,
         })
     }
@@ -92,39 +66,43 @@ impl RangeStoreFacade {
         dimension: &DimensionRef,
         filter: ConcreteLineFilter<'_>,
     ) -> Result<Vec<ConcreteLineRow>, RangeStoreError> {
-        Ok(self.metadata.get_concrete_lines(
+        let (abstract_line, concrete_line) = match filter {
+            ConcreteLineFilter::Abstract(abstract_line) => (Some(abstract_line), None),
+            ConcreteLineFilter::Concrete(concrete_line) => (None, Some(concrete_line)),
+            ConcreteLineFilter::AbstractAndConcrete {
+                abstract_line,
+                concrete_line,
+            } => (Some(abstract_line), Some(concrete_line)),
+        };
+        Ok(self.cached_metadata.get_concrete_lines(
             &dimension.strategy,
             dimension.player_count,
             dimension.depth_bb,
-            filter,
+            abstract_line,
+            concrete_line,
         )?)
     }
 
+    /// Fast path: look up concrete_line_id from the in-memory cache.
     pub fn get_concrete_line_id(
         &self,
         dimension: &DimensionRef,
         concrete_line: &str,
     ) -> Result<u32, RangeStoreError> {
-        let cache_key = ConcreteLineCacheKey {
-            strategy: dimension.strategy.clone(),
-            player_count: dimension.player_count,
-            depth_bb: dimension.depth_bb,
-            concrete_line: concrete_line.to_owned(),
-        };
-        if let Ok(cache) = self.metadata_cache.concrete_line_ids.lock() {
-            if let Some(id) = cache.get(&cache_key) {
-                return Ok(*id);
-            }
+        if let Some(id) = self.cached_metadata.get_concrete_line_id(
+            &dimension.strategy,
+            dimension.player_count,
+            dimension.depth_bb,
+            concrete_line,
+        )? {
+            return Ok(id);
         }
         let rows =
             self.get_concrete_lines(dimension, ConcreteLineFilter::Concrete(concrete_line))?;
-        let concrete_line_id = rows[0].concrete_line_id;
-        if let Ok(mut cache) = self.metadata_cache.concrete_line_ids.lock() {
-            cache.insert(cache_key, concrete_line_id);
-        }
-        Ok(concrete_line_id)
+        Ok(rows[0].concrete_line_id)
     }
 
+    /// Fast path: look up drill scenario lines from the in-memory cache.
     pub fn get_drill_scenario_lines(
         &self,
         strategy: &str,
@@ -132,27 +110,12 @@ impl RangeStoreFacade {
         player_count: u32,
         drill_depth: u32,
     ) -> Result<Vec<String>, RangeStoreError> {
-        let cache_key = DrillScenarioCacheKey {
-            strategy: strategy.to_owned(),
-            drill_name: drill_name.to_owned(),
-            player_count,
-            drill_depth,
-        };
-        if let Ok(cache) = self.metadata_cache.drill_scenario_lines.lock() {
-            if let Some(lines) = cache.get(&cache_key) {
-                return Ok(lines.clone());
-            }
-        }
-        let lines = self.metadata.get_drill_scenario_lines(
+        Ok(self.cached_metadata.get_drill_scenario_lines(
             strategy,
             drill_name,
             player_count,
             drill_depth,
-        )?;
-        if let Ok(mut cache) = self.metadata_cache.drill_scenario_lines.lock() {
-            cache.insert(cache_key, lines.clone());
-        }
-        Ok(lines)
+        )?)
     }
 
     pub fn query_hand_strategy(
@@ -299,8 +262,8 @@ impl std::fmt::Display for RangeStoreError {
 
 impl std::error::Error for RangeStoreError {}
 
-impl From<MetadataError> for RangeStoreError {
-    fn from(error: MetadataError) -> Self {
+impl From<crate::metadata::MetadataError> for RangeStoreError {
+    fn from(error: crate::metadata::MetadataError) -> Self {
         Self::Metadata(error)
     }
 }

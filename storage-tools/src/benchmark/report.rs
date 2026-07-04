@@ -209,16 +209,20 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     ));
 
     markdown.push_str("## Latency Results\n\n");
-    markdown
-        .push_str("| case | iters | avg | p50 | p95 | p99 | max | qps | errors | resultCount |\n");
-    markdown.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    markdown.push_str(
+        "| case | iters | avg | p50 | p90 | p95 | p99 | max | qps | errors | resultCount |\n",
+    );
+    markdown.push_str(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+    );
     for case in &report.cases {
         markdown.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {:.2} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {} | {} |\n",
             case.name,
             case.iterations,
             format_ms(case.avg_ms),
             format_ms(case.p50_ms),
+            format_ms(case.p90_ms),
             format_ms(case.p95_ms),
             format_ms(case.p99_ms),
             format_ms(case.max_ms),

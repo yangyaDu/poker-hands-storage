@@ -21,14 +21,6 @@ function fromNativeAction(action) {
   };
 }
 
-function fromNativeConcreteLine(line) {
-  return {
-    concreteLineId: line.concreteLineId,
-    abstractLine: line.abstractLine,
-    concreteLine: line.concreteLine,
-  };
-}
-
 function apiErrorResult(error) {
   const message = error instanceof Error ? error.message : String(error);
   const match = /^([^:]+):(\d+):\s*(.*)$/.exec(message);
@@ -65,158 +57,153 @@ export class PokerHandsRange {
     });
   }
 
-  getConcreteLineIdRaw(request) {
-    return this.#native.getConcreteLineIdRaw({
-      ...toNativeDimension(request),
-      concreteLine: request.concreteLine,
-    });
+  getConcreteLineId(request) {
+    try {
+      const id = this.#native.getConcreteLineId({
+        ...toNativeDimension(request),
+        concreteLine: request.concreteLine,
+      });
+      return normalizeApiResult({
+        code: 0,
+        data: { concreteLineId: id },
+        message: null,
+      });
+    } catch (error) {
+      return apiErrorResult(error);
+    }
   }
 
   getConcreteLines(request) {
     try {
-      return normalizeApiResult(
-        this.#native.getConcreteLines({
-          ...toNativeDimension(request),
-          abstractLine: request.abstractLine,
-          concreteLine: request.concreteLine,
-        }),
-      );
+      const result = this.#native.getConcreteLines({
+        ...toNativeDimension(request),
+        abstractLine: request.abstractLine,
+        concreteLine: request.concreteLine,
+      });
+      return normalizeApiResult({
+        code: 0,
+        data: {
+          lines: result.lines.map((line) => ({
+            concreteLineId: line.concreteLineId,
+            abstractLine: line.abstractLine,
+            concreteLine: line.concreteLine,
+          })),
+        },
+        message: null,
+      });
     } catch (error) {
       return apiErrorResult(error);
     }
-  }
-
-  getConcreteLinesRaw(request) {
-    const result = this.#native.getConcreteLinesRaw({
-      ...toNativeDimension(request),
-      abstractLine: request.abstractLine,
-      concreteLine: request.concreteLine,
-    });
-    return {
-      lines: result.lines.map(fromNativeConcreteLine),
-    };
   }
 
   getAbstractLines(request) {
     try {
-      return normalizeApiResult(
-        this.#native.getAbstractLines({
-          strategy: request.strategy,
-          drillName: request.drillName,
-          playerCount: request.playerCount,
-          drillDepth: request.drillDepth,
-        }),
-      );
+      const result = this.#native.getAbstractLines({
+        strategy: request.strategy,
+        drillName: request.drillName,
+        playerCount: request.playerCount,
+        drillDepth: request.drillDepth,
+      });
+      return normalizeApiResult({
+        code: 0,
+        data: {
+          abstractLines: result.abstractLines,
+        },
+        message: null,
+      });
     } catch (error) {
       return apiErrorResult(error);
     }
-  }
-
-  getAbstractLinesRaw(request) {
-    return this.#native.getAbstractLinesRaw({
-      strategy: request.strategy,
-      drillName: request.drillName,
-      playerCount: request.playerCount,
-      drillDepth: request.drillDepth,
-    });
   }
 
   handsByActions(request) {
     try {
-      return normalizeApiResult(
-        this.#native.handsByActions({
-          ...toNativeDimension(request),
-          concreteLineId: request.concreteLineId,
-          actions: request.actions,
-          frequency: request.frequency,
-        }),
-      );
+      const result = this.#native.handsByActions({
+        ...toNativeDimension(request),
+        concreteLineId: request.concreteLineId,
+        actions: request.actions,
+        frequency: request.frequency,
+      });
+      return normalizeApiResult({
+        code: 0,
+        data: {
+          holeCards: result.holeCards,
+        },
+        message: null,
+      });
     } catch (error) {
       return apiErrorResult(error);
     }
-  }
-
-  handsByActionsRaw(request) {
-    return this.#native.handsByActionsRaw({
-      ...toNativeDimension(request),
-      concreteLineId: request.concreteLineId,
-      actions: request.actions,
-      frequency: request.frequency,
-    });
   }
 
   queryHandStrategy(request) {
     try {
-      return normalizeApiResult(
-        this.#native.queryHandStrategy({
-          ...toNativeDimension(request),
-          concreteLineId: request.concreteLineId,
-          holeCards: request.holeCards,
-        }),
-      );
+      const result = this.#native.queryHandStrategy({
+        ...toNativeDimension(request),
+        concreteLineId: request.concreteLineId,
+        holeCards: request.holeCards,
+      });
+      return normalizeApiResult({
+        code: 0,
+        data: {
+          inputHoleCards: result.inputHoleCards,
+          handCode: result.handCode,
+          actions: result.actions.map(fromNativeAction),
+        },
+        message: null,
+      });
     } catch (error) {
       return apiErrorResult(error);
     }
-  }
-
-  queryHandStrategyRaw(request) {
-    const result = this.#native.queryHandStrategyRaw({
-      ...toNativeDimension(request),
-      concreteLineId: request.concreteLineId,
-      holeCards: request.holeCards,
-    });
-    return {
-      inputHoleCards: result.inputHoleCards,
-      handCode: result.handCode,
-      actions: result.actions.map(fromNativeAction),
-    };
   }
 
   queryBatch(request) {
     try {
-      return normalizeApiResult(
-        this.#native.queryBatch({
-          ...toNativeDimension(request),
-          items: request.items.map((item) => ({
+      const result = this.#native.queryBatch({
+        ...toNativeDimension(request),
+        items: request.items.map((item) => ({
+          concreteLineId: item.concreteLineId,
+          holeCards: item.holeCards,
+        })),
+      });
+      return normalizeApiResult({
+        code: 0,
+        data: {
+          results: result.results.map((item) => ({
             concreteLineId: item.concreteLineId,
-            holeCards: item.holeCards,
+            holeCards: item.inputHoleCards,
+            actions: item.actions?.map(fromNativeAction),
+            error: item.error
+              ? { code: 500, message: item.error }
+              : undefined,
           })),
-        }),
-      );
+        },
+        message: null,
+      });
     } catch (error) {
       return apiErrorResult(error);
     }
   }
 
-  queryBatchRaw(request) {
-    const result = this.#native.queryBatchRaw({
-      ...toNativeDimension(request),
-      items: request.items.map((item) => ({
-        concreteLineId: item.concreteLineId,
-        holeCards: item.holeCards,
-      })),
-    });
-    return {
-      results: result.results.map((item) => ({
-        concreteLineId: item.concreteLineId,
-        inputHoleCards: item.inputHoleCards,
-        actions: item.actions?.map(fromNativeAction),
-        error: item.error,
-      })),
-    };
-  }
-
   prewarm(request) {
     const result = this.#native.prewarm(toNativeDimension(request));
-    return { openHandleCount: result.openHandleCount };
+    return {
+      code: 0,
+      data: { openHandleCount: result.openHandleCount },
+      message: null,
+    };
   }
 
   stats() {
     const result = this.#native.stats();
     return {
-      schemaCount: result.schemaCount,
-      openHandleCount: result.openHandleCount,
-      knownDimensions: result.knownDimensions,
+      code: 0,
+      data: {
+        schemaCount: result.schemaCount,
+        openHandleCount: result.openHandleCount,
+        knownDimensions: result.knownDimensions,
+      },
+      message: null,
     };
   }
 }

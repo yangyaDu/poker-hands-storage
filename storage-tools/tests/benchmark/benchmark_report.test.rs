@@ -80,6 +80,7 @@ fn case(name: &str) -> BenchmarkCaseResult {
         total_ms: 2.0,
         avg_ms: 2.0,
         p50_ms: 2.0,
+        p90_ms: 2.0,
         p95_ms: 2.0,
         p99_ms: 2.0,
         max_ms: 2.0,

@@ -9,6 +9,6 @@ pub use hands_by_actions::{
 };
 pub use range_store_facade::{RangeStoreError, RangeStoreFacade};
 pub use store_query_service::{
-    ActionResult, QueryResult, StoreQueryError, StoreQueryService,
-    DEFAULT_HANDS_BY_ACTIONS_FREQUENCY,
+    ActionResult, BatchItemError, DetailedBatchItemResult, QueryResult, StoreQueryError,
+    StoreQueryService, DEFAULT_HANDS_BY_ACTIONS_FREQUENCY,
 };
