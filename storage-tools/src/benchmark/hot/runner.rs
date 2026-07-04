@@ -16,7 +16,7 @@ use crate::benchmark::workload::{
 };
 use crate::errors::ToolError;
 use range_store_core::dimension::{quote_identifier, DimensionRef};
-use range_store_core::query::StoreQueryService;
+use range_store_core::query::{parse_action_filters, StoreQueryService};
 use range_store_core::sqlite::{Connection, Value};
 
 pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunReport, ToolError> {
@@ -261,11 +261,13 @@ fn query_hands_by_actions_count(
     service: &StoreQueryService,
     item: &HandsByActionsBenchmarkItem,
 ) -> Result<usize, String> {
+    let action_filters =
+        parse_action_filters(item.actions.clone()).map_err(|error| error.to_string())?;
     service
-        .query_hands_by_action_names(
+        .query_hands_by_actions(
             &item.dimension(),
             item.concrete_line_id,
-            &item.actions,
+            &action_filters,
             item.frequency,
         )
         .map(|hands| hands.len())

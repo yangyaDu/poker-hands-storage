@@ -13,8 +13,12 @@ use crate::benchmark::types::{
 use crate::benchmark::workload::{create_benchmark_workload, read_workload_json};
 use crate::errors::ToolError;
 use range_store_core::dimension::quote_identifier;
-use range_store_core::query::DEFAULT_HANDS_BY_ACTIONS_FREQUENCY;
+use range_store_core::query::{
+    parse_action_filter, ActionFilter, DEFAULT_HANDS_BY_ACTIONS_FREQUENCY,
+};
 use range_store_core::sqlite::{Connection, Value};
+
+const ACTION_AMOUNT_TOLERANCE: f64 = 1e-6;
 
 pub fn run_sqlite_benchmark(
     command: &BenchmarkSqliteCommand,
@@ -90,7 +94,7 @@ pub fn run_sqlite_benchmark(
             result_verification: None,
             notes: vec![
                 "SQLite baseline benchmark; queries read and count action rows from source range_data tables.".to_owned(),
-                "`hands-by-actions` uses source SQLite DISTINCT hole_cards with action_name IN (...) and strict frequency threshold.".to_owned(),
+                "`hands-by-actions` uses source SQLite DISTINCT hole_cards with OR action-filter semantics and strict frequency threshold.".to_owned(),
                 "`drill-scenarios-metadata` reads source SQLite drill_scenario_lines_* metadata tables; compare only against the runtime meta.db metadata path.".to_owned(),
                 "No hard performance threshold is applied; compare reports from the same workload before drawing conclusions.".to_owned(),
             ],
@@ -162,7 +166,7 @@ fn measure_hands_by_actions_case(
 ) -> BenchmarkCaseResult {
     measure_benchmark_case(
         "hands-by-actions",
-        "Count distinct source SQLite hole_cards matching any requested action_name.",
+        "Count distinct source SQLite hole_cards matching any requested action filter.",
         queries,
         warmup_iterations,
         |item, _| {
@@ -217,23 +221,21 @@ fn sqlite_hands_by_actions_count(
     let table = quote_identifier(&range_table_name(&item.dimension()))?;
     let threshold = item.frequency.unwrap_or(DEFAULT_HANDS_BY_ACTIONS_FREQUENCY);
     let mut values = vec![Value::from(item.concrete_line_id), Value::from(threshold)];
-    let action_clause = if item.actions.is_empty() {
-        String::new()
+    let sql = if item.actions.is_empty() {
+        format!(
+            "SELECT COUNT(DISTINCT hole_cards)
+             FROM {table}
+             WHERE concrete_line_id = ?1 AND frequency > ?2"
+        )
     } else {
-        for action in &item.actions {
-            values.push(Value::from(action.as_str()));
-        }
-        let placeholders = (0..item.actions.len())
-            .map(|index| format!("?{}", index + 3))
-            .collect::<Vec<_>>()
-            .join(", ");
-        format!(" AND action_name IN ({placeholders})")
+        let filters = item
+            .actions
+            .iter()
+            .map(|action| parse_action_filter(action))
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| ToolError::invalid_argument(error.to_string()))?;
+        sqlite_hands_by_actions_or_sql(&table, &filters, &mut values)
     };
-    let sql = format!(
-        "SELECT COUNT(DISTINCT hole_cards)
-         FROM {table}
-         WHERE concrete_line_id = ?1 AND frequency > ?2{action_clause}"
-    );
     let mut statement = connection.prepare(&sql)?;
     statement.start(&values)?;
     if statement.step_row()? {
@@ -241,6 +243,37 @@ fn sqlite_hands_by_actions_count(
     } else {
         Ok(0)
     }
+}
+
+fn sqlite_hands_by_actions_or_sql(
+    table: &str,
+    filters: &[ActionFilter],
+    values: &mut Vec<Value>,
+) -> String {
+    let mut action_clauses = Vec::with_capacity(filters.len());
+    for filter in filters {
+        let action_param = values.len() + 1;
+        values.push(Value::from(filter.action_name.as_str()));
+
+        let amount_clause = if let Some(amount_bb) = filter.amount_bb {
+            let amount_param = values.len() + 1;
+            values.push(Value::from(f64::from(amount_bb)));
+            format!(" AND ABS(amount_bb - ?{amount_param}) <= {ACTION_AMOUNT_TOLERANCE}")
+        } else {
+            String::new()
+        };
+
+        action_clauses.push(format!("(action_name = ?{action_param}{amount_clause})"));
+    }
+
+    format!(
+        "SELECT COUNT(DISTINCT hole_cards)
+         FROM {table}
+         WHERE concrete_line_id = ?1
+           AND frequency > ?2
+           AND ({})",
+        action_clauses.join(" OR ")
+    )
 }
 
 pub(crate) fn sqlite_action_count(

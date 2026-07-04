@@ -582,7 +582,7 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 | --- | --- | --- |
 | 阶段 1：核心能力下沉 | 已完成最小闭环 | metadata 和 `RangeStoreFacade` 已进入 `range-store-core` |
 | 阶段 2：新增 range-store-native 最小版本 | 已完成最小闭环 | `PokerHandsRange` 已支持 concrete line lookup、hands-by-actions、单手牌查询、prewarm、stats |
-| 阶段 3：业务接口补齐 | 部分完成 | `queryBatch` 已完成；错误对象进一步结构化、amount-aware action filter 仍待补 |
+| 阶段 3：业务接口补齐 | 部分完成 | `queryBatch`、amount-aware action filter、multi-action OR 语义已完成；错误对象进一步结构化仍待补 |
 | 阶段 4：native benchmark | 未完成 | 后续应由 `storage-tools` 编排 |
 | 阶段 5：Kubernetes 接入验证 | 未完成 | 需要 Linux `.node` 和业务后端容器验证 |
 
@@ -594,7 +594,7 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 
 1. 把 `service` 中的 metadata reader 迁移到 `range-store-core`。已完成。
 2. 在 `range-store-core` 中新增 `RangeStoreFacade`。已完成。
-3. 统一 `hands-by-actions` 的 action/frequency 过滤语义。已完成最小复用，后续仍需补 amount-aware action filter。
+3. 统一 `hands-by-actions` 的 action/frequency 过滤语义。已完成，解析与匹配逻辑下沉到 `range-store-core`，native 和 HTTP 共用 amount-aware action filter 与 multi-action OR 语义。
 4. `service` 改为调用 `RangeStoreFacade`，不再保留重复业务逻辑。未完全完成，当前 service 已复用 core metadata，但查询路径仍保留 service wrapper。
 5. 保持现有 HTTP API 测试通过。已完成。
 

@@ -430,7 +430,7 @@ action 语义：
 
 - 支持 `fold`、`call`、`check`、`bet`、`raise`、`allin`。
 - `bet`、`raise`、`allin` 支持数值后缀，例如 `raise2.5`，表示精确匹配 amount。
-- 传多个 action 时按 SQL `IN (...)` 语义取并集：手牌只要任意一个 action filter 满足频率条件即可返回。
+- 传多个 action 时按 SQL `IN (...)` / OR 语义取并集：手牌只要任意一个 action filter 满足频率条件即可返回。
 - 如果传入的某个 action 在当前 action schema 中不存在，但其他 action 可以命中，则仍返回其他 action 命中的手牌。
 
 响应：

@@ -3,6 +3,9 @@ use std::path::PathBuf;
 use crate::dimension::DimensionRef;
 use crate::metadata::{ConcreteLineFilter, ConcreteLineRow, MetadataError, MetadataReader};
 
+use super::hands_by_actions::{
+    format_action_filters, parse_action_filters, ActionFilter, ActionFilterParseError,
+};
 use super::store_query_service::{
     BatchItemResult, QueryResult, StoreQueryError, StoreQueryService,
 };
@@ -116,22 +119,22 @@ impl RangeStoreFacade {
         Ok(self.query_service.query_batch(dimension, requests)?)
     }
 
-    pub fn hands_by_action_names(
+    pub fn hands_by_actions(
         &self,
         dimension: &DimensionRef,
         concrete_line_id: u32,
-        action_names: &[String],
+        action_filters: &[ActionFilter],
         frequency: Option<f64>,
     ) -> Result<Vec<String>, RangeStoreError> {
-        let hands = self.query_service.query_hands_by_action_names(
+        let hands = self.query_service.query_hands_by_actions(
             dimension,
             concrete_line_id,
-            action_names,
+            action_filters,
             frequency,
         )?;
         if hands.is_empty() {
             return Err(RangeStoreError::NoHandsFound {
-                actions: format_action_names(action_names),
+                actions: format_action_filters(action_filters),
                 frequency: format_frequency(frequency),
                 concrete_line_id,
                 strategy: dimension.strategy.clone(),
@@ -140,6 +143,17 @@ impl RangeStoreFacade {
             });
         }
         Ok(hands)
+    }
+
+    pub fn hands_by_action_names(
+        &self,
+        dimension: &DimensionRef,
+        concrete_line_id: u32,
+        action_names: &[String],
+        frequency: Option<f64>,
+    ) -> Result<Vec<String>, RangeStoreError> {
+        let action_filters = parse_action_filters(action_names.to_vec())?;
+        self.hands_by_actions(dimension, concrete_line_id, &action_filters, frequency)
     }
 
     pub fn prewarm(&self, dimension: &DimensionRef) -> Result<usize, RangeStoreError> {
@@ -166,6 +180,7 @@ impl RangeStoreError {
             Self::Query(error) => match error {
                 StoreQueryError::Manifest(_) => "INVALID_FORMAT",
                 StoreQueryError::ActionSchema(_) => "INVALID_FORMAT",
+                StoreQueryError::ActionFilter(_) => "INVALID_ARGUMENT",
                 StoreQueryError::HandlePool(pool_error) => {
                     if pool_error.to_string().starts_with("Dimension not found:") {
                         "DIMENSION_NOT_FOUND"
@@ -231,11 +246,9 @@ impl From<StoreQueryError> for RangeStoreError {
     }
 }
 
-fn format_action_names(action_names: &[String]) -> String {
-    if action_names.is_empty() {
-        "[]".to_owned()
-    } else {
-        action_names.join(",")
+impl From<ActionFilterParseError> for RangeStoreError {
+    fn from(error: ActionFilterParseError) -> Self {
+        Self::Query(StoreQueryError::ActionFilter(error))
     }
 }
 

@@ -10,9 +10,9 @@ use crate::http::request_validation::{
     ALLOWED_PLAYER_COUNTS, ALLOWED_STRATEGIES, MAX_BATCH_REQUESTS, MAX_PREWARM_DIMENSIONS,
 };
 use crate::http::{ApiResponse, AppState, HttpError};
-use crate::query::{ActionFilter, BatchItemResult, HandsByActionsResult, QueryResult};
-use range_store_core::action_schema::ActionName;
+use crate::query::{BatchItemResult, HandsByActionsResult, QueryResult};
 use range_store_core::dimension::DimensionRef;
+use range_store_core::query::{parse_action_filter, parse_action_filters};
 
 #[derive(Deserialize, ToSchema)]
 pub struct QueryRequest {
@@ -371,7 +371,7 @@ pub async fn hands_by_actions(
 ) -> Result<Json<ApiResponse<HandsByActionsResult>>, HttpError> {
     let filters = request
         .actions
-        .map(parse_action_filters)
+        .map(|actions| parse_action_filters(actions).map_err(|error| error.to_string()))
         .transpose()
         .map_err(HttpError::bad_request)?;
     let service = state.service;
@@ -385,87 +385,6 @@ pub async fn hands_by_actions(
     })
     .await?;
     Ok(Json(ApiResponse::ok(result)))
-}
-
-/// Parsed action filter error kinds returned by `parse_action_filter`.
-enum ActionFilterParseError {
-    /// The string does not start with any recognized action name.
-    UnknownAction,
-    /// A no-amount action (fold/check/call) has a trailing suffix.
-    UnexpectedSuffix,
-    /// An amount-bearing action has an invalid numeric suffix.
-    InvalidAmount,
-}
-
-impl std::fmt::Display for ActionFilterParseError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ActionFilterParseError::UnknownAction => {
-                write!(f, "must be one of fold, check, call, bet, raise, allin")
-            }
-            ActionFilterParseError::UnexpectedSuffix => {
-                write!(f, "must not have a numeric suffix")
-            }
-            ActionFilterParseError::InvalidAmount => {
-                write!(f, "must have a valid numeric suffix (e.g. bet2.5)")
-            }
-        }
-    }
-}
-
-/// Parse a string like "raise2.5" or "call" into an ActionFilter.
-fn parse_action_filter(raw: &str) -> Result<ActionFilter, ActionFilterParseError> {
-    // Known action names in descending length order to avoid ambiguous prefixes
-    const NAMES: &[ActionName] = &[
-        ActionName::Allin,
-        ActionName::Check,
-        ActionName::Raise,
-        ActionName::Fold,
-        ActionName::Call,
-        ActionName::Bet,
-    ];
-
-    for &name in NAMES {
-        let prefix = name.as_str();
-        if let Some(remainder) = raw.strip_prefix(prefix) {
-            let amount = match name {
-                ActionName::Fold | ActionName::Call | ActionName::Check => {
-                    if !remainder.is_empty() {
-                        return Err(ActionFilterParseError::UnexpectedSuffix);
-                    }
-                    None
-                }
-                ActionName::Bet | ActionName::Raise | ActionName::Allin => {
-                    if remainder.is_empty() {
-                        None
-                    } else {
-                        let amount: f32 = remainder
-                            .parse()
-                            .map_err(|_| ActionFilterParseError::InvalidAmount)?;
-                        if !amount.is_finite() {
-                            return Err(ActionFilterParseError::InvalidAmount);
-                        }
-                        Some(amount)
-                    }
-                }
-            };
-            return Ok(ActionFilter {
-                raw: raw.to_owned(),
-                action_name: name,
-                amount_bb: amount,
-            });
-        }
-    }
-
-    Err(ActionFilterParseError::UnknownAction)
-}
-
-/// Parse a list of raw action filter strings.
-fn parse_action_filters(raw_filters: Vec<String>) -> Result<Vec<ActionFilter>, String> {
-    raw_filters
-        .into_iter()
-        .map(|raw| parse_action_filter(&raw).map_err(|e| e.to_string()))
-        .collect()
 }
 
 fn default_strategy() -> String {
