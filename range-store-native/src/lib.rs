@@ -1,14 +1,21 @@
+use std::collections::{BTreeSet, HashMap};
+use std::path::Path;
 use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
-use range_store_core::dimension::DimensionRef;
+use range_store_core::dimension::{
+    get_concrete_lines_table_name, get_drill_scenario_table_name, quote_identifier, DimensionRef,
+};
+use range_store_core::manifest::{load_manifest, queryable_dimensions};
 use range_store_core::metadata::{ConcreteLineFilter, ConcreteLineRow};
 use range_store_core::query::{RangeStoreError, RangeStoreFacade};
+use range_store_core::sqlite::Connection;
 
 #[napi]
 pub struct PokerHandsRange {
     inner: Arc<RangeStoreFacade>,
+    metadata_index: Option<Arc<NativeMetadataIndex>>,
 }
 
 #[napi(object)]
@@ -16,6 +23,40 @@ pub struct PokerHandsRangeOptions {
     pub data_dir: String,
     pub max_open_handles: Option<u32>,
     pub verify_checksums: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeDimensionKey {
+    strategy: String,
+    player_count: u32,
+    depth_bb: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeConcreteKey {
+    dimension: NativeDimensionKey,
+    concrete_line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeAbstractKey {
+    dimension: NativeDimensionKey,
+    abstract_line: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct NativeDrillKey {
+    strategy: String,
+    drill_name: String,
+    player_count: u32,
+    drill_depth: u32,
+}
+
+#[derive(Default)]
+struct NativeMetadataIndex {
+    concrete_by_concrete: HashMap<NativeConcreteKey, ConcreteLineInfo>,
+    concrete_by_abstract: HashMap<NativeAbstractKey, Vec<ConcreteLineInfo>>,
+    drill_lines: HashMap<NativeDrillKey, Vec<String>>,
 }
 
 #[napi(object)]
@@ -63,6 +104,7 @@ pub struct ConcreteLinesData {
 }
 
 #[napi(object)]
+#[derive(Clone)]
 pub struct ConcreteLineInfo {
     pub concrete_line_id: u32,
     pub abstract_line: String,
@@ -205,16 +247,203 @@ pub struct StatsResponse {
     pub known_dimensions: Vec<String>,
 }
 
+impl NativeMetadataIndex {
+    fn load(data_dir: &Path) -> std::result::Result<Self, String> {
+        let manifest_path = data_dir.join("manifest.json");
+        let manifest = load_manifest(&manifest_path).map_err(|error| error.to_string())?;
+        let dimensions = queryable_dimensions(&manifest).map_err(|error| error.to_string())?;
+        let connection =
+            Connection::open(&data_dir.join("meta.db"), true).map_err(|error| error.to_string())?;
+
+        let mut index = Self::default();
+        let mut strategies = BTreeSet::new();
+        for dimension in dimensions {
+            strategies.insert(dimension.strategy.clone());
+            let dimension = DimensionRef::new(
+                dimension.strategy,
+                dimension.player_count,
+                dimension.depth_bb,
+            );
+            index.load_concrete_dimension(&connection, &dimension)?;
+        }
+        for strategy in strategies {
+            index.load_drill_strategy(&connection, &strategy)?;
+        }
+        Ok(index)
+    }
+
+    fn load_concrete_dimension(
+        &mut self,
+        connection: &Connection,
+        dimension: &DimensionRef,
+    ) -> std::result::Result<(), String> {
+        let table = quote_identifier(&get_concrete_lines_table_name(
+            &dimension.strategy,
+            dimension.player_count,
+            dimension.depth_bb,
+        ))
+        .map_err(|error| error.to_string())?;
+        let sql = format!(
+            "SELECT concrete_line_id, abstract_line, concrete_line
+             FROM {table}
+             ORDER BY concrete_line_id"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        statement.start(&[]).map_err(|error| error.to_string())?;
+        let dimension_key = native_dimension_key(dimension);
+        while statement.step_row().map_err(|error| error.to_string())? {
+            let line = ConcreteLineInfo {
+                concrete_line_id: statement.column_u32(0).map_err(|error| error.to_string())?,
+                abstract_line: statement
+                    .column_text(1)
+                    .map_err(|error| error.to_string())?,
+                concrete_line: statement
+                    .column_text(2)
+                    .map_err(|error| error.to_string())?,
+            };
+            self.concrete_by_concrete.insert(
+                NativeConcreteKey {
+                    dimension: dimension_key.clone(),
+                    concrete_line: line.concrete_line.clone(),
+                },
+                line.clone(),
+            );
+            self.concrete_by_abstract
+                .entry(NativeAbstractKey {
+                    dimension: dimension_key.clone(),
+                    abstract_line: line.abstract_line.clone(),
+                })
+                .or_default()
+                .push(line);
+        }
+        Ok(())
+    }
+
+    fn load_drill_strategy(
+        &mut self,
+        connection: &Connection,
+        strategy: &str,
+    ) -> std::result::Result<(), String> {
+        let table = quote_identifier(&get_drill_scenario_table_name(strategy))
+            .map_err(|error| error.to_string())?;
+        let sql = format!(
+            "SELECT drill_name, abstract_line, player_count, drill_depth
+             FROM {table}
+             ORDER BY drill_name, player_count, drill_depth, abstract_line"
+        );
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        statement.start(&[]).map_err(|error| error.to_string())?;
+        while statement.step_row().map_err(|error| error.to_string())? {
+            let key = NativeDrillKey {
+                strategy: strategy.to_owned(),
+                drill_name: statement
+                    .column_text(0)
+                    .map_err(|error| error.to_string())?,
+                player_count: statement.column_u32(2).map_err(|error| error.to_string())?,
+                drill_depth: statement.column_u32(3).map_err(|error| error.to_string())?,
+            };
+            self.drill_lines.entry(key).or_default().push(
+                statement
+                    .column_text(1)
+                    .map_err(|error| error.to_string())?,
+            );
+        }
+        Ok(())
+    }
+
+    fn concrete_line_id(&self, dimension: &DimensionRef, concrete_line: &str) -> Option<u32> {
+        self.concrete_by_concrete
+            .get(&NativeConcreteKey {
+                dimension: native_dimension_key(dimension),
+                concrete_line: concrete_line.to_owned(),
+            })
+            .map(|line| line.concrete_line_id)
+    }
+
+    fn concrete_lines(
+        &self,
+        dimension: &DimensionRef,
+        request: &ConcreteLinesRequest,
+    ) -> Result<Vec<ConcreteLineInfo>> {
+        let dimension_key = native_dimension_key(dimension);
+        match (
+            request.abstract_line.as_deref(),
+            request.concrete_line.as_deref(),
+        ) {
+            (Some(abstract_line), Some(concrete_line))
+                if !abstract_line.trim().is_empty() && !concrete_line.trim().is_empty() =>
+            {
+                let line = self.concrete_by_concrete.get(&NativeConcreteKey {
+                    dimension: dimension_key,
+                    concrete_line: concrete_line.to_owned(),
+                });
+                match line.filter(|line| line.abstract_line == abstract_line) {
+                    Some(line) => Ok(vec![line.clone()]),
+                    None => Err(concrete_line_not_found_error(
+                        dimension,
+                        Some(abstract_line),
+                        concrete_line,
+                    )),
+                }
+            }
+            (Some(abstract_line), None) if !abstract_line.trim().is_empty() => self
+                .concrete_by_abstract
+                .get(&NativeAbstractKey {
+                    dimension: dimension_key,
+                    abstract_line: abstract_line.to_owned(),
+                })
+                .cloned()
+                .ok_or_else(|| abstract_line_not_found_error(dimension, abstract_line)),
+            (None, Some(concrete_line)) if !concrete_line.trim().is_empty() => self
+                .concrete_by_concrete
+                .get(&NativeConcreteKey {
+                    dimension: dimension_key,
+                    concrete_line: concrete_line.to_owned(),
+                })
+                .cloned()
+                .map(|line| vec![line])
+                .ok_or_else(|| concrete_line_not_found_error(dimension, None, concrete_line)),
+            _ => Err(invalid_concrete_lines_request_error()),
+        }
+    }
+
+    fn abstract_lines(
+        &self,
+        strategy: &str,
+        drill_name: &str,
+        player_count: u32,
+        drill_depth: u32,
+    ) -> Option<Vec<String>> {
+        self.drill_lines
+            .get(&NativeDrillKey {
+                strategy: strategy.to_owned(),
+                drill_name: drill_name.to_owned(),
+                player_count,
+                drill_depth,
+            })
+            .cloned()
+    }
+}
+
 #[napi]
 impl PokerHandsRange {
     #[napi(constructor)]
     pub fn new(options: PokerHandsRangeOptions) -> Result<Self> {
         let max_open_handles = options.max_open_handles.unwrap_or(8).max(1) as usize;
         let verify_checksums = options.verify_checksums.unwrap_or(false);
+        let data_dir = options.data_dir.clone();
         let inner = RangeStoreFacade::open(options.data_dir, max_open_handles, verify_checksums)
             .map_err(to_napi_error)?;
+        let metadata_index = NativeMetadataIndex::load(Path::new(&data_dir))
+            .ok()
+            .map(Arc::new);
         Ok(Self {
             inner: Arc::new(inner),
+            metadata_index,
         })
     }
 
@@ -222,6 +451,13 @@ impl PokerHandsRange {
     pub fn get_concrete_line_id_raw(&self, request: ConcreteLineIdRequest) -> Result<u32> {
         let dimension =
             dimension_from_parts(request.strategy, request.player_count, request.depth_bb);
+        if let Some(metadata_index) = &self.metadata_index {
+            return metadata_index
+                .concrete_line_id(&dimension, &request.concrete_line)
+                .ok_or_else(|| {
+                    concrete_line_not_found_error(&dimension, None, &request.concrete_line)
+                });
+        }
         self.inner
             .get_concrete_line_id(&dimension, &request.concrete_line)
             .map_err(to_napi_error)
@@ -261,6 +497,11 @@ impl PokerHandsRange {
             request.player_count,
             request.depth_bb,
         );
+        if let Some(metadata_index) = &self.metadata_index {
+            return metadata_index
+                .concrete_lines(&dimension, &request)
+                .map(|lines| ConcreteLinesData { lines });
+        }
         let filter = concrete_line_filter_from_request(&request)?;
         let lines = self
             .inner
@@ -295,6 +536,24 @@ impl PokerHandsRange {
     ) -> Result<AbstractLinesData> {
         let strategy = request.strategy.unwrap_or_else(|| "default".to_owned());
         let drill_name = request.drill_name.unwrap_or_else(|| "rfi".to_owned());
+        if let Some(metadata_index) = &self.metadata_index {
+            return metadata_index
+                .abstract_lines(
+                    &strategy,
+                    &drill_name,
+                    request.player_count,
+                    request.drill_depth,
+                )
+                .map(|abstract_lines| AbstractLinesData { abstract_lines })
+                .ok_or_else(|| {
+                    drill_scenario_not_found_error(
+                        &strategy,
+                        &drill_name,
+                        request.player_count,
+                        request.drill_depth,
+                    )
+                });
+        }
         let abstract_lines = self
             .inner
             .get_drill_scenario_lines(
@@ -536,6 +795,72 @@ fn concrete_line_filter_from_request(
             "one of abstractLine or concreteLine must be provided and non-empty".to_owned(),
         )),
     }
+}
+
+fn native_dimension_key(dimension: &DimensionRef) -> NativeDimensionKey {
+    NativeDimensionKey {
+        strategy: dimension.strategy.clone(),
+        player_count: dimension.player_count,
+        depth_bb: dimension.depth_bb,
+    }
+}
+
+fn invalid_concrete_lines_request_error() -> Error {
+    Error::new(
+        Status::InvalidArg,
+        "one of abstractLine or concreteLine must be provided and non-empty".to_owned(),
+    )
+}
+
+fn abstract_line_not_found_error(dimension: &DimensionRef, abstract_line: &str) -> Error {
+    native_metadata_error(
+        "ABSTRACT_LINE_NOT_FOUND",
+        404,
+        format!(
+            "No concrete lines found for abstract_line={abstract_line} in dimension {}:{}:{}",
+            dimension.strategy, dimension.player_count, dimension.depth_bb
+        ),
+    )
+}
+
+fn concrete_line_not_found_error(
+    dimension: &DimensionRef,
+    abstract_line: Option<&str>,
+    concrete_line: &str,
+) -> Error {
+    let message = match abstract_line {
+        Some(abstract_line) => format!(
+            "Concrete line not found: abstract_line={abstract_line}, concrete_line={concrete_line}, dimension={}:{}:{}",
+            dimension.strategy, dimension.player_count, dimension.depth_bb
+        ),
+        None => format!(
+            "Concrete line not found: concrete_line={concrete_line}, dimension={}:{}:{}",
+            dimension.strategy, dimension.player_count, dimension.depth_bb
+        ),
+    };
+    native_metadata_error("CONCRETE_LINE_NOT_FOUND", 404, message)
+}
+
+fn drill_scenario_not_found_error(
+    strategy: &str,
+    drill_name: &str,
+    player_count: u32,
+    drill_depth: u32,
+) -> Error {
+    native_metadata_error(
+        "DRILL_SCENARIO_NOT_FOUND",
+        404,
+        format!(
+            "No abstract lines found for drill: strategy={strategy}, drill_name={drill_name}, player_count={player_count}, drill_depth={drill_depth}"
+        ),
+    )
+}
+
+fn native_metadata_error(code: &str, public_code: i32, message: String) -> Error {
+    Error::new(
+        Status::GenericFailure,
+        format!("{code}:{public_code}: {message}"),
+    )
 }
 
 fn public_code_from_napi_error(error: &Error) -> i32 {
