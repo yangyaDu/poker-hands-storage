@@ -217,6 +217,7 @@ impl RangeStoreError {
                     }
                 }
                 StoreQueryError::HandParse(_) => "UNKNOWN_HAND",
+                StoreQueryError::ActionSchemaNotFound(_) => "ACTION_SCHEMA_NOT_FOUND",
                 StoreQueryError::Io(_) => "INVALID_FORMAT",
                 StoreQueryError::NotFound(_) => "CONCRETE_LINE_NOT_FOUND",
                 StoreQueryError::Internal(_) => "INTERNAL",

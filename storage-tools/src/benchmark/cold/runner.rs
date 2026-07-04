@@ -523,7 +523,7 @@ fn build_notes(
     let mut notes = vec![
         "Each run starts a fresh Rust process and records worker phase timings plus parent-observed process elapsed time.".to_owned(),
         "storeOpenAndFirstQueryMs = service open + dimension prewarm + first query. Use processElapsedMs or workerTotalMs for end-to-end cold start.".to_owned(),
-        "Dimension prewarm includes opening/mmaping the dimension .idx/.bin files and preloading action schemas.".to_owned(),
+        "Dimension prewarm opens/memmaps the dimension .idx/.bin files; action schemas are loaded lazily on the first query that uses each schema.".to_owned(),
         "Parent process overhead = parent-observed process elapsed time - worker-measured total; approximates Rust binary startup/shutdown and IPC overhead.".to_owned(),
         "Phase accounting records the difference between sum of individual phase timings and workerTotalMs. A discrepancy >1ms or ratio >1% should be investigated.".to_owned(),
         format!("Query policy: {:?}.", command.query_policy),

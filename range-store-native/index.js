@@ -174,7 +174,7 @@ export class PokerHandsRange {
             holeCards: item.inputHoleCards,
             actions: item.actions?.map(fromNativeAction),
             error: item.error
-              ? { code: 500, message: item.error }
+              ? { code: item.error.code, message: item.error.message }
               : undefined,
           })),
         },

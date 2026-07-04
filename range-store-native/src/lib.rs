@@ -113,7 +113,13 @@ pub struct QueryBatchItemResponse {
     pub concrete_line_id: u32,
     pub input_hole_cards: String,
     pub actions: Option<Vec<ActionResult>>,
-    pub error: Option<String>,
+    pub error: Option<QueryBatchItemError>,
+}
+
+#[napi(object)]
+pub struct QueryBatchItemError {
+    pub code: i32,
+    pub message: String,
 }
 
 #[napi(object)]
@@ -255,7 +261,10 @@ impl PokerHandsRange {
                 actions: item
                     .actions
                     .map(|actions| actions.into_iter().map(action_result_from_core).collect()),
-                error: item.error.map(|e| e.message),
+                error: item.error.map(|e| QueryBatchItemError {
+                    code: e.code,
+                    message: e.message,
+                }),
             })
             .collect();
         Ok(QueryBatchResponse { results })
