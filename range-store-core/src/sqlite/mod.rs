@@ -54,7 +54,7 @@ type ColumnBlobFn = unsafe extern "C" fn(*mut Sqlite3Stmt, c_int) -> *const c_vo
 type LastInsertFn = unsafe extern "C" fn(*mut Sqlite3) -> i64;
 
 #[derive(Debug)]
-pub struct SqliteError(String);
+pub struct SqliteError(pub String);
 
 impl SqliteError {
     fn new(message: impl Into<String>) -> Self {

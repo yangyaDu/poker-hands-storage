@@ -93,7 +93,7 @@ pub fn build_api_test_store(root: &Path) -> PathBuf {
 
     // Also add '72o' hand with fold-only action (0 frequency - used by router test
     // to verify hands-by-actions frequency threshold behaviour).
-    // Add KK as raise-only so router tests can distinguish OR from AND action matching.
+    // Add KK as raise-only so router tests can verify OR action matching.
     // For simplicity we put all hands in pack 1.
 
     // Build PFSP .bin file with one pack for concrete_line_id=1

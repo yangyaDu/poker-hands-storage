@@ -132,11 +132,12 @@ pub fn write_benchmark_markdown(path: &Path, report: &BenchmarkRunReport) -> Res
 
 pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     let mut markdown = String::new();
-    if report.engine == "sqlite" {
-        markdown.push_str("# SQLite Baseline Benchmark Report\n\n");
-    } else {
-        markdown.push_str("# Range Strata Binary Benchmark Report\n\n");
-    }
+    markdown.push_str(match report.engine.as_str() {
+        "sqlite" => "# SQLite Baseline Benchmark Report\n\n",
+        "bun-native" => "# Bun Native SDK Benchmark Report\n\n",
+        "drill-metadata" => "# Drill Metadata Benchmark Report\n\n",
+        _ => "# Range Strata Binary Benchmark Report\n\n",
+    });
     markdown.push_str(&format!("Generated at: {}\n\n", report.generated_at));
     markdown.push_str("## Summary\n\n");
     markdown.push_str(&format!("- Engine: {}\n", report.engine));
@@ -161,10 +162,23 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     markdown.push_str(&format!("- Aggregate QPS: {:.2}\n", report.totals.avg_qps));
     markdown.push_str(&format!("- Error count: {}\n", report.totals.error_count));
     markdown.push_str(&format!("- Result count: {}\n", report.totals.result_count));
-    if report.engine == "sqlite" {
+    if report.cold_start.is_some() {
+        markdown.push_str("- Cold start: measured in this report\n\n");
+    } else if report.engine == "sqlite" {
         markdown.push_str("- Cold start: not measured by this command\n\n");
     } else {
         markdown.push_str("- Cold start: not measured by this command; use `benchmark-cold`\n\n");
+    }
+
+    markdown.push_str("## Cold Start\n\n");
+    if let Some(cold_start) = &report.cold_start {
+        let json =
+            serde_json::to_string_pretty(cold_start).unwrap_or_else(|_| cold_start.to_string());
+        markdown.push_str("```json\n");
+        markdown.push_str(&json);
+        markdown.push_str("\n```\n\n");
+    } else {
+        markdown.push_str("- Not measured by this command\n\n");
     }
 
     markdown.push_str("## Workload\n\n");
@@ -196,16 +210,20 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     ));
 
     markdown.push_str("## Latency Results\n\n");
-    markdown
-        .push_str("| case | iters | avg | p50 | p95 | p99 | max | qps | errors | resultCount |\n");
-    markdown.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    markdown.push_str(
+        "| case | iters | avg | p50 | p90 | p95 | p99 | max | qps | errors | resultCount |\n",
+    );
+    markdown.push_str(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n",
+    );
     for case in &report.cases {
         markdown.push_str(&format!(
-            "| {} | {} | {} | {} | {} | {} | {} | {:.2} | {} | {} |\n",
+            "| {} | {} | {} | {} | {} | {} | {} | {} | {:.2} | {} | {} |\n",
             case.name,
             case.iterations,
             format_ms(case.avg_ms),
             format_ms(case.p50_ms),
+            format_ms(case.p90_ms),
             format_ms(case.p95_ms),
             format_ms(case.p99_ms),
             format_ms(case.max_ms),

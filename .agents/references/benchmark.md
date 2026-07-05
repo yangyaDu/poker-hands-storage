@@ -46,6 +46,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 - `reports/benchmark-range-strata-binary.json` / `.md`
 - 包含 QPS、avg、p50、p95、p99、max、error count、内存近似
+- 正式 benchmark 结论只更新 `docs/binary-vs-sqlite-benchmark-and-verification-report.md`
 
 ## Cold 基准（冷启动）
 
@@ -77,8 +78,25 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
   --sqlite reports\benchmark-sqlite-cold-start.json
 ```
 
+## Native benchmark
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-native `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --native-entry range-store-native\index.js `
+  --http-service-bin target\x86_64-pc-windows-msvc\debug\poker-hands-storage-service.exe
+```
+
+当前正式 native benchmark 只比较：
+
+- `core:*`
+- `native-sdk:*`
+- `http-service:*`
+
 ## 注意事项
 
 - 不同 workload mode、dimension、sample set 的报告不可直接对比
 - 对比前确保 binary 和 SQLite 使用相同 workload
 - 冷启动结果需区分：进程启动、metadata 打开、mmap 创建、首次查询、OS page-cache 影响
+- `process-cold` 不强制驱逐 OS page cache，只代表当前机器的新进程 open/query 成本

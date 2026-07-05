@@ -2,8 +2,9 @@
 name: poker-hands-storage
 description: >
   poker-hands-storage Rust workspace 的全局项目指令。
-  三个 crate：range-store-core（存储核心）、service（HTTP API）、storage-tools（离线工具）。
-  涵盖：编译规则、架构边界、代码质量、文档同步、数据构建/验证/基准测试、服务部署。
+  四个 crate：range-store-core（存储核心）、service（HTTP API）、
+  range-store-native（Bun/Node native SDK）、storage-tools（离线工具）。
+  涵盖：编译规则、架构边界、代码质量、文档同步、数据构建/验证/基准测试、native SDK、服务部署。
 ---
 
 # poker-hands-storage 项目指令
@@ -18,13 +19,14 @@ description: >
 
 ## 架构边界
 
-三个 crate 职责严格分离：
+四个 crate 职责严格分离：
 
 - `range-store-core`：二进制格式、reader、codec、查询原语（不依赖 HTTP）
 - `service`：HTTP 路由、请求校验、响应封装、服务启动（不依赖离线工具）
+- `range-store-native`：Bun/Node 进程内 SDK，N-API 绑定和 JS envelope 包装（不负责构建/验证报告）
 - `storage-tools`：离线构建、验证、基准测试（不依赖 HTTP）
 
-**规则**：`service` 和 `storage-tools` 不得互相依赖，均只依赖 `range-store-core`。
+**规则**：`service`、`range-store-native` 和 `storage-tools` 不得互相依赖业务代码，均只依赖 `range-store-core`。
 
 ## 代码质量
 
@@ -32,7 +34,7 @@ description: >
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --workspace --all-targets -- -D warnings
+cargo clippy --workspace --all-targets --target x86_64-pc-windows-msvc -- -D warnings
 cargo test --workspace --target x86_64-pc-windows-msvc
 ```
 
@@ -47,11 +49,15 @@ cargo test --workspace --target x86_64-pc-windows-msvc
 
 | 变更类型 | 文档 |
 |---|---|
+| 项目入口 / 模块职责 / 常用命令 | `README.md` |
+| 文档职责 / 阅读路径 | `docs/README.md` |
+| 下一步任务 / 验收条件 | `docs/roadmap.md` |
 | API 路由 / 请求 / 响应 | `docs/api-business-contract.md` |
 | 二进制格式 / 存储布局 | `docs/range-db-binary-storage-design.md` |
 | 验证逻辑 | `docs/data-verification-and-format-validation.md` |
+| benchmark 结果 / 性能结论 | `docs/binary-vs-sqlite-benchmark-and-verification-report.md` |
+| Bun/Node native SDK | `docs/native-sdk.md` |
 | Docker / 运行时 | `docs/docker-deployment-guide.md` |
-| 架构决策 | `docs/storage-architecture-research.md` |
 
 ## Git Hooks
 
@@ -68,6 +74,7 @@ git config core.hooksPath .githooks
 | 构建二进制数据 | `references/build.md` |
 | 数据验证 | `references/verify.md` |
 | 性能基准测试 | `references/benchmark.md` |
+| Bun/Node native SDK | `references/native-sdk.md` |
 | HTTP 服务与 Docker | `references/service.md` |
 
 ### 构建二进制数据
@@ -87,7 +94,8 @@ git config core.hooksPath .githooks
 
 1. binary benchmark → SQLite baseline → benchmark-compare
 2. 冷启动同理：benchmark-cold → benchmark-sqlite-cold → benchmark-cold-compare
-3. 不同 workload / dimension / sample set 的报告不可直接对比
+3. native benchmark 只保留 `core`、`native-sdk`、`http-service` 三组正式对比
+4. 不同 workload / dimension / sample set 的报告不可直接对比
 
 ### HTTP 服务
 
@@ -108,7 +116,8 @@ git config core.hooksPath .githooks
 - 验证错误：HTTP 400 / code 1000
 - Not Found：HTTP 404 / code 404
 - 内部错误：HTTP 500 / code 500
-- `/range/hands-by-actions`：省略 frequency = `> 0`，提供 `frequency = x` = `>= x`
-- 多个 `action_name` 为交集语义
+- `/range/hands-by-actions`：省略 frequency 使用默认 `0.005`，语义为 `frequency > 0.005`
+- `/range/hands-by-actions`：提供 `frequency = x` 时语义为 `frequency > x`
+- 多个 action filter 为 OR / 并集语义，任意一个 action 满足即可返回手牌
 
 详细 API 契约见 `docs/api-business-contract.md`。

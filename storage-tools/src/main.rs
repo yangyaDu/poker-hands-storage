@@ -9,8 +9,12 @@ use poker_hands_storage_tools::benchmark::compare::{
     parse_benchmark_compare_args, run_benchmark_compare,
 };
 use poker_hands_storage_tools::benchmark::hot::parse_benchmark_args;
+use poker_hands_storage_tools::benchmark::native::parse_benchmark_native_args;
+use poker_hands_storage_tools::benchmark::native::run_core_worker_from_input_path;
 use poker_hands_storage_tools::benchmark::run_cold_benchmark;
+use poker_hands_storage_tools::benchmark::run_drill_metadata_benchmark;
 use poker_hands_storage_tools::benchmark::run_hot_benchmark;
+use poker_hands_storage_tools::benchmark::run_native_benchmark;
 use poker_hands_storage_tools::benchmark::sqlite::{
     parse_benchmark_sqlite_args, run_sqlite_benchmark,
 };
@@ -36,6 +40,10 @@ fn run() -> Result<(), ToolError> {
         Some("build") => run_build(args.collect()),
         Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
+        Some("benchmark-drill-metadata") => run_benchmark_drill_metadata(args.collect()),
+        Some("benchmark-native") => run_benchmark_native(args.collect()),
+        Some("benchmark-native-core-worker") => run_benchmark_native_core_worker(args.collect()),
+        Some("benchmark-native-http-worker") => run_benchmark_native_http_worker(args.collect()),
         Some("benchmark-sqlite") => run_benchmark_sqlite(args.collect()),
         Some("benchmark-compare") => run_benchmark_compare_cmd(args.collect()),
         Some("benchmark-cold") => run_benchmark_cold(args.collect()),
@@ -147,6 +155,66 @@ fn run_benchmark(args: Vec<String>) -> Result<(), ToolError> {
     if report.has_errors() {
         return Err(ToolError::new("BENCHMARK_FAILED", "benchmark failed"));
     }
+    Ok(())
+}
+
+fn run_benchmark_drill_metadata(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_benchmark_args(args)?;
+    let report = run_drill_metadata_benchmark(&command)?;
+    println!("Drill metadata benchmark complete.");
+    println!("  Cases: {}", report.cases.len());
+    println!("  Total iterations: {}", report.totals.iterations);
+    println!("  Aggregate QPS: {:.2}", report.totals.avg_qps);
+    println!("  Error count: {}", report.totals.error_count);
+    println!("  Result count: {}", report.totals.result_count);
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(ToolError::new(
+            "BENCHMARK_DRILL_METADATA_FAILED",
+            "drill metadata benchmark failed",
+        ));
+    }
+    Ok(())
+}
+
+fn run_benchmark_native(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_benchmark_native_args(args)?;
+    let report = run_native_benchmark(&command)?;
+    println!("Bun native benchmark complete.");
+    println!("  Cases: {}", report.cases.len());
+    println!("  Total iterations: {}", report.totals.iterations);
+    println!("  Aggregate QPS: {:.2}", report.totals.avg_qps);
+    println!("  Error count: {}", report.totals.error_count);
+    println!("  Result count: {}", report.totals.result_count);
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(ToolError::new(
+            "BENCHMARK_NATIVE_FAILED",
+            "Bun native benchmark failed",
+        ));
+    }
+    Ok(())
+}
+
+fn run_benchmark_native_core_worker(args: Vec<String>) -> Result<(), ToolError> {
+    let input_path = args
+        .first()
+        .ok_or_else(|| ToolError::invalid_argument("worker input path is required"))?;
+    let output = run_core_worker_from_input_path(PathBuf::from(input_path).as_path())?;
+    println!("{output}");
+    Ok(())
+}
+
+fn run_benchmark_native_http_worker(args: Vec<String>) -> Result<(), ToolError> {
+    let input_path = args
+        .first()
+        .ok_or_else(|| ToolError::invalid_argument("worker input path is required"))?;
+    let output = poker_hands_storage_tools::benchmark::native::run_http_worker_from_input_path(
+        PathBuf::from(input_path).as_path(),
+    )?;
+    println!("{output}");
     Ok(())
 }
 
@@ -386,6 +454,27 @@ Commands:
         [--write-workload <workload.json>]
         [--warmup-iterations <count>] [--verify-checksum]
         [--verify-results] [--out <report.json>] [--md <report.md>]
+
+  benchmark-drill-metadata --dir <dir> --source <range.db>
+        [--meta <meta.db>] [--workload <workload.json>]
+        [--seed <number>] [--iterations <count>]
+        [--dimension <strategy:players:bb>]
+        [--write-workload <workload.json>]
+        [--warmup-iterations <count>]
+        [--out <report.json>] [--md <report.md>]
+
+  benchmark-native --dir <dir> --source <range.db>
+        [--meta <meta.db>] [--native-entry <range-store-native/index.js>]
+        [--http-service-bin <poker-hands-storage-service>] [--bun <bun>]
+        [--max-open-handles <count>]
+        [--workload <workload.json>] [--seed <number>]
+        [--iterations <count>] [--hand-iterations <count>]
+        [--batch-iterations <count>] [--batch-size <count>]
+        [--batch-sizes <csv>] [--dimension <strategy:players:bb>]
+        [--workload-mode <random|abstract-local>]
+        [--write-workload <workload.json>]
+        [--warmup-iterations <count>] [--verify-checksum]
+        [--out <report.json>] [--md <report.md>]
 
   benchmark-sqlite --source <range.db>
         [--workload <workload.json>] [--seed <number>]

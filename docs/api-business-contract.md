@@ -1,6 +1,6 @@
 # API 业务逻辑和接口契约
 
-更新日期：2026-06-28
+更新日期：2026-07-05
 
 ## 总体说明
 
@@ -202,7 +202,7 @@ F-F-F-R2-F-R7-R15
 5. 通过 `/range/hands-by-actions` 查询完整行动线中 BB 的手牌范围。
 6. 如需某个具体手牌在当前节点的策略，用 `/range/hand-strategy` 查询该 `concrete_line_id + hole_cards` 的 actions。
 
-该访问模式不是“同一 `abstract_line` 下 concrete ids 轮转”，后续 benchmark 应单独建模为 `line-transition` workload。
+该访问模式不是“同一 `abstract_line` 下 concrete ids 轮转”。当前 `benchmark-native` 已覆盖单条 `concrete_line -> concrete_line_id -> handsByActions` 链路；完整业务 `line-transition` 仍需补 prefix/full 双节点组合 workload。
 
 错误：
 
@@ -430,7 +430,7 @@ action 语义：
 
 - 支持 `fold`、`call`、`check`、`bet`、`raise`、`allin`。
 - `bet`、`raise`、`allin` 支持数值后缀，例如 `raise2.5`，表示精确匹配 amount。
-- 传多个 action 时按 SQL `IN (...)` 语义取并集：手牌只要任意一个 action filter 满足频率条件即可返回。
+- 传多个 action 时按 SQL `IN (...)` / OR 语义取并集：手牌只要任意一个 action filter 满足频率条件即可返回。
 - 如果传入的某个 action 在当前 action schema 中不存在，但其他 action 可以命中，则仍返回其他 action 命中的手牌。
 
 响应：

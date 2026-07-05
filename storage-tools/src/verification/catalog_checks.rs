@@ -6,7 +6,7 @@ use range_store_core::crc32c::crc32c;
 use crate::verification::report::{VerifyFailure, VerifyLayer};
 use range_store_core::dimension::{get_concrete_lines_table_name, get_drill_scenario_table_name};
 use range_store_core::manifest::BuildManifest;
-use range_store_core::sqlite::Connection;
+use range_store_core::sqlite::{Connection, Value};
 
 #[derive(Debug, Clone, Default)]
 pub struct CatalogInfo {
@@ -48,7 +48,7 @@ pub fn check_catalog(dir: &Path, manifest: &BuildManifest) -> (CatalogInfo, Vec<
 
     check_build_info(&connection, &table_names, &mut failures);
     check_action_schemas(&connection, &table_names, &mut info, &mut failures);
-    check_metadata_tables(manifest, &table_names, &mut failures);
+    check_metadata_tables(&connection, manifest, &table_names, &mut failures);
 
     (info, failures)
 }
@@ -273,6 +273,7 @@ fn check_action_schemas(
 }
 
 fn check_metadata_tables(
+    connection: &Connection,
     manifest: &BuildManifest,
     table_names: &HashSet<String>,
     failures: &mut Vec<VerifyFailure>,
@@ -311,8 +312,41 @@ fn check_metadata_tables(
                 message: format!("Expected concrete_lines table \"{concrete_table}\" not found"),
                 context: None,
             });
+            continue;
+        }
+
+        let index_name = format!("idx_{concrete_table}_concrete_line");
+        if !index_exists(connection, &concrete_table, &index_name) {
+            failures.push(VerifyFailure {
+                layer: VerifyLayer::Catalog,
+                check: format!(
+                    "concrete_lines:{}:{}max:{}BB",
+                    dimension.strategy, dimension.player_count, dimension.depth_bb
+                ),
+                reason: "MISSING_INDEX".to_owned(),
+                message: format!(
+                    "Expected concrete_line lookup index \"{index_name}\" on table \"{concrete_table}\" not found"
+                ),
+                context: None,
+            });
         }
     }
+}
+
+fn index_exists(connection: &Connection, table_name: &str, index_name: &str) -> bool {
+    let mut statement = match connection.prepare(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND tbl_name = ?1 AND name = ?2 LIMIT 1",
+    ) {
+        Ok(statement) => statement,
+        Err(_) => return false,
+    };
+    if statement
+        .start(&[Value::from(table_name), Value::from(index_name)])
+        .is_err()
+    {
+        return false;
+    }
+    matches!(statement.step_row(), Ok(true))
 }
 
 fn to_hex(bytes: &[u8]) -> String {

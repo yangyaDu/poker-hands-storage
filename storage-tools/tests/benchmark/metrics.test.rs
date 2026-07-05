@@ -8,6 +8,7 @@ fn percentile_uses_linear_interpolation() {
 
     assert_eq!(percentile(&[], 95.0), 0.0);
     assert_eq!(percentile(&values, 50.0), 2.5);
+    assert_eq!(percentile(&values, 90.0), 3.7);
     assert_eq!(percentile(&values, 95.0), 3.8499999999999996);
     assert_eq!(percentile(&values, 99.0), 3.9699999999999998);
 }
@@ -58,6 +59,7 @@ fn case(
         total_ms,
         avg_ms: 0.0,
         p50_ms: 0.0,
+        p90_ms: 0.0,
         p95_ms: 0.0,
         p99_ms: 0.0,
         max_ms: 0.0,

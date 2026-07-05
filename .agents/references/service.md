@@ -13,13 +13,13 @@ cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- serv
 
 | 变量 | 默认值 | 说明 |
 |---|---|---|
-| `PHS_BIND` | `0.0.0.0:8080` | 监听地址 |
-| `PHS_DATA_DIR` | `/data` | 数据目录 |
-| `PHS_META_DB` | `${PHS_DATA_DIR}/meta.db` | 元数据数据库路径 |
-| `PHS_MAX_OPEN_HANDLES` | `3` | 最大打开句柄数 |
-| `PHS_VERIFY_CHECKSUMS` | `false` | 启用 CRC32C 校验 |
-| `PHS_PREWARM` | 空 | 启动预热维度 |
-| `PHS_SQLITE3_LIB` | 自动检测 | SQLite 动态库路径 |
+| `PHS_BIND` | `0.0.0.0:8080` | HTTP 监听地址 |
+| `PHS_DATA_DIR` | `/data` | Range Strata 运行目录 |
+| `PHS_META_DB` | `${PHS_DATA_DIR}/meta.db` | metadata SQLite 路径 |
+| `PHS_MAX_OPEN_HANDLES` | `2` | 最大打开维度 reader 数 |
+| `PHS_VERIFY_CHECKSUMS` | `false` | 查询时是否校验 pack CRC32C |
+| `PHS_PREWARM` | 空 | 启动预热维度，格式 `strategy:player_count:depth_bb` |
+| `PHS_SQLITE3_LIB` | 自动检测 | 离线工具使用的 SQLite 动态库路径 |
 | `RUST_LOG` | `info` | 日志级别 |
 
 ## 端点

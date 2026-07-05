@@ -28,3 +28,5 @@ nul
 .brooks-lint-history.json
 
 .tmp/
+range-store-native/*.node
+range-store-native/native.d.ts

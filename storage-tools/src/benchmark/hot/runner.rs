@@ -16,7 +16,7 @@ use crate::benchmark::workload::{
 };
 use crate::errors::ToolError;
 use range_store_core::dimension::{quote_identifier, DimensionRef};
-use range_store_core::query::StoreQueryService;
+use range_store_core::query::{parse_action_filters, StoreQueryService};
 use range_store_core::sqlite::{Connection, Value};
 
 pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunReport, ToolError> {
@@ -78,6 +78,8 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
         "`hands-by-actions` decodes binary packs through range-store-core and counts matching hands."
             .to_owned(),
         "`drill-scenarios-metadata` reads runtime meta.db SQLite tables; it is metadata-path evidence, not .idx/.bin strategy-pack performance."
+            .to_owned(),
+        "`batch-hand-strategy` is the default --batch-size case; `batch-size-*` entries are the sweep cases and should be summarized separately."
             .to_owned(),
         "No hard performance threshold is applied; use reports for local comparison and regression observation."
             .to_owned(),
@@ -261,11 +263,13 @@ fn query_hands_by_actions_count(
     service: &StoreQueryService,
     item: &HandsByActionsBenchmarkItem,
 ) -> Result<usize, String> {
+    let action_filters =
+        parse_action_filters(item.actions.clone()).map_err(|error| error.to_string())?;
     service
-        .query_hands_by_action_names(
+        .query_hands_by_actions(
             &item.dimension(),
             item.concrete_line_id,
-            &item.actions,
+            &action_filters,
             item.frequency,
         )
         .map(|hands| hands.len())

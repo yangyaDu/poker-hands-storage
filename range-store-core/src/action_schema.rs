@@ -121,7 +121,7 @@ impl std::error::Error for ActionSchemaError {}
 use std::collections::HashMap;
 use std::path::Path;
 
-use crate::sqlite::{Connection, SqliteError};
+use crate::sqlite::{Connection, SqliteError, Value};
 
 /// Load all action schemas from a `meta.db` SQLite file.
 pub fn load_action_schemas(
@@ -140,6 +140,34 @@ pub fn load_action_schemas(
         schemas.insert(id, actions);
     }
     Ok(schemas)
+}
+
+/// Load one action schema by id from an already-open metadata connection.
+pub fn load_action_schema_from_connection(
+    connection: &Connection,
+    schema_id: u32,
+) -> Result<Option<Vec<ActionDef>>, ActionSchemaLoadError> {
+    let mut statement = connection.prepare(
+        "SELECT action_count, action_blob
+         FROM action_schemas
+         WHERE id = ?1",
+    )?;
+    statement.start(&[Value::from(schema_id)])?;
+    if !statement.step_row()? {
+        return Ok(None);
+    }
+    let action_count = statement.column_u32(0)?;
+    let action_blob = statement.column_blob(1);
+    Ok(Some(decode_action_blob(&action_blob, action_count)?))
+}
+
+/// Load one action schema by id from a `meta.db` SQLite file.
+pub fn load_action_schema(
+    meta_db_path: &Path,
+    schema_id: u32,
+) -> Result<Option<Vec<ActionDef>>, ActionSchemaLoadError> {
+    let connection = Connection::open(meta_db_path, true)?;
+    load_action_schema_from_connection(&connection, schema_id)
 }
 
 /// Error returned by [`load_action_schemas`].

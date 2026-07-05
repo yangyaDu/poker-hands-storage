@@ -92,15 +92,16 @@ QueryService::open_with_meta(data_dir, meta_db_path)
   ├── 加载 manifest.json → 解析 BuildManifest
   ├── queryable_dimensions() → 获取可查询维度列表
   ├── MetadataReader::open(meta_db)
-  │     ├── load_action_schemas() → HashMap<u32, Vec<ActionDef>>
-  │     │     SELECT id, action_count, action_blob FROM action_schemas
-  │     │     decode_action_blob() → 每行解码为 ActionDef 列表
+  │     ├── load_action_schema_ids() → HashSet<u32>
+  │     │     SELECT id FROM action_schemas
+  │     ├── ActionSchemaCache::new(meta_db)
+  │     │     持有只读 SQLite 连接，按 schema_id 懒加载 ActionDef 列表
   │     ├── validate_dimension_schema_refs() → FK 完整性检查
   │     └── dimension_action_schema_ids() → 查询维度映射
   ├── 为每个维度: DimensionReader::open(idx_path, bin_path)
   │     ├── IdxReader::open() → mmap .idx, 验证 PFXI 头
   │     └── BinReader::open() → mmap .bin, 验证 PFSP 头
-  ├── 交叉验证: .idx 中的 action_schema_id 全部存在于 action_schemas map
+  ├── 交叉验证: .idx 中的 action_schema_id 全部存在于 action_schemas id 集合
   └── 构建 HandlePool (LRU 缓存的 DimensionReader 池)
 ```
 
@@ -130,7 +131,7 @@ QueryService::open_with_meta(data_dir, meta_db_path)
          ├── 在 hand_ids 中查找目标 hand_id（详见第五节）
          ├── 读取 action_mask (u32)
          └── 只返回 mask 位为 1 的 cell: (action_id, frequency, hand_ev)
-4. 通过 IdxRecord.action_schema_id 查 action_schemas map → Vec<ActionDef>
+4. 通过 IdxRecord.action_schema_id 查 ActionSchemaCache，miss 时查 SQLite 并缓存 → Vec<ActionDef>
 5. 每个 cell: action_id → ActionDef.action_name → ActionResult
 ```
 

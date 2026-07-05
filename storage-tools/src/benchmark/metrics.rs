@@ -12,6 +12,8 @@ pub struct BenchmarkCaseResult {
     pub total_ms: f64,
     pub avg_ms: f64,
     pub p50_ms: f64,
+    #[serde(default)]
+    pub p90_ms: f64,
     pub p95_ms: f64,
     pub p99_ms: f64,
     pub max_ms: f64,
@@ -77,6 +79,7 @@ where
         total_ms,
         avg_ms,
         p50_ms: percentile(&times_ms, 50.0),
+        p90_ms: percentile(&times_ms, 90.0),
         p95_ms: percentile(&times_ms, 95.0),
         p99_ms: percentile(&times_ms, 99.0),
         max_ms: times_ms.last().copied().unwrap_or_default(),

@@ -129,6 +129,7 @@ fn case(avg_ms: f64, qps: f64, result_count: u64) -> BenchmarkCaseResult {
         total_ms: avg_ms,
         avg_ms,
         p50_ms: avg_ms,
+        p90_ms: avg_ms,
         p95_ms: avg_ms,
         p99_ms: avg_ms,
         max_ms: avg_ms,

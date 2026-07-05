@@ -1,13 +1,19 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use crate::action_schema::{load_action_schemas, ActionDef, ActionSchemaLoadError};
+use crate::action_schema::{load_action_schema_from_connection, ActionDef, ActionSchemaLoadError};
 use crate::dimension::DimensionRef;
-use crate::hole_cards::{hand_code_from_id, parse_hole_cards, HandDictError};
+use crate::hole_cards::{parse_hole_cards, HandDictError};
 use crate::manifest::{queryable_dimensions, ManifestError};
+use crate::sqlite::{Connection, SqliteError};
 use crate::DimensionReader;
 
 use super::handle_pool::{HandlePool, HandlePoolError};
+use super::hands_by_actions::{
+    match_hands_by_actions, parse_action_filters, ActionFilter, ActionFilterParseError,
+    FrequencyFilter,
+};
 
 pub const DEFAULT_HANDS_BY_ACTIONS_FREQUENCY: f64 = 0.005;
 
@@ -15,8 +21,9 @@ pub const DEFAULT_HANDS_BY_ACTIONS_FREQUENCY: f64 = 0.005;
 ///
 /// This provides the core query logic without any HTTP/API dependencies.
 /// The `service` crate wraps this with HTTP error handling and OpenAPI types.
+#[derive(Debug)]
 pub struct StoreQueryService {
-    action_schemas: HashMap<u32, Vec<ActionDef>>,
+    action_schemas: ActionSchemaCache,
     pool: HandlePool,
     verify_checksums: bool,
 }
@@ -52,11 +59,23 @@ pub struct ActionResult {
 pub enum StoreQueryError {
     Manifest(ManifestError),
     ActionSchema(ActionSchemaLoadError),
+    ActionFilter(ActionFilterParseError),
     HandlePool(HandlePoolError),
     HandParse(HandDictError),
+    ActionSchemaNotFound(u32),
     Io(String),
     NotFound(String),
     Internal(String),
+}
+
+impl StoreQueryError {
+    pub fn public_code(&self) -> i32 {
+        match self {
+            Self::HandParse(_) | Self::ActionFilter(_) => 1000,
+            Self::HandlePool(_) | Self::NotFound(_) | Self::ActionSchemaNotFound(_) => 404,
+            Self::Manifest(_) | Self::ActionSchema(_) | Self::Io(_) | Self::Internal(_) => 500,
+        }
+    }
 }
 
 impl std::fmt::Display for StoreQueryError {
@@ -64,8 +83,12 @@ impl std::fmt::Display for StoreQueryError {
         match self {
             Self::Manifest(e) => write!(f, "Manifest error: {e}"),
             Self::ActionSchema(e) => write!(f, "Action schema error: {e}"),
+            Self::ActionFilter(e) => write!(f, "{e}"),
             Self::HandlePool(e) => write!(f, "{e}"),
             Self::HandParse(e) => write!(f, "{e}"),
+            Self::ActionSchemaNotFound(action_schema_id) => {
+                write!(f, "Action schema {action_schema_id} not found")
+            }
             Self::Io(msg) => write!(f, "IO error: {msg}"),
             Self::NotFound(msg) => write!(f, "Not found: {msg}"),
             Self::Internal(msg) => write!(f, "Internal error: {msg}"),
@@ -84,6 +107,12 @@ impl From<ManifestError> for StoreQueryError {
 impl From<ActionSchemaLoadError> for StoreQueryError {
     fn from(error: ActionSchemaLoadError) -> Self {
         Self::ActionSchema(error)
+    }
+}
+
+impl From<ActionFilterParseError> for StoreQueryError {
+    fn from(error: ActionFilterParseError) -> Self {
+        Self::ActionFilter(error)
     }
 }
 
@@ -124,27 +153,8 @@ impl StoreQueryService {
         let meta_path = meta_path.into();
         require_file(&meta_path)?;
 
-        let action_schemas = load_action_schemas(&meta_path)?;
-        let schema_ids: HashSet<u32> = action_schemas.keys().copied().collect();
-
-        for dimension in &dimensions {
-            let idx_path = data_dir.join(&dimension.idx_file);
-            let bin_path = data_dir.join(&dimension.bin_file);
-            require_file(&idx_path)?;
-            require_file(&bin_path)?;
-            let reader = DimensionReader::open(&idx_path, &bin_path)
-                .map_err(|e| StoreQueryError::Io(e.to_string()))?;
-            for action_schema_id in reader.unique_action_schema_ids() {
-                if !schema_ids.contains(&action_schema_id) {
-                    return Err(StoreQueryError::NotFound(format!(
-                        "Action schema {action_schema_id} referenced in index but not in meta.db"
-                    )));
-                }
-            }
-        }
-
         Ok(Self {
-            action_schemas,
+            action_schemas: ActionSchemaCache::new(meta_path)?,
             pool: HandlePool::new(data_dir, dimensions, max_open_handles),
             verify_checksums,
         })
@@ -163,20 +173,15 @@ impl StoreQueryService {
             .query(concrete_line_id, parsed.hand_id, self.verify_checksums)
             .map_err(|e| StoreQueryError::Io(e.to_string()))?;
         let Some(fragment) = fragment else {
-            return Err(StoreQueryError::NotFound(format!(
-                "concrete_line_id={concrete_line_id} or hand={hole_cards} not found"
-            )));
+            return Err(missing_hand_or_line_error(
+                &reader,
+                dimension,
+                concrete_line_id,
+                hole_cards,
+            ));
         };
 
-        let action_schema = self
-            .action_schemas
-            .get(&fragment.action_schema_id)
-            .ok_or_else(|| {
-                StoreQueryError::NotFound(format!(
-                    "Action schema {} not found",
-                    fragment.action_schema_id
-                ))
-            })?;
+        let action_schema = self.action_schemas.get(fragment.action_schema_id)?;
         let mut actions = Vec::with_capacity(fragment.cells.len());
         for cell in fragment.cells {
             let action = action_schema.get(cell.action_id as usize).ok_or_else(|| {
@@ -229,16 +234,48 @@ impl StoreQueryService {
             .collect())
     }
 
-    /// Query all hands in a concrete line that match any requested action name.
+    pub fn query_batch_detailed(
+        &self,
+        dimension: &DimensionRef,
+        requests: &[(u32, String)],
+    ) -> Result<Vec<DetailedBatchItemResult>, StoreQueryError> {
+        let reader = self.pool.get_or_open(dimension)?;
+        Ok(requests
+            .iter()
+            .map(|(concrete_line_id, hole_cards)| {
+                match self.query_single(&reader, dimension, *concrete_line_id, hole_cards) {
+                    Ok(result) => DetailedBatchItemResult {
+                        concrete_line_id: *concrete_line_id,
+                        hole_cards: hole_cards.clone(),
+                        hand_code: Some(result.hand_code),
+                        actions: Some(result.actions),
+                        error: None,
+                    },
+                    Err(error) => DetailedBatchItemResult {
+                        concrete_line_id: *concrete_line_id,
+                        hole_cards: hole_cards.clone(),
+                        hand_code: None,
+                        actions: None,
+                        error: Some(BatchItemError {
+                            code: error.public_code(),
+                            message: error.to_string(),
+                        }),
+                    },
+                }
+            })
+            .collect())
+    }
+
+    /// Query all hands in a concrete line that match the requested action filters.
     ///
-    /// `action_names` uses OR semantics. An empty list means no action-name
-    /// restriction. `frequency` is always strict greater-than, matching the API
-    /// contract for `/range/hands-by-actions`.
-    pub fn query_hands_by_action_names(
+    /// Empty filters mean no action restriction. Non-empty filters use OR
+    /// semantics: any requested action filter can include the hand above the
+    /// strict greater-than frequency threshold.
+    pub fn query_hands_by_actions(
         &self,
         dimension: &DimensionRef,
         concrete_line_id: u32,
-        action_names: &[String],
+        action_filters: &[ActionFilter],
         frequency: Option<f64>,
     ) -> Result<Vec<String>, StoreQueryError> {
         let reader = self.pool.get_or_open(dimension)?;
@@ -246,56 +283,35 @@ impl StoreQueryService {
             .query_all(concrete_line_id, self.verify_checksums)
             .map_err(|e| StoreQueryError::Io(e.to_string()))?;
         let Some(result) = result else {
-            return Err(StoreQueryError::NotFound(format!(
-                "concrete_line_id={concrete_line_id} not found"
-            )));
+            return Err(concrete_line_not_found_error(dimension, concrete_line_id));
         };
 
-        let action_schema = self
-            .action_schemas
-            .get(&result.action_schema_id)
-            .ok_or_else(|| {
-                StoreQueryError::NotFound(format!(
-                    "Action schema {} not found",
-                    result.action_schema_id
-                ))
-            })?;
-        let action_name_filter = action_names
-            .iter()
-            .map(|name| name.as_str())
-            .collect::<HashSet<_>>();
-        let threshold = frequency.unwrap_or(DEFAULT_HANDS_BY_ACTIONS_FREQUENCY);
-        let action_filter_mask =
-            action_name_bitmask(action_schema, &action_name_filter).unwrap_or_default();
+        let action_schema = self.action_schemas.get(result.action_schema_id)?;
+        let frequency_filter = FrequencyFilter::from_request(frequency);
+        Ok(match_hands_by_actions(
+            result.pack,
+            action_schema.as_ref(),
+            action_filters,
+            &frequency_filter,
+        ))
+    }
 
-        if !action_name_filter.is_empty() && action_filter_mask == 0 {
-            return Ok(Vec::new());
-        }
-
-        let mut hand_masks = [0u32; 169];
-        for cell in &result.pack.cells {
-            if !cell.exists || cell.frequency <= threshold || cell.action_id >= 32 {
-                continue;
-            }
-            let action_bit = 1u32 << cell.action_id;
-            if action_filter_mask == 0 || action_bit & action_filter_mask != 0 {
-                hand_masks[cell.hand_id as usize] |= action_bit;
-            }
-        }
-
-        Ok(result
-            .pack
-            .hand_ids
-            .into_iter()
-            .filter(|hand_id| hand_masks[*hand_id as usize] != 0)
-            .map(hand_code_from_id)
-            .collect())
+    /// Compatibility wrapper for callers that still pass raw action strings.
+    pub fn query_hands_by_action_names(
+        &self,
+        dimension: &DimensionRef,
+        concrete_line_id: u32,
+        action_names: &[String],
+        frequency: Option<f64>,
+    ) -> Result<Vec<String>, StoreQueryError> {
+        let action_filters = parse_action_filters(action_names.to_vec())?;
+        self.query_hands_by_actions(dimension, concrete_line_id, &action_filters, frequency)
     }
 
     fn query_single(
         &self,
         reader: &DimensionReader,
-        _dimension: &DimensionRef,
+        dimension: &DimensionRef,
         concrete_line_id: u32,
         hole_cards: &str,
     ) -> Result<QueryResult, StoreQueryError> {
@@ -304,20 +320,15 @@ impl StoreQueryService {
             .query(concrete_line_id, parsed.hand_id, self.verify_checksums)
             .map_err(|e| StoreQueryError::Io(e.to_string()))?;
         let Some(fragment) = fragment else {
-            return Err(StoreQueryError::NotFound(format!(
-                "concrete_line_id={concrete_line_id} hand={hole_cards}"
-            )));
+            return Err(missing_hand_or_line_error(
+                reader,
+                dimension,
+                concrete_line_id,
+                &parsed.input,
+            ));
         };
 
-        let action_schema = self
-            .action_schemas
-            .get(&fragment.action_schema_id)
-            .ok_or_else(|| {
-                StoreQueryError::NotFound(format!(
-                    "Action schema {} not found",
-                    fragment.action_schema_id
-                ))
-            })?;
+        let action_schema = self.action_schemas.get(fragment.action_schema_id)?;
         let mut actions = Vec::with_capacity(fragment.cells.len());
         for cell in fragment.cells {
             if let Some(action) = action_schema.get(cell.action_id as usize) {
@@ -360,17 +371,83 @@ impl StoreQueryService {
     }
 }
 
-fn action_name_bitmask(action_schema: &[ActionDef], action_names: &HashSet<&str>) -> Option<u32> {
-    if action_names.is_empty() {
-        return Some(0);
+#[derive(Debug)]
+struct ActionSchemaCache {
+    connection: Mutex<LockedActionSchemaConnection>,
+    state: RwLock<ActionSchemaCacheState>,
+}
+
+#[derive(Debug, Default)]
+struct ActionSchemaCacheState {
+    schemas: HashMap<u32, Arc<Vec<ActionDef>>>,
+}
+
+struct LockedActionSchemaConnection {
+    connection: Connection,
+}
+
+impl std::fmt::Debug for LockedActionSchemaConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockedActionSchemaConnection")
+            .finish_non_exhaustive()
     }
-    let mut mask = 0u32;
-    for action in action_schema {
-        if action.action_id < 32 && action_names.contains(action.action_name.as_str()) {
-            mask |= 1u32 << action.action_id;
+}
+
+// The SQLite handle is opened with SQLITE_OPEN_NOMUTEX and is only touched while
+// this private wrapper is held behind ActionSchemaCache's Mutex.
+unsafe impl Send for LockedActionSchemaConnection {}
+
+impl ActionSchemaCache {
+    fn new(meta_path: PathBuf) -> Result<Self, StoreQueryError> {
+        let connection = Connection::open(&meta_path, true).map_err(action_schema_sqlite_error)?;
+        Ok(Self {
+            connection: Mutex::new(LockedActionSchemaConnection { connection }),
+            state: RwLock::new(ActionSchemaCacheState::default()),
+        })
+    }
+
+    fn get(&self, schema_id: u32) -> Result<Arc<Vec<ActionDef>>, StoreQueryError> {
+        {
+            let state = self.state.read().map_err(|_| {
+                StoreQueryError::Internal("Action schema cache lock poisoned".to_owned())
+            })?;
+            if let Some(schema) = state.schemas.get(&schema_id) {
+                return Ok(Arc::clone(schema));
+            }
         }
+
+        let connection = self.connection()?;
+        let schema = load_action_schema_from_connection(&connection.connection, schema_id)?
+            .ok_or(StoreQueryError::ActionSchemaNotFound(schema_id))?;
+        drop(connection);
+
+        let mut state = self.state.write().map_err(|_| {
+            StoreQueryError::Internal("Action schema cache lock poisoned".to_owned())
+        })?;
+        Ok(Arc::clone(
+            state
+                .schemas
+                .entry(schema_id)
+                .or_insert_with(|| Arc::new(schema)),
+        ))
     }
-    Some(mask)
+
+    fn connection(&self) -> Result<MutexGuard<'_, LockedActionSchemaConnection>, StoreQueryError> {
+        self.connection
+            .lock()
+            .map_err(|_| StoreQueryError::Internal("Action schema cache lock poisoned".to_owned()))
+    }
+
+    fn len(&self) -> usize {
+        self.state
+            .read()
+            .map(|state| state.schemas.len())
+            .unwrap_or_default()
+    }
+}
+
+fn action_schema_sqlite_error(error: SqliteError) -> StoreQueryError {
+    StoreQueryError::ActionSchema(ActionSchemaLoadError::Sqlite(error))
 }
 
 /// Result of a single batch item.
@@ -382,6 +459,21 @@ pub struct BatchItemResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DetailedBatchItemResult {
+    pub concrete_line_id: u32,
+    pub hole_cards: String,
+    pub hand_code: Option<String>,
+    pub actions: Option<Vec<ActionResult>>,
+    pub error: Option<BatchItemError>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BatchItemError {
+    pub code: i32,
+    pub message: String,
+}
+
 fn require_file(path: &Path) -> Result<(), StoreQueryError> {
     if path.is_file() {
         Ok(())
@@ -391,4 +483,30 @@ fn require_file(path: &Path) -> Result<(), StoreQueryError> {
             path.display()
         )))
     }
+}
+
+fn missing_hand_or_line_error(
+    reader: &DimensionReader,
+    dimension: &DimensionRef,
+    concrete_line_id: u32,
+    hole_cards: &str,
+) -> StoreQueryError {
+    if reader.contains_concrete_line(concrete_line_id) {
+        StoreQueryError::NotFound(format!(
+            "Hand {hole_cards} is outside the range for action line concrete_line_id={concrete_line_id} in dimension {}:{}:{}",
+            dimension.strategy, dimension.player_count, dimension.depth_bb
+        ))
+    } else {
+        concrete_line_not_found_error(dimension, concrete_line_id)
+    }
+}
+
+fn concrete_line_not_found_error(
+    dimension: &DimensionRef,
+    concrete_line_id: u32,
+) -> StoreQueryError {
+    StoreQueryError::NotFound(format!(
+        "Concrete line not found: concrete_line_id={concrete_line_id}, dimension={}:{}:{}",
+        dimension.strategy, dimension.player_count, dimension.depth_bb
+    ))
 }

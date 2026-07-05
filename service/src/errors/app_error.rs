@@ -2,9 +2,11 @@ use std::fmt;
 use std::io;
 
 use crate::storage::manifest::ManifestError;
-use range_store_core::action_schema::ActionSchemaError;
+use range_store_core::action_schema::{ActionSchemaError, ActionSchemaLoadError};
 use range_store_core::dimension::NamingError;
 use range_store_core::hole_cards::HandDictError;
+use range_store_core::metadata::MetadataError;
+use range_store_core::query::RangeStoreError;
 
 #[derive(Debug)]
 pub struct AppError {
@@ -37,6 +39,7 @@ impl AppError {
             | "DRILL_SCENARIO_NOT_FOUND"
             | "ABSTRACT_LINE_NOT_FOUND"
             | "DIMENSION_NOT_FOUND"
+            | "ACTION_SCHEMA_NOT_FOUND"
             | "CONCRETE_LINE_NOT_FOUND"
             | "HAND_STRATEGY_NOT_FOUND"
             | "ACTION_NOT_FOUND"
@@ -222,6 +225,15 @@ impl From<ActionSchemaError> for AppError {
     }
 }
 
+impl From<ActionSchemaLoadError> for AppError {
+    fn from(error: ActionSchemaLoadError) -> Self {
+        match error {
+            ActionSchemaLoadError::Sqlite(error) => Self::new("META_DB_ERROR", error.to_string()),
+            ActionSchemaLoadError::Schema(error) => Self::invalid_format(error.to_string()),
+        }
+    }
+}
+
 impl From<HandDictError> for AppError {
     fn from(error: HandDictError) -> Self {
         Self::new("UNKNOWN_HAND", error.to_string())
@@ -231,5 +243,60 @@ impl From<HandDictError> for AppError {
 impl From<NamingError> for AppError {
     fn from(error: NamingError) -> Self {
         Self::invalid_argument(error.to_string())
+    }
+}
+
+impl From<MetadataError> for AppError {
+    fn from(error: MetadataError) -> Self {
+        match error {
+            MetadataError::Sqlite(error) => Self::new("META_DB_ERROR", error.to_string()),
+            MetadataError::Naming(error) => Self::invalid_argument(error.to_string()),
+            MetadataError::ActionSchema(error) => Self::invalid_format(error.to_string()),
+            MetadataError::ActionSchemaNotFound(action_schema_id) => {
+                Self::action_schema_not_found(action_schema_id)
+            }
+            MetadataError::AbstractLineNotFound {
+                strategy,
+                player_count,
+                depth_bb,
+                abstract_line,
+            } => Self::abstract_line_not_found(&strategy, player_count, depth_bb, &abstract_line),
+            MetadataError::ConcreteLineValueNotFound {
+                strategy,
+                player_count,
+                depth_bb,
+                concrete_line,
+            } => Self::concrete_line_value_not_found(
+                &strategy,
+                player_count,
+                depth_bb,
+                &concrete_line,
+            ),
+            MetadataError::ConcreteLineFilterNotFound {
+                strategy,
+                player_count,
+                depth_bb,
+                abstract_line,
+                concrete_line,
+            } => Self::concrete_line_filter_not_found(
+                &strategy,
+                player_count,
+                depth_bb,
+                &abstract_line,
+                &concrete_line,
+            ),
+            MetadataError::DrillScenarioNotFound {
+                strategy,
+                drill_name,
+                player_count,
+                drill_depth,
+            } => Self::drill_scenario_not_found(&strategy, &drill_name, player_count, drill_depth),
+        }
+    }
+}
+
+impl From<RangeStoreError> for AppError {
+    fn from(error: RangeStoreError) -> Self {
+        Self::new(error.code(), error.to_string())
     }
 }

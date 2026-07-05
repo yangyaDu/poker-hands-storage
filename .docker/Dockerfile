@@ -5,7 +5,7 @@ FROM ${RUST_IMAGE} AS builder
 WORKDIR /app
 
 COPY .docker/Cargo.service.toml ./Cargo.toml
-COPY Cargo.lock ./
+COPY .docker/Cargo.service.lock ./Cargo.lock
 COPY range-store-core ./range-store-core
 COPY service ./service
 

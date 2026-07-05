@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use poker_hands_storage_tools::benchmark::cli::parse_requested_dimension;
 use poker_hands_storage_tools::benchmark::hot::parse_benchmark_args;
+use poker_hands_storage_tools::benchmark::native::parse_benchmark_native_args;
 use poker_hands_storage_tools::benchmark::types::WorkloadMode;
 
 fn args(values: &[&str]) -> Vec<String> {
@@ -106,6 +107,120 @@ fn parse_benchmark_args_accepts_write_workload() {
         command.write_workload_path,
         Some(PathBuf::from("release-workload.json"))
     );
+}
+
+#[test]
+fn parse_benchmark_native_args_uses_defaults() {
+    let command = parse_benchmark_native_args(args(&[
+        "--dir",
+        "data/range-strata",
+        "--source",
+        "data/sqlite/range.db",
+    ]))
+    .unwrap();
+
+    assert_eq!(command.source, PathBuf::from("data/sqlite/range.db"));
+    assert_eq!(command.dir, PathBuf::from("data/range-strata"));
+    assert_eq!(command.meta, PathBuf::from("data/range-strata/meta.db"));
+    assert_eq!(
+        command.native_entry,
+        PathBuf::from("range-store-native/index.js")
+    );
+    assert_eq!(command.bun, PathBuf::from("bun"));
+    assert_eq!(command.max_open_handles, 2);
+    assert_eq!(
+        command.out_path,
+        PathBuf::from("reports/benchmark-bun-native.json")
+    );
+    assert_eq!(
+        command.md_path,
+        PathBuf::from("reports/benchmark-bun-native.md")
+    );
+    assert_eq!(command.hand_iterations, 1000);
+    assert_eq!(command.batch_iterations, 200);
+    assert_eq!(command.batch_sizes, vec![1, 5, 10, 20, 50, 100]);
+    assert_eq!(command.workload_mode, WorkloadMode::Random);
+    assert!(!command.verify_checksums);
+}
+
+#[test]
+fn parse_benchmark_native_args_accepts_explicit_options() {
+    let command = parse_benchmark_native_args(args(&[
+        "--dir",
+        "out",
+        "--source",
+        "source.db",
+        "--meta",
+        "meta.db",
+        "--native-entry",
+        "sdk/index.js",
+        "--http-service-bin",
+        "service.exe",
+        "--bun",
+        "bun.exe",
+        "--max-open-handles",
+        "4",
+        "--out",
+        "native.json",
+        "--md",
+        "native.md",
+        "--workload",
+        "workload.json",
+        "--iterations",
+        "9",
+        "--hand-iterations",
+        "11",
+        "--batch-iterations",
+        "3",
+        "--batch-size",
+        "4",
+        "--batch-sizes",
+        "1,4,8",
+        "--dimension",
+        "default:6:100",
+        "--workload-mode",
+        "abstract-local",
+        "--warmup-iterations",
+        "2",
+        "--verify-checksum",
+    ]))
+    .unwrap();
+
+    assert_eq!(command.native_entry, PathBuf::from("sdk/index.js"));
+    assert_eq!(command.http_service_bin, Some(PathBuf::from("service.exe")));
+    assert_eq!(command.bun, PathBuf::from("bun.exe"));
+    assert_eq!(command.max_open_handles, 4);
+    assert_eq!(command.out_path, PathBuf::from("native.json"));
+    assert_eq!(command.md_path, PathBuf::from("native.md"));
+    assert_eq!(command.workload_path, Some(PathBuf::from("workload.json")));
+    assert_eq!(command.hand_iterations, 11);
+    assert_eq!(command.batch_iterations, 3);
+    assert_eq!(command.batch_size, 4);
+    assert_eq!(command.batch_sizes, vec![1, 4, 8]);
+    assert_eq!(command.requested_dimensions.len(), 1);
+    assert_eq!(command.workload_mode, WorkloadMode::AbstractLocal);
+    assert_eq!(command.warmup_iterations, 2);
+    assert!(command.verify_checksums);
+}
+
+#[test]
+fn parse_benchmark_native_args_rejects_read_and_write_workload_together() {
+    let error = parse_benchmark_native_args(args(&[
+        "--dir",
+        "out",
+        "--source",
+        "source.db",
+        "--workload",
+        "input.json",
+        "--write-workload",
+        "output.json",
+    ]))
+    .unwrap_err();
+
+    assert_eq!(error.code(), "INVALID_ARGUMENT");
+    assert!(error
+        .message()
+        .contains("--workload and --write-workload cannot be used together"));
 }
 
 #[test]

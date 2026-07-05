@@ -1,3 +1,3 @@
-pub mod metadata_reader;
-
-pub use metadata_reader::{ConcreteLineFilter, ConcreteLineRow, MetadataReader};
+pub use range_store_core::metadata::{
+    CachedMetadataReader, ConcreteLineFilter, ConcreteLineRow, MetadataReader,
+};
