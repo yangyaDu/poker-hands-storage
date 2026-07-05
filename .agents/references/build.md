@@ -20,6 +20,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build 
 | `--out-dir` | 输出目录 |
 | `--dimension` | 维度选择（格式：`strategy:players:depth`），可重复；省略则构建全部 |
 | `--overwrite` | 覆盖已有输出 |
+| `--resume` | 读取 `build-state.json` 断点续跑，跳过已完成且校验匹配的维度 |
 | `--max-concrete-lines` | 限制每个维度的行数，用于 smoke 测试 fixture |
 
 ## 构建后验证

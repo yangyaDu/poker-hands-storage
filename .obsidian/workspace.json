@@ -185,6 +185,7 @@
   },
   "active": "7905b0cf33cf5e7d",
   "lastOpenFiles": [
+    "target/x86_64-pc-windows-msvc/debug/deps/librange_store_core-87e5526eb6d61363.rlib",
     "docs/binary-vs-sqlite-benchmark-and-verification-report.md",
     "target/x86_64-pc-windows-msvc/release/deps/poker_hands_storage_tools.poker_hands_storage_tools.7960927e66326d5b-cgu.0.rcgu.o",
     "target/x86_64-pc-windows-msvc/release/deps/poker_hands_storage_tools.poker_hands_storage_tools.7960927e66326d5b-cgu.1.rcgu.o",
