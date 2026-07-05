@@ -60,16 +60,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 #### Documentation
 
-- **`docs/README.md`** — Document map with responsibility boundaries, reading paths for different audiences, module boundaries, and line-transition scope
+- **`README.md`** — Project entrypoint with module responsibilities, setup, common commands, runtime environment variables, and document entrypoints
+- **`docs/README.md`** — Document map with authority boundaries, reading paths, module boundaries, and report update rules
+- **`docs/roadmap.md`** — Current remaining work, acceptance criteria, and out-of-scope items
+- **`docs/native-sdk.md`** — Current Bun/Node native SDK API, build/test commands, and production integration boundary
 - **`docs/data-flow-overview.md`** — Complete build-to-runtime data flow with hand_id definition, binary search rationale, and file format quick reference
 - **`docs/range-db-binary-storage-design.md`** — Binary format spec, file sizes, dimension breakdown, pack encoding, query flow
 - **`docs/api-business-contract.md`** — Full HTTP API contract with request/response bodies, error codes, validation rules, line-transition combination example
 - **`docs/data-verification-and-format-validation.md`** — Standalone/cross verify commands, validation checklist, Float32 precision strategy, pre-release checklist
-- **`docs/binary-vs-sqlite-benchmark-report.md`** — Comprehensive performance comparison: 76% disk savings, 6.4x-36.2x QPS improvement on strategy queries, 100% data integrity across 23.8M records
-- **`docs/storage-architecture-research.md`** — Four-option analysis (full SQLite, slimmed SQLite, pure binary, hybrid), Rust selection rationale, SDK boundary decision
+- **`docs/binary-vs-sqlite-benchmark-and-verification-report.md`** — Comprehensive performance comparison: 76% disk savings, 6.4x-36.2x QPS improvement on strategy queries, 100% data integrity across 23.8M records
 - **`docs/docker-deployment-guide.md`** — Build, Compose, K8s, smoke queries, prewarm strategy, rollback procedure
-- **`docs/tier1-gto-storage-optimization-assessment.md`** — Requirements traceability matrix with status per item
-- **`docs/tier1-gto-storage-optimization-implementation-plan.md`** — Phase-by-phase implementation plan with status tracking
 
 #### Agent Support
 
