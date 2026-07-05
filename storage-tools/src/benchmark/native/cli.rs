@@ -13,6 +13,7 @@ pub fn parse_benchmark_native_args(args: Vec<String>) -> Result<BenchmarkNativeC
     let mut dir = None;
     let mut meta = None;
     let mut native_entry = PathBuf::from("range-store-native/index.js");
+    let mut http_service_bin = None;
     let mut bun = PathBuf::from("bun");
     let mut max_open_handles = 2_u32;
     let mut out_path = PathBuf::from("reports/benchmark-bun-native.json");
@@ -38,6 +39,9 @@ pub fn parse_benchmark_native_args(args: Vec<String>) -> Result<BenchmarkNativeC
             "--dir" => dir = Some(PathBuf::from(next_value(&args, &mut index)?)),
             "--meta" => meta = Some(PathBuf::from(next_value(&args, &mut index)?)),
             "--native-entry" => native_entry = PathBuf::from(next_value(&args, &mut index)?),
+            "--http-service-bin" => {
+                http_service_bin = Some(PathBuf::from(next_value(&args, &mut index)?))
+            }
             "--bun" => bun = PathBuf::from(next_value(&args, &mut index)?),
             "--max-open-handles" => {
                 max_open_handles =
@@ -114,6 +118,7 @@ pub fn parse_benchmark_native_args(args: Vec<String>) -> Result<BenchmarkNativeC
         dir,
         meta,
         native_entry,
+        http_service_bin,
         bun,
         max_open_handles,
         out_path,

@@ -687,7 +687,7 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 | 阶段 1：核心能力下沉 | 已完成最小闭环 | metadata 和 `RangeStoreFacade` 已进入 `range-store-core` |
 | 阶段 2：新增 range-store-native 最小版本 | 已完成最小闭环 | `PokerHandsRange` 已支持 concrete line lookup、hands-by-actions、单手牌查询、prewarm、stats |
 | 阶段 3：业务接口补齐 | 已完成当前口径 | 默认业务方法 `queryHandStrategy`、`queryBatch`、`handsByActions`、metadata 查询均返回业务码 envelope；`getConcreteLines` 同时覆盖 abstract line 列表查询和 concrete line 精确查 id；直接返回/抛异常版本统一使用 `Raw` 后缀 |
-| 阶段 4：native benchmark | 已完成 fair runner + drill + 一致性抽样 | `storage-tools benchmark-native` 已输出 `core:*`、`native-direct:*`、`native-sdk:*` case、drill metadata case、冷启动分解和 Bun 子进程内存观察；HTTP 一致性抽样由 `bun run test:http-consistency` 覆盖 |
+| 阶段 4：native benchmark | 已完成 fair runner + drill + HTTP service 对比 | `storage-tools benchmark-native` 已输出 `core:*`、`native-direct:*`、`native-sdk:*`、`http-service:*` case、drill metadata case、冷启动分解和各 worker 内存观察；HTTP 一致性抽样由 `bun run test:http-consistency` 覆盖 |
 | 阶段 5：Kubernetes 接入验证 | 未完成 | 需要 Linux `.node` 和业务后端容器验证 |
 
 ### 阶段 1：核心能力下沉
@@ -699,7 +699,7 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 1. 把 `service` 中的 metadata reader 迁移到 `range-store-core`。已完成。
 2. 在 `range-store-core` 中新增 `RangeStoreFacade`。已完成。
 3. 统一 `hands-by-actions` 的 action/frequency 过滤语义。已完成，解析与匹配逻辑下沉到 `range-store-core`，native 和 HTTP 共用 amount-aware action filter 与 multi-action OR 语义。
-4. `service` 改为调用 `RangeStoreFacade`，不再保留重复业务逻辑。未完全完成，当前 service 已复用 core metadata，但查询路径仍保留 service wrapper。
+4. `service` 改为调用 `RangeStoreFacade`，不再保留重复业务逻辑。已完成：HTTP `QueryService` 现在是 `RangeStoreFacade` 的薄 wrapper，错误码映射仍由 service 边界负责。
 5. 保持现有 HTTP API 测试通过。已完成。
 
 验收：
@@ -762,7 +762,7 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 
 1. 在 `storage-tools` 中新增 native benchmark 编排入口。已完成：`benchmark-native`。
 2. 由 `range-store-native` 提供 Bun native 被测入口。已完成：worker 同时加载 `range-store-native/index.node` 和 `range-store-native/index.js`。
-3. 对比 SQLite local、Rust core direct、Bun native binary、Rust HTTP binary。已具备 Bun native 报告输出；对比时复用同一个 workload JSON。
+3. 对比 SQLite local、Rust core direct、Bun native binary、Rust HTTP binary。已完成：`benchmark-native` 复用同一个 workload JSON，并把 core、native-direct、native-sdk、http-service 拆到独立 worker/service 执行。
 4. 输出 p50 / p95 / p99。已完成，复用 `BenchmarkRunReport` case 指标。
 5. 输出冷启动分解。已完成，记录 dynamic import、`PokerHandsRange` 构造、首次 hand query。
 6. 输出内存观察结果。已完成，记录 Bun 子进程 `process.memoryUsage()` 前后值。
@@ -777,6 +777,7 @@ cargo run -p poker-hands-storage-tools -- benchmark-native `
   --dimension default:6:100 `
   --iterations 1000 `
   --batch-iterations 200 `
+  --http-service-bin target\x86_64-pc-windows-msvc\debug\poker-hands-storage-service.exe `
   --out reports\benchmark-bun-native.json `
   --md reports\benchmark-bun-native.md
 ```
@@ -790,14 +791,17 @@ cargo run -p poker-hands-storage-tools -- benchmark-native `
 | `--max-open-handles` | 传给 `PokerHandsRange` 的 handle pool 上限，默认 2 |
 | `--verify-checksum` | 构造 native store 时启用 checksum 验证 |
 | `--workload` / `--write-workload` | 读取或写出共享 workload，便于和 SQLite / Rust core direct 使用同一批查询 |
+| `--http-service-bin` | 指定被测 HTTP service 可执行文件；未指定时 runner 会尝试使用当前工具同目录下的 `poker-hands-storage-service.exe` |
 
 当前覆盖的 native case：
 
+- `core:*`：直接调用 `range_store_core::query::RangeStoreFacade`，作为进程内 Rust 基线。
 - `native-direct:*`：直接调用 `index.node` 的默认业务 envelope 方法，用于观察 N-API 固定成本。
 - `native-sdk:*`：调用 `index.js` SDK 包装，用于观察 JS SDK 包装成本。
+- `http-service:*`：通过 loopback HTTP 调用独立 `poker-hands-storage-service`，用于量化 HTTP/JSON 边界成本。
 - `*:concrete-lines-exact`：通过 `getConcreteLines({ concreteLine })` 精确查询 concrete line 并读取 `concreteLineId`。
 - `*:hand-strategy`：单个 `concrete_line_id + hand` 业务 envelope 查询。
-- `*:batch` 和 `*:batch-size-*`：批量业务 envelope 查询。
+- `*:batch-hand-strategy` 和 `*:batch-size-*`：批量业务 envelope 查询；前者是默认 batch size 主 case，后者是 batch size sweep。
 - `*:hands-by-actions`：单行动线手牌范围查询。
 - `*:drill-scenarios-metadata`：通过 `getAbstractLines` 查询 drill scenario abstract lines。
 - `*:line-to-hands-by-actions`：`getConcreteLines({ concreteLine }) -> concreteLineId -> handsByActions` 组合链路。
@@ -806,10 +810,6 @@ cargo run -p poker-hands-storage-tools -- benchmark-native `
 
 - `benchmark-drill-metadata`：隔离比较 raw SQLite schema-detect、prepared SQLite、CachedMetadataReader 三组 drill metadata 路径。
 - `bun run test:http-consistency`：对 native SDK 和 HTTP service 做逐项结果一致性抽样；需要先启动 HTTP service 并设置 `PHS_HTTP_URL`。
-
-仍未覆盖：
-
-- HTTP service 作为独立被测端加入同一个 `benchmark-native` workload 的性能对比；目前已有结果一致性抽样，但不是 HTTP 性能 benchmark。
 
 验收：
 

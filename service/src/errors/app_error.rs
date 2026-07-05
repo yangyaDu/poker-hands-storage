@@ -6,6 +6,7 @@ use range_store_core::action_schema::{ActionSchemaError, ActionSchemaLoadError};
 use range_store_core::dimension::NamingError;
 use range_store_core::hole_cards::HandDictError;
 use range_store_core::metadata::MetadataError;
+use range_store_core::query::RangeStoreError;
 
 #[derive(Debug)]
 pub struct AppError {
@@ -38,6 +39,7 @@ impl AppError {
             | "DRILL_SCENARIO_NOT_FOUND"
             | "ABSTRACT_LINE_NOT_FOUND"
             | "DIMENSION_NOT_FOUND"
+            | "ACTION_SCHEMA_NOT_FOUND"
             | "CONCRETE_LINE_NOT_FOUND"
             | "HAND_STRATEGY_NOT_FOUND"
             | "ACTION_NOT_FOUND"
@@ -290,5 +292,11 @@ impl From<MetadataError> for AppError {
                 drill_depth,
             } => Self::drill_scenario_not_found(&strategy, &drill_name, player_count, drill_depth),
         }
+    }
+}
+
+impl From<RangeStoreError> for AppError {
+    fn from(error: RangeStoreError) -> Self {
+        Self::new(error.code(), error.to_string())
     }
 }

@@ -9,6 +9,7 @@ pub struct BenchmarkNativeCommand {
     pub dir: PathBuf,
     pub meta: PathBuf,
     pub native_entry: PathBuf,
+    pub http_service_bin: Option<PathBuf>,
     pub bun: PathBuf,
     pub max_open_handles: u32,
     pub out_path: PathBuf,

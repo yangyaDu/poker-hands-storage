@@ -43,6 +43,7 @@ fn run() -> Result<(), ToolError> {
         Some("benchmark-drill-metadata") => run_benchmark_drill_metadata(args.collect()),
         Some("benchmark-native") => run_benchmark_native(args.collect()),
         Some("benchmark-native-core-worker") => run_benchmark_native_core_worker(args.collect()),
+        Some("benchmark-native-http-worker") => run_benchmark_native_http_worker(args.collect()),
         Some("benchmark-sqlite") => run_benchmark_sqlite(args.collect()),
         Some("benchmark-compare") => run_benchmark_compare_cmd(args.collect()),
         Some("benchmark-cold") => run_benchmark_cold(args.collect()),
@@ -202,6 +203,17 @@ fn run_benchmark_native_core_worker(args: Vec<String>) -> Result<(), ToolError> 
         .first()
         .ok_or_else(|| ToolError::invalid_argument("worker input path is required"))?;
     let output = run_core_worker_from_input_path(PathBuf::from(input_path).as_path())?;
+    println!("{output}");
+    Ok(())
+}
+
+fn run_benchmark_native_http_worker(args: Vec<String>) -> Result<(), ToolError> {
+    let input_path = args
+        .first()
+        .ok_or_else(|| ToolError::invalid_argument("worker input path is required"))?;
+    let output = poker_hands_storage_tools::benchmark::native::run_http_worker_from_input_path(
+        PathBuf::from(input_path).as_path(),
+    )?;
     println!("{output}");
     Ok(())
 }
@@ -453,7 +465,8 @@ Commands:
 
   benchmark-native --dir <dir> --source <range.db>
         [--meta <meta.db>] [--native-entry <range-store-native/index.js>]
-        [--bun <bun>] [--max-open-handles <count>]
+        [--http-service-bin <poker-hands-storage-service>] [--bun <bun>]
+        [--max-open-handles <count>]
         [--workload <workload.json>] [--seed <number>]
         [--iterations <count>] [--hand-iterations <count>]
         [--batch-iterations <count>] [--batch-size <count>]

@@ -154,6 +154,8 @@ fn parse_benchmark_native_args_accepts_explicit_options() {
         "meta.db",
         "--native-entry",
         "sdk/index.js",
+        "--http-service-bin",
+        "service.exe",
         "--bun",
         "bun.exe",
         "--max-open-handles",
@@ -185,6 +187,7 @@ fn parse_benchmark_native_args_accepts_explicit_options() {
     .unwrap();
 
     assert_eq!(command.native_entry, PathBuf::from("sdk/index.js"));
+    assert_eq!(command.http_service_bin, Some(PathBuf::from("service.exe")));
     assert_eq!(command.bun, PathBuf::from("bun.exe"));
     assert_eq!(command.max_open_handles, 4);
     assert_eq!(command.out_path, PathBuf::from("native.json"));

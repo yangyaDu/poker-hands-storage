@@ -173,9 +173,12 @@ impl StoreQueryService {
             .query(concrete_line_id, parsed.hand_id, self.verify_checksums)
             .map_err(|e| StoreQueryError::Io(e.to_string()))?;
         let Some(fragment) = fragment else {
-            return Err(StoreQueryError::NotFound(format!(
-                "concrete_line_id={concrete_line_id} or hand={hole_cards} not found"
-            )));
+            return Err(missing_hand_or_line_error(
+                &reader,
+                dimension,
+                concrete_line_id,
+                hole_cards,
+            ));
         };
 
         let action_schema = self.action_schemas.get(fragment.action_schema_id)?;
@@ -244,12 +247,14 @@ impl StoreQueryService {
                     Ok(result) => DetailedBatchItemResult {
                         concrete_line_id: *concrete_line_id,
                         hole_cards: hole_cards.clone(),
+                        hand_code: Some(result.hand_code),
                         actions: Some(result.actions),
                         error: None,
                     },
                     Err(error) => DetailedBatchItemResult {
                         concrete_line_id: *concrete_line_id,
                         hole_cards: hole_cards.clone(),
+                        hand_code: None,
                         actions: None,
                         error: Some(BatchItemError {
                             code: error.public_code(),
@@ -278,9 +283,7 @@ impl StoreQueryService {
             .query_all(concrete_line_id, self.verify_checksums)
             .map_err(|e| StoreQueryError::Io(e.to_string()))?;
         let Some(result) = result else {
-            return Err(StoreQueryError::NotFound(format!(
-                "concrete_line_id={concrete_line_id} not found"
-            )));
+            return Err(concrete_line_not_found_error(dimension, concrete_line_id));
         };
 
         let action_schema = self.action_schemas.get(result.action_schema_id)?;
@@ -308,7 +311,7 @@ impl StoreQueryService {
     fn query_single(
         &self,
         reader: &DimensionReader,
-        _dimension: &DimensionRef,
+        dimension: &DimensionRef,
         concrete_line_id: u32,
         hole_cards: &str,
     ) -> Result<QueryResult, StoreQueryError> {
@@ -317,9 +320,12 @@ impl StoreQueryService {
             .query(concrete_line_id, parsed.hand_id, self.verify_checksums)
             .map_err(|e| StoreQueryError::Io(e.to_string()))?;
         let Some(fragment) = fragment else {
-            return Err(StoreQueryError::NotFound(format!(
-                "concrete_line_id={concrete_line_id} hand={hole_cards}"
-            )));
+            return Err(missing_hand_or_line_error(
+                reader,
+                dimension,
+                concrete_line_id,
+                &parsed.input,
+            ));
         };
 
         let action_schema = self.action_schemas.get(fragment.action_schema_id)?;
@@ -457,6 +463,7 @@ pub struct BatchItemResult {
 pub struct DetailedBatchItemResult {
     pub concrete_line_id: u32,
     pub hole_cards: String,
+    pub hand_code: Option<String>,
     pub actions: Option<Vec<ActionResult>>,
     pub error: Option<BatchItemError>,
 }
@@ -476,4 +483,30 @@ fn require_file(path: &Path) -> Result<(), StoreQueryError> {
             path.display()
         )))
     }
+}
+
+fn missing_hand_or_line_error(
+    reader: &DimensionReader,
+    dimension: &DimensionRef,
+    concrete_line_id: u32,
+    hole_cards: &str,
+) -> StoreQueryError {
+    if reader.contains_concrete_line(concrete_line_id) {
+        StoreQueryError::NotFound(format!(
+            "Hand {hole_cards} is outside the range for action line concrete_line_id={concrete_line_id} in dimension {}:{}:{}",
+            dimension.strategy, dimension.player_count, dimension.depth_bb
+        ))
+    } else {
+        concrete_line_not_found_error(dimension, concrete_line_id)
+    }
+}
+
+fn concrete_line_not_found_error(
+    dimension: &DimensionRef,
+    concrete_line_id: u32,
+) -> StoreQueryError {
+    StoreQueryError::NotFound(format!(
+        "Concrete line not found: concrete_line_id={concrete_line_id}, dimension={}:{}:{}",
+        dimension.strategy, dimension.player_count, dimension.depth_bb
+    ))
 }
