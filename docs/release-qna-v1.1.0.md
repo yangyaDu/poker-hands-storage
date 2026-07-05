@@ -1,242 +1,260 @@
 # poker-hands-storage v1.1.0 汇报 Q&A
 
-## 这份文档怎么用
+## 使用说明
 
-这份 Q&A 覆盖了汇报时听众最可能提出的问题，按主题分类。每个问题都给出简洁回答和深入解释。
-
----
-
-## 一、项目整体
-
-### Q: 这个项目到底是做什么的？
-
-**简短回答**：我们把德州扑克策略数据从 SQLite 迁移到了自定义二进制格式，查询更快、占盘更小。
-
-**深入解释**：原始数据是一个 1.45GB 的 SQLite 数据库，包含约 2380 万条 poker hand strategy 记录。每次查询都需要打开 SQLite 文件、解析 SQL、遍历 B-tree。我们把这些数据转换成了 `.bin` + `.idx` 二进制格式，查询时直接用 mmap 内存映射 + 密集索引 O(1) 定位，省去了 SQL 解析和 B-tree 遍历的开销。
-
-### Q: 为什么要自己做二进制格式，不用 SQLite 优化一下？
-
-**简短回答**：SQLite 的 B-tree 遍历和 SQL 解析对这种固定结构的只读数据来说是浪费。
-
-**深入解释**：我们的数据是只读的、结构固定的（每行都是 concrete_line_id + hole_cards + action + frequency + hand_ev）。SQLite 的 B-tree 索引、事务日志、SQL 解析器这些特性对我们都是不必要的开销。自定义二进制格式可以针对我们的数据结构做极致优化：固定大小的 record、连续索引、零拷贝 mmap。
-
-### Q: 这个项目的核心创新点是什么？
-
-**简短回答**：密集索引 + 零拷贝 mmap + 位掩码过滤的组合设计。
-
-**深入解释**：
-- **密集索引**：`.idx` 文件要求 `concrete_line_id` 是连续的，这样查找不需要二分搜索，直接 `index = id - first_id` 下标访问
-- **零拷贝 mmap**：`.bin` 和 `.idx` 文件整个映射到内存，OS 按需加载页，没有 `read()` 系统调用
-- **位掩码过滤**：hands-by-actions 查询把 169 手牌的动作信息编码为位向量，一次位运算筛选全部手牌
+这些问题不是入门科普，而是针对系统设计中的取舍和陷阱。回答时直接切入技术决策的 trade-off。
 
 ---
 
-## 二、二进制编码
+## 一、存储引擎设计
 
-### Q: 你们的二进制格式长什么样？
+### Q: dense index 要求 concrete_line_id 连续，但如果某个 concrete_line 在源数据中缺失（比如某些手牌组合在某些 line 中不存在），你们怎么处理？
 
-**简短回答**：`.bin` 是数据包串联，`.idx` 是指向每个包位置的索引。
+**回答**：dense index 的"连续"指的是 concrete_line_id 本身的序列连续，不是手牌连续。每个 concrete_line 对应一个独立的 pack，pack 内部的 hand_ids 才是稀疏的——用 action_mask 位掩码标记哪些手牌-动作组合存在。
 
-**深入解释**：
+具体来说：
+- `.idx` 记录要求 `concrete_line_id` 从 `first_concrete_line_id` 开始严格递增、无跳跃。验证时在 open 阶段调用 `validate_dense_index_layout()`，如果发现 gap 会标记为 `NON_DENSE_CONCRETE_LINE_ID`。
+- 但 pack 内部的 169 种手牌是稀疏存储的。实际出现在源数据中的手牌可能只有 100 种，pack 里只存这 100 个 hand_id，通过 `hand_count` 字段记录实际数量。
+- 查询时先通过 dense index O(1) 定位到 concrete_line_id 对应的 pack，然后在 pack 内部对 hand_ids 做 binary search（`binary_search_u8`）。
 
-`.bin` 文件结构：
-```
-[16字节 PFSP 头][Pack 1][Pack 2][Pack 3]...
+所以 dense index 解决的是 concrete_line 层面的定位，pack 内部的手牌仍然是稀疏的。两层设计：第一层 O(1) 找到 pack，第二层 O(log n) 找到手牌。
+
+### Q: pack 格式 `hand_count * (5 + action_count * 8)` 里，action_count 是从哪里来的？不同 concrete_line 的 action_count 不同怎么办？
+
+**回答**：action_count 是从 idx record 里的 `byte_length` 和 `hand_count` 反推出来的，公式在 `action_count_from_pack()` 中：
+
+```rust
+action_count = (byte_length / hand_count - 5) / 8
 ```
 
-`.idx` 文件结构：
+这意味着同一个 dimension 的不同 concrete_line 可以有不同数量的 actions。比如一个 line 只有 fold+call 两个动作（action_count=2），另一个 line 可能有 15 个动作。每个 pack 的 byte_length 不同，但 hand_count 相同（都是该 concrete_line 实际出现的手牌数）。
+
+不同 action_count 的 pack 直接顺序拼接在 .bin 文件中，通过 idx record 中的 byte_length 字段分隔。解码时先读 idx record 拿到 byte_length，反推 action_count，再决定如何解析 pack 内部结构。
+
+这也意味着 pack 之间不是定长的——这是有意的设计取舍。定长 pack 可以实现更简单的 offset 计算，但会为 action_count 小的 concrete_line 浪费大量空间。我们的数据中 action_count 差异很大（从 2 到 30+），所以选择了变长。
+
+### Q: ActionSchemaCache 用了 Mutex + RwLock 的双重锁结构，为什么不直接用 HashMap？
+
+**回答**：因为 action schema 的数据来源是 meta.db 这个 SQLite 文件，每次 cache miss 都需要做一次数据库查询。
+
+双重锁的设计意图是分离两个不同的资源：
+- `RwLock<ActionSchemaCacheState>`：保护内存中的 HashMap<u32, Arc<Vec<ActionDef>>>，读多写少，所以用 RwLock 允许多个并发查询共享 cache hit
+- `Mutex<LockedActionSchemaConnection>`：保护 SQLite 连接。我们的 Connection 用了 `SQLITE_OPEN_NOMUTEX`，本身不是 Send/Sync 的，需要用 Mutex 串行化所有数据库读写
+
+关键路径是 cache hit——走 RwLock read path，不需要碰 Mutex。只有 cache miss 时才获取 Mutex 查 SQLite，然后把结果 `Arc::clone` 插入 HashMap。Arc clone 是 O(1) 的指针操作，不持有写锁太久。
+
+如果全部预加载到 HashMap 里，初始化时会阻塞所有线程查 SQLite。懒加载的好处是如果某个 query 只涉及 3 个 action_schema_id，就只查 3 次 SQLite，其余直接走内存。v1.1.0 引入的 CachedMetadataReader 也是同样的懒加载思路，只是把粒度从 action_schema 扩展到了 concrete_line 和 drill scenario 查询。
+
+### Q: mmap 在 Windows 上的表现怎么样？和 Linux 比有什么坑？
+
+**回答**：Windows 上用 `memmap2::Mmap::map()` 底层调的是 Windows API `CreateFileMapping` + `MapViewOfFile`。主要差异：
+
+1. **页预取行为不同**：Linux 的 read-ahead 对 sequential access 友好，但我们 dense index 的查找是 random access（concrete_line_id 随机查询），Linux 上 OS 也能较好地处理 random mmap fault。Windows 上同样如此，没有特别的 read-ahead 优化，但实际 benchmark 没有观察到显著差异。
+
+2. **文件删除/替换**：Windows 上如果文件被替换（我们的 versioned deploy 策略），已有的 mmap 仍然可以正常读取旧数据（文件句柄还在），但新进程 mmap 新文件时会读到新版本。这在 Linux 上是语义一致的（unlink + rename），所以没有平台差异问题。
+
+3. **内存提交限制**：Windows 有 commit charge 限制，mmap 大文件会占用虚拟地址空间 + 物理提交。我们的 .bin 文件最大 ~350MB，加上 .idx 几乎可以忽略，所以不是问题。但如果未来扩展到 10GB+ 级别，需要考虑 sparse mmap 或分段文件。
+
+---
+
+## 二、Benchmark 深度问题
+
+### Q: Cold benchmark 的 `store_open_and_first_query_ms` 把 service_open + prewarm + first_query 合并成一个指标，为什么不分开看？
+
+**回答**：分开看确实有意义，所以我们同时在 `ColdWorkerTimings` 里记录了四个独立 phase 的时间：
+
 ```
-[16字节 PFXI 头][22字节记录1][22字节记录2]...
+service_open_ms      — manifest 解析 + meta.db 打开 + HandlePool 初始化
+dimension_prewarm_ms — 某个维度的 .idx/.bin mmap 建立
+first_query_ms       — 一次完整的 hand-strategy 查询（idx lookup + pack read + decode + schema resolve）
+close_ms             — drop service，释放 mmap
 ```
 
-每条 idx 记录包含：concrete_line_id、action_schema_id、hand_count、在 .bin 中的偏移量、包长度、CRC32C 校验码。
+`store_open_and_first_query_ms` 是前三个的和，代表用户从启动到拿到结果的端到端延迟。分开看用于定位瓶颈（比如 prewarm 占了 80% 说明文件大），合并看用于 SLA 评估（用户关心的是 total time to first result）。
 
-### Q: 169 手牌字典是什么？
+另外 cold benchmark 有 `phase_accounting` 检查：`phase_sum = service_open + prewarm + first_query + close`，`unaccounted_ms = worker_total - phase_sum`。如果 unaccounted > 1ms 或 > 1%，说明测量有误差（比如子进程 spawn 开销被错误计入），需要排查。
 
-**简短回答**：德州扑克 169 种等价手牌的整数编码。
+### Q: Cold benchmark 里 service_open 用了 `max_open_handles=2`，这个值是怎么定的？
 
-**深入解释**：标准德州扑克有 1326 种不同的两张牌组合，但由于对称性（AKs = KAs = sAK），可以压缩到 169 种。我们用 13x13 矩阵编码：对角线是排列型（AA, KK...），上三角是同花不同花（AKs），下三角是不同花（AKo）。每种手牌用一个 `u8` (0-168) 表示，节省存储空间。
+**回答**：这是刻意设置的保守值，目的是测量最小启动开销。`max_open_handles` 控制 HandlePool 的容量——默认 HTTP service 用 2（`PHS_MAX_OPEN_HANDLES` 环境变量），cold benchmark 也用了 2 以保持一致。
 
-### Q: Pack 的格式为什么是 `hand_count * (5 + action_count * 8)`？
+但 cold benchmark 的关键是它只 prewarm **一个**维度，所以实际上 Pool 只需要容纳 1 个 DimensionReader。设为 2 是因为：
+1. 和 production 默认值一致，避免 benchmark 环境和实际部署差异过大
+2. Pool 容量不影响 mmap 的行为，只影响内存分配。2 个 handle 的内存开销可以忽略
 
-**简短回答**：每个手牌固定占用 5 + action_count*8 字节。
+如果把 max_open_handles 设得很大（比如 100），open 阶段的内存分配会更多，service_open_ms 会变大，但这不代表真实场景——真实场景中不会一次性 prewarm 所有维度。
 
-**深入解释**：
-- 1 字节：hand_id (0-168)
-- 4 字节：action_mask (u32 位掩码，第 N 位为 1 表示第 N 个动作存在)
-- 8 字节 × action_count：每个动作的 frequency(f32) + hand_ev(f32)
+### Q: Hot benchmark 的 batch_size 为什么选 [1, 5, 10, 50, 100] 这几个值？
 
-这种固定大小的设计让我们可以直接通过算术偏移计算任意手牌的位置，不需要遍历或解析变长字段。
+**回答**：覆盖三个使用场景区间：
 
-### Q: 为什么用 CRC32C 而不是 CRC32？
+- **1/5**：单手牌查询的对比基线。batch_size=1 应该和 hand-strategy 查询性能一致（同一代码路径）
+- **10/50**：典型前端交互场景。比如 UI 上一个表格同时展示 10-50 只手牌的选择，一次发 batch 请求
+- **100**：压力测试上限。HTTP API 的 batch endpoint 限制 max 500，100 是中等偏大的批量
 
-**简短回答**：CRC32C (Castagnoli 多项式) 比传统 CRC32 对大数据块有更好的检错能力。
+实际 benchmark 中 batch 性能提升不是线性的——batch_size=100 相比 batch_size=1 的 QPS 提升远大于 100 倍，原因是：
+1. 一次 `pool.get_or_open()` 打开 dimension handle，100 次查询复用同一个 handle
+2. pack 解码时，同一个 concrete_line 的多个 hand 可以共享同一个 pack 读取（`query_many_hands` 路径）
+3. 网络开销（HTTP 场景）被摊薄
 
-**深入解释**：CRC32C 是 iSCSI 标准采用的多项式，在硬件层面有 SSE4.2 和 ARM CRC 指令加速。我们的 `crc32c` crate 会自动选择最优实现：有 SSE4.2 用 SSE4.2，有 ARM CRC 用 ARM CRC，否则回退到纯软件实现。
+### Q: Native benchmark 的 Core/HttpService/Sdk 三种模式，为什么 entry order 要用 seed 打乱？
 
----
+**回答**：防止 OS page cache 带来的偏差。
 
-## 三、Benchmark
+假设三个模式的测试顺序固定是 Core -> Http -> Sdk：
+1. Core 先跑，数据被加载到 OS page cache
+2. Http 跑的时候，同样的数据已经在 cache 里了，cold 成分被污染
+3. Sdk 同理
 
-### Q: Hot 和 Cold benchmark 的区别是什么？
-
-**简短回答**：Hot 测的是服务正常运行时的查询性能，Cold 测的是首次启动的性能。
-
-**深入解释**：
-- **Hot**：服务已打开、维度文件已 mmap、schema 已加载。测的是纯粹的数据查询和编解码性能。
-- **Cold**：全新进程启动，OS page cache 中没有数据。测的是文件打开、mmap 建立、第一次数据解码的完整开销。
-
-### Q: 为什么 Cold benchmark 要用子进程？
-
-**简短回答**：确保每次测量都是全新的进程状态。
-
-**深入解释**：如果在同一个进程中多次测量 cold start，之前的 mmap 文件描述符、OS page cache、Rust 内存分配器缓存都会影响结果。通过 spawn 子进程，每次都是从零开始，测出来的时间才是真实的冷启动时间。
-
-### Q: Workload 是怎么生成的？为什么强调确定性？
-
-**简短回答**：从 SQLite 源数据中按种子随机采样，确定性保证每次生成的 workload 一致。
-
-**深入解释**：我们实现了 `SeededRandom`，给定相同的 seed 总是产生相同的随机序列。这样：
-1. 不同版本的 benchmark 结果可比较（用同样的 workload）
-2. workload 可以序列化到 JSON，跨次复用
-3. 回归测试时可以精确复现
-
-### Q: 为什么 binary 比 SQLite 快这么多？底层原理是什么？
-
-**简短回答**：省掉了 SQL 解析、B-tree 遍历、文本解码三个主要开销。
-
-**深入解释**：
-
-| 步骤 | SQLite | Binary |
-|------|--------|--------|
-| 定位数据 | SQL 解析 -> 准备语句 -> B-tree 遍历 | 密集索引 O(1) 下标访问 |
-| 读取数据 | read() 系统调用 -> 页缓存 -> 行解析 | mmap 零拷贝 -> 直接取切片 |
-| 解码数据 | 文本字段解析 -> 类型转换 | 固定偏移位运算 |
-| 动作名称 | SQL JOIN meta.db | HashMap 查找 |
-
-### Q: hands-by-actions 查询为什么 binary 比 SQLite 快 9.45 倍？
-
-**简短回答**：SQLite 用 OR 条件过滤，binary 用位向量运算。
-
-**深入解释**：SQLite 的查询是 `WHERE (action = 'call' OR action = 'fold') AND frequency > 0.005`，需要对每行做字符串比较和逻辑运算。binary 的方式是：先把整个 pack 解码到位掩码数组 `hand_masks[169]`，然后 `hand_mask & filter_mask != 0` 一次位运算判断所有手牌。
+虽然 native benchmark 测的是 hot path（服务已运行），但同一轮测试中不同模式的 entry order 如果固定，会导致后续模式的 mmap 文件已经部分被 OS prefetch。用 seed 做 MurmurHash 风格的随机排序，保证每次运行的测试顺序不同，长期平均下来抵消这个偏差。
 
 ---
 
-## 四、验证体系
+## 三、验证体系深度问题
 
-### Q: Standalone 和 Cross 验证有什么区别？
+### Q: Float32 bit-exact 验证中，如果源 SQLite 的 frequency 本身就是 f64 精度（比如 0.123456789），截断到 f32 后损失了多少？你们有没有统计过这个精度损失的分布？
 
-**简短回答**：Standalone 检查文件自己内部是否一致，Cross 检查二进制和 SQLite 源数据是否一致。
+**回答**：有统计。`Float32PrecisionStatsAccumulator` 收集了以下指标：
 
-**深入解释**：
-- **Standalone**：假设 manifest.json 是正确的，验证 .idx 指向的 .bin 区域是否合法、CRC32C 是否匹配、pack 格式是否正确
-- **Cross**：从 SQLite 源数据中取样本，逐单元格和二进制解码结果对比，验证数据转换过程没有出错
+- `quantization_abs_error`：`|source_f64 - (source_f64 as f32 as f64)|`，即截断的绝对误差
+- `quantization_relative_error`：`quantization_abs_error / max(|source|, 1.0)`
+- `implementation_abs_error`：`|stored_f32_as_f64 - ideal_truncated_f64|`，即实际存储值和理论截断值的差距（理想情况为 0）
 
-### Q: Float32 bit-exact 是什么意思？为什么不用容差比较？
+同时用 reservoir sampling（size 8192）跟踪 quantization error 的 p95/p99 分布，并记录 top-20 最大误差样本。
 
-**简短回答**：要求 f64->f32->f64 截断后的 bit 模式完全一致。
+f32 的尾数只有 23 位，有效数字约 7 位十进制。所以 `0.123456789` 截断到 f32 大约是 `0.12345679`（最后一两位丢失），绝对误差在 1e-7 量级。对 poker strategy 来说，frequency 是概率值（0-1 之间），hand_ev 是期望值（通常 0-5 BB），这个精度损失完全可以接受。
 
-**深入解释**：源 SQLite 存的是 f64 (8 字节)，我们的二进制存的是 f32 (4 字节)。转换过程是 `f64_value as f32 as f64`。bit-exact 意味着我们存储的 f32 的 IEEE 754 bit 模式，和 f64 截断到 f32 后的 bit 模式完全一样。如果用容差（比如 1e-6），就无法区分是精度损失还是真正的编码错误。
+关键在于：我们用 bit-exact 而不是 tolerance，是为了区分"精度损失"和"编码错误"。如果允许 1e-6 的 tolerance，那么 SQLite pager 读取错误、pack 解码偏移错误、action_schema 查找错误都可能被 tolerance 掩盖。bit-exact 确保任何非精度损失的差异都能被捕获。
 
-### Q: Cross verify 的采样策略是什么？
+### Q: Cross verify 的采样 SQL 用 `(concrete_line_id * 1103515245 + id * 12345) & 0x7FFFFFFF` 做伪随机排序，这个哈希函数是怎么选的？
 
-**简短回答**：按维度大小比例分配采样配额，使用确定性哈希排序。
+**回答**：这是一个线性同余生成器（LCG）的变种，选这些常数不是因为有什么特殊的数学性质，而是因为：
 
-**深入解释**：如果总共 2380 万条记录要采样 10000 条，那么每个维度的采样数 = `(该维度行数 / 总行数) * 10000`。SQL 排序用 `(concrete_line_id * 1103515245 + id * 12345) & 0x7FFFFFFF` 作为伪随机排序键，保证每次采样结果一致。
+1. **1103515245**：glibc `rand()` 的 multiplier，广泛已知有合理的分布特性
+2. **12345**：简单的 additive constant，和 multiplier 没有公因子
+3. **& 0x7FFFFFFF**：去掉符号位，保证结果为正数（SQLite 的 ORDER BY 对负数排序行为一致，但我们只需要排序，不需要数值意义）
 
-### Q: 2380 万条记录全量验证通过了吗？
+这个哈希的目的不是加密或统计学意义上的均匀分布，而是：
+- 打破 id 的自然顺序，避免采样集中在某个范围
+- 确定性（相同数据永远产生相同采样）
+- 计算便宜（一次乘法、一次加法、一次位运算，SQLite 原生支持）
 
-**简短回答**：是的，sample_size = 0 时全量验证通过，失败数为 0。
+如果需要更好的分布，可以用 `random()` 函数，但那是非确定性的。也可以用更复杂的 hash，但在 2380 万行的源数据上做 ORDER BY，hash 计算的开销占比很小（SQLite 的排序瓶颈在 I/O，不在比较函数）。
 
-**深入解释**：这是 v1.0.0 阶段的成果。全量验证覆盖了 9 个维度（不同策略、玩家数、深度组合），逐单元格对比了 frequency 和 hand_ev，float32 bit-exact 匹配。
+### Q: Standalone verification 中 idx record 要求 dense（无 gap），但如果源 SQLite 中 concrete_line_id 本身有 gap 呢？
 
----
+**回答**：这是个好问题。在 build 阶段，concrete_line_id 是从 SQLite 的 `id` 字段分配的，从 1 开始自增。`storage-tools` 的 build orchestrator 在读取源数据时：
 
-## 五、断点续跑
-
-### Q: build-state.json 记录了什么？
-
-**简短回答**：记录了每个维度的构建状态和源数据校验和。
-
-**深入解释**：
-- `source_checksum`：源数据库的校验和，防止用错数据源重建
-- 每个维度的 `status`：pending / in_progress / completed / failed
-- 每个维度的文件路径和统计数据（concrete_line_count、pack_count）
-- 全局参数（max_concrete_lines）
-
-### Q: Resume 时怎么保证已完成维度没损坏？
-
-**简短回答**：重新校验 .idx/.bin 文件的大小和 CRC32C。
-
-**深入解释**：Resume 流程会对每个 completed 维度：
-1. 检查文件是否存在
-2. 检查文件大小是否与 build-state.json 中记录的一致
-3. 如果启用了 checksum 验证，重新计算 CRC32C 对比
-
-### Q: 为什么 --resume 和 --overwrite 不能一起用？
-
-**简短回答**：语义冲突。
-
-**深入解释**：`--resume` 的意思是"接着上次中断的地方继续"，`--overwrite` 的意思是"从头开始全部重建"。这两个意图矛盾，不允许同时使用是为了防止误操作丢失已有的构建成果。
-
----
-
-## 六、Native SDK
-
-### Q: Native SDK 和 HTTP Service 有什么区别？
-
-**简短回答**：SDK 是直接嵌入到 Node.js 进程中的原生模块，HTTP Service 是独立的网络服务。
-
-**深入解释**：
-- **Native SDK**：通过 napi-rs 编译成 `.node` 原生模块，导入到 JS 中直接调用，零网络开销，适合 Bun/Node.js 应用内集成
-- **HTTP Service**：独立的 axum HTTP 服务，通过 REST API 访问，适合多语言客户端、分布式部署
-
-两者底层用的是同一套 `range-store-core` 查询逻辑。
-
-### Q: napi-rs 是什么？
-
-**简短回答**：Rust 到 JavaScript/N-API 的绑定框架。
-
-**深入解释**：napi-rs 让 Rust 函数可以直接暴露给 Node.js/Bun 调用。我们在 `range-store-native/src/lib.rs` 中用 `#[napi]` 注解标记导出的函数，编译后生成 `index.node` 原生模块。JS 层的 `index.js` 包装了一层，把原生返回值转换为业务信封格式（code/data/message）。
-
-### Q: SDK 的 error envelope 是什么格式？
-
-**简短回答**：`{ code, data, message }`。
-
-**深入解释**：
-```typescript
-{
-  code: 0,           // 0=成功, 非0=错误码
-  data: { ... } | null,  // 成功时返回数据，失败时为 null
-  message: null      // 失败时包含错误描述
-}
+```sql
+SELECT concrete_line_id, hole_cards, action_name, ... FROM range_data_* ORDER BY concrete_line_id, hole_cards, action_name
 ```
-这种格式和 HTTP Service 的响应保持一致，方便上层统一处理。
+
+concrete_line_id 是源表的 `id` 列，是自增主键，不会有 gap。如果源数据本身有 gap（比如手动删除了某些行），那说明源数据就不干净，应该在 build 之前就修复。
+
+我们的验证策略是：standalone 验证假设 build 过程是正确的，验证的是 build 产出的文件一致性。如果源数据有问题，cross verify 会发现（因为 SQLite 的 concrete_line_id 序列和 idx 的不匹配会导致某些记录找不到对应的 pack）。
 
 ---
 
-## 七、架构与设计
+## 四、Resume Build 深度问题
 
-### Q: 为什么分成 4 个 crate？
+### Q: build-state.json 的 source_checksum 是怎么计算的？如果源 SQLite 做了 ALTER TABLE 但数据没变，checksum 会变吗？
 
-**简短回答**：按职责分离，每个 crate 有明确的边界。
+**回答**：source_checksum 是对源 SQLite 文件的整个文件内容做 checksum（不是对表数据），所以：
 
-**深入解释**：
-- `range-store-core`：纯 Rust 库，不依赖 HTTP 或 CLI，可以被任何消费者引用（service、native SDK、独立工具）
-- `service`：依赖 core，提供 HTTP API
-- `range-store-native`：依赖 core，提供 JS 绑定
-- `storage-tools`：依赖 core，提供构建/验证/benchmark CLI
+- 如果源文件内容完全不变（同一个文件），checksum 不变，resume 可以通过
+- 如果对源文件做了 ALTER TABLE（即使数据不变），SQLite 会生成新的文件（page 布局可能变化），checksum 会变，resume 会拒绝
+- 如果是重新 export 了一份相同数据的 SQLite 文件，但文件字节不同，checksum 也会变
 
-core 不依赖任何其他项目 crate，这是关键的设计约束。
+这个设计的意图是：source_checksum 检测的是"源文件是否被替换过"，而不是"数据是否一致"。更精细的数据校验靠的是 build 过程中计算的每 dimension 的 pack_count 和 concrete_line_count，resume 时会对比这些数字。
 
-### Q: LRU Handle Pool 的作用是什么？
+如果要强制重新构建，用 `--overwrite` 参数丢弃 build-state.json 从头来。
 
-**简短回答**：缓存已打开的维度 reader，避免重复打开文件。
+### Q: Resume 时如果某个维度 build 中途崩溃，.idx.tmp 和 .bin.tmp 文件会残留吗？
 
-**深入解释**：每个维度对应一对 `.idx` + `.bin` 文件，打开时需要 mmap。频繁打开/关闭会影响性能。Handle Pool 维护一个最多 N 个 dimension reader 的缓存（默认 2，可通过 `PHS_MAX_OPEN_HANDLES` 配置），使用 LRU 策略淘汰不常用的维度。
+**回答**：会残留。build 过程中每个维度的输出先写 `.tmp` 文件，只有整个维度构建成功后才 rename 为正式文件。如果中途进程被 kill：
 
-### Q: mmap 的安全风险是什么？
+- `build-state.json` 中该维度的 status 会被设为 `"failed"`（panic handler 会写状态）
+- `.tmp` 文件会残留，但下次 resume 时因为 status 是 failed，会重新构建，rename 时 `--overwrite` 行为会覆盖 tmp 文件
+- 如果手动删除了 tmp 文件也不影响 resume，重新构建时自然会创建新的
 
-**简短回答**：如果文件在运行时被外部修改，可能导致 SIGBUS。
+安全机制：`--resume` 和 `--overwrite` 互斥，但 resume 过程中对 failed 维度的重建本质上等同于局部 overwrite，这是允许的。
 
-**深入解释**：mmap 的契约是文件在映射期间保持不变。我们的部署策略是通过版本化目录（带时间戳）+ 原子 swap 来解决这个问题：先写入新版本到临时目录，验证通过后原子重命名，旧版本同时移除。
+---
+
+## 五、Native SDK 深度问题
+
+### Q: SDK 的 queryBatch 中单个 item 失败（比如 hand 不存在），为什么不影响同 batch 的其他 items？
+
+**回答**：代码路径是这样的：
+
+```rust
+// StoreQueryService::query_batch
+requests.iter().map(|(concrete_line_id, hole_cards)| {
+    match self.query_single(&reader, dimension, *concrete_line_id, hole_cards) {
+        Ok(result) => BatchItemResult { actions: Some(...), error: None },
+        Err(error) => BatchItemResult { actions: None, error: Some(...) },
+    }
+})
+```
+
+每个 item 独立 `match`，`query_single` 返回 `StoreQueryError`（可能是 `NotFound`、`HandParse` 等），被捕获后转为该 item 的 `error` 字段，继续处理下一个 item。
+
+这是因为 batch 的使用场景是前端批量查询——用户在一个表格里看了 50 只手牌，其中可能有一两只不在当前 dimension 的 concrete_line 覆盖范围内（比如某些极端 hand 组合在某些 line 中不存在）。如果因为一个 hand 不存在就返回整个 batch 错误，用户体验很差。
+
+HTTP service 的 error code 映射也配合了这个设计：
+- `NotFound` -> HTTP 404
+- `HandParse`（非法手牌格式）-> HTTP 1000
+- 其他内部错误 -> HTTP 500
+
+每个 item 的 error 对象里包含 `code` 和 `message`，前端可以根据 code 做差异化处理。
+
+### Q: CachedMetadataReader 和原来的 MetadataReader 有什么区别？为什么叫 Cached？
+
+**回答**：`MetadataReader`（旧版）每次查询都打开一个新的 SQLite 连接执行查询。比如查询 concrete_line "F-F-F-R2"，会：
+1. `Connection::open(meta.db)`
+2. 拼 SQL：`SELECT ... FROM concrete_lines_default_6max_100BB WHERE concrete_line = ?`
+3. 执行、取结果、关连接
+
+如果 batch 查询中有 100 个 hand 都来自同一个 concrete_line，就会打开/close meta.db 100 次。
+
+`CachedMetadataReader`（v1.1.0 引入）的"cached"指的是**查询结果的内存缓存**，不是 SQLite 的连接缓存：
+
+1. 构造时只读 manifest，不查 SQLite
+2. 第一次 `get_concrete_lines("default", 6, 100, None, Some("F-F-F-R2"))` 时：
+   - 查 RwLock<HashMap>，miss
+   - 打开 SQLite 连接查询，结果存入 `concrete_by_concrete` HashMap
+3. 第二次同样的查询：
+   - 查 RwLock<HashMap>，hit，直接返回 `Arc::clone`
+
+缓存的 key 是 `(strategy, player_count, depth_bb, concrete_line)` 组成的结构体，实现 `Hash + Eq`。缓存的是 `ConcreteLineRow` 的可克隆值（不是 Arc），因为结构很小（3 个字段）。
+
+读锁用 RwLock 而不是 Mutex，因为缓存查询是读多写少——多个并发查询可以同时读 cache，只有 cache miss 时才需要写锁。
+
+trade-off：缓存会占用内存，但每个 concrete_line 查询结果只有 ~100 字节，即使缓存 10000 个结果也只占 ~1MB。对于 batch 查询场景，这个内存开销换来的是 SQLite 查询次数从 N 次降到 1 次。
+
+---
+
+## 六、架构取舍
+
+### Q: HandlePool 默认 max_open_handles=2，但一个 dimension 对应一对 .idx + .bin 文件。2 个 handle 是不是太小了？
+
+**回答**：是的，2 确实小，但是有意为之。
+
+原因：
+1. **mmap 不需要保持 file descriptor 打开**：Linux 上 `mmap` 后即使 close fd，数据仍在 OS page cache 中。Windows 上 `MapViewOfFile` 同理。所以 handle 数量不影响已 mmap 数据的可用性，只影响"是否需要重新 mmap"。
+2. **默认场景下用户只查少数几个 dimension**：如果用户只查 `default:6:100` 这一个 dimension，handle=2 绰绰有余。
+3. **LRU 淘汰的成本很低**：evict 一个 handle 只是 drop Arc<DimensionReader>，析构时 close mmap。下次再查同一个 dimension 时重新 mmap，成本主要在 OS page fault，不是文件 I/O。
+
+`PHS_MAX_OPEN_HANDLES` 环境变量可以让生产环境调大。我们的 benchmark 中 hot benchmark 用的是 100（"预加载所有需要的维度"），cold benchmark 用的是 2（"最小启动开销"）。
+
+如果用户的查询模式覆盖所有 9 个维度，建议设 >= 9。设太小只会增加反复 mmap 的开销，不会导致数据错误。
+
+### Q: 为什么 meta.db 继续用 SQLite，而策略数据用自定义二进制？meta.db 不会也成为瓶颈吗？
+
+**回答**：meta.db 的体量和访问模式完全不同：
+
+- **体量**：meta.db 只有几十 KB 到几 MB（action_schemas 表最多几百条，concrete_lines 表每个维度几千条，每条就三个字段）。而策略数据 .bin 文件有 345 MB。
+- **访问模式**：meta.db 的查询是 point query（WHERE concrete_line = ?），命中索引后一次 B-tree 跳转就能拿到结果。策略数据是 sequential scan + random access（需要解码整个 pack）。
+- **缓存命中率**：meta.db 太小，整个文件可以常驻内存。我们的 CachedMetadataReader 更是把查询结果缓存在进程内存里，实际运行时 meta.db 的 SQLite 查询次数趋近于 0。
+
+瓶颈永远在 pack 解码（decode_pack_for_hand 是 hot path），不在 metadata lookup。而且 action_schema 查一次缓存一次，concrete_line 查一次也缓存一次。一个 batch 100 个 hand 如果来自同一个 dimension，meta.db 只被查 1-2 次（一次 schema + 一次 concrete_line）。

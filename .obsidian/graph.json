@@ -8,17 +8,66 @@
   "collapse-color-groups": false,
   "colorGroups": [
     {
-      "query": "tag:",
-      "color": {
-        "a": 1,
-        "rgb": 14048348
-      }
-    },
-    {
       "query": "path:docs  ",
       "color": {
         "a": 1,
         "rgb": 14069084
+      }
+    },
+    {
+      "query": "path:data/sqlite  ",
+      "color": {
+        "a": 1,
+        "rgb": 12737750
+      }
+    },
+    {
+      "query": "path:range-store-native  ",
+      "color": {
+        "a": 1,
+        "rgb": 11392604
+      }
+    },
+    {
+      "query": "path:data/range-strata  ",
+      "color": {
+        "a": 1,
+        "rgb": 6084188
+      }
+    },
+    {
+      "query": "path:service  ",
+      "color": {
+        "a": 1,
+        "rgb": 15930050
+      }
+    },
+    {
+      "query": "path:reports file:benchmark-sqlite",
+      "color": {
+        "a": 1,
+        "rgb": 6073814
+      }
+    },
+    {
+      "query": "path:reports file:verify",
+      "color": {
+        "a": 1,
+        "rgb": 6053078
+      }
+    },
+    {
+      "query": "path:reports file:benchmark-native-hot",
+      "color": {
+        "a": 1,
+        "rgb": 11361494
+      }
+    },
+    {
+      "query": "path:reports file:benchmark-native-cold",
+      "color": {
+        "a": 1,
+        "rgb": 9994640
       }
     }
   ],
@@ -32,6 +81,6 @@
   "repelStrength": 10,
   "linkStrength": 1,
   "linkDistance": 250,
-  "scale": 2.7556759606310686,
+  "scale": 0.13873223932666046,
   "close": false
 }

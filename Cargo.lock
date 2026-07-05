@@ -524,7 +524,7 @@ checksum = "a89322df9ebe1c1578d689c92318e070967d1042b512afbe49518723f4e6d5cd"
 
 [[package]]
 name = "poker-hands-storage-service"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "axum",
  "range-store-core",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "poker-hands-storage-tools"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "range-store-core",
  "serde",
@@ -574,7 +574,7 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "range-store-core"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "arrayvec",
  "crc32c",
@@ -588,7 +588,7 @@ dependencies = [
 
 [[package]]
 name = "range-store-native"
-version = "1.0.0"
+version = "1.1.0"
 dependencies = [
  "napi",
  "napi-build",

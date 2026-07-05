@@ -14,7 +14,7 @@ Thumbs.db
 
 reports/
 
-
+range-store-native/node_modules
 
 data/sqlite/*.wal
 data/sqlite/*.shm
