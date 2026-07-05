@@ -96,6 +96,7 @@ pub fn run_sqlite_benchmark(
                 "SQLite baseline benchmark; queries read and count action rows from source range_data tables.".to_owned(),
                 "`hands-by-actions` uses source SQLite DISTINCT hole_cards with OR action-filter semantics and strict frequency threshold.".to_owned(),
                 "`drill-scenarios-metadata` reads source SQLite drill_scenario_lines_* metadata tables; compare only against the runtime meta.db metadata path.".to_owned(),
+                "`batch-hand-strategy` is the default --batch-size case; `batch-size-*` entries are the sweep cases and should be summarized separately.".to_owned(),
                 "No hard performance threshold is applied; compare reports from the same workload before drawing conclusions.".to_owned(),
             ],
         },

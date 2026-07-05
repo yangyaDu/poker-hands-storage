@@ -147,7 +147,7 @@ pub struct StatsResponse {
 impl PokerHandsRange {
     #[napi(constructor)]
     pub fn new(options: PokerHandsRangeOptions) -> Result<Self> {
-        let max_open_handles = options.max_open_handles.unwrap_or(8).max(1) as usize;
+        let max_open_handles = options.max_open_handles.unwrap_or(2).max(1) as usize;
         let verify_checksums = options.verify_checksums.unwrap_or(false);
         let inner = RangeStoreFacade::open(options.data_dir, max_open_handles, verify_checksums)
             .map_err(to_napi_error)?;

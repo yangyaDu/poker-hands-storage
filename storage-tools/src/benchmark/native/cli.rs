@@ -14,7 +14,7 @@ pub fn parse_benchmark_native_args(args: Vec<String>) -> Result<BenchmarkNativeC
     let mut meta = None;
     let mut native_entry = PathBuf::from("range-store-native/index.js");
     let mut bun = PathBuf::from("bun");
-    let mut max_open_handles = 8_u32;
+    let mut max_open_handles = 2_u32;
     let mut out_path = PathBuf::from("reports/benchmark-bun-native.json");
     let mut md_path = PathBuf::from("reports/benchmark-bun-native.md");
     let mut workload_path = None;

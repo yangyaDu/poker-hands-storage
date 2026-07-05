@@ -74,7 +74,7 @@ docker compose -f .docker\docker-compose.yml down
 | `PHS_BIND` | `0.0.0.0:8080` | 服务监听地址 |
 | `PHS_DATA_DIR` | `/data` | 容器内数据目录 |
 | `PHS_META_DB` | `/data/meta.db` | 元数据库路径 |
-| `PHS_MAX_OPEN_HANDLES` | `3` | 维度 reader LRU 池大小 |
+| `PHS_MAX_OPEN_HANDLES` | `2` | 维度 reader LRU 池大小；单 9max 服务可先设为 `1` 或 `2` |
 | `PHS_VERIFY_CHECKSUMS` | `false` | 查询时是否校验 pack CRC32C |
 | `PHS_PREWARM` | 空 | 启动时预热的维度列表，格式 `strategy:player_count:depth_bb` |
 | `RUST_LOG` | `info` | 日志级别 |
@@ -83,7 +83,7 @@ docker compose -f .docker\docker-compose.yml down
 Compose 当前显式配置：
 
 ```yaml
-PHS_MAX_OPEN_HANDLES: "3"
+PHS_MAX_OPEN_HANDLES: "2"
 PHS_VERIFY_CHECKSUMS: "true"
 PHS_PREWARM: default:6:100
 ```
@@ -302,7 +302,7 @@ Compose 当前配置：
 
 ## Prewarm 与内存
 
-服务启动时会读取 manifest、打开 `meta.db`、加载 action schemas，并校验维度文件和 action schema 引用。
+服务启动时会读取 manifest、打开 `meta.db`，并校验维度文件和 action schema 引用。action schemas 按 `schema_id` 懒加载，不再在启动或首次 miss 时全表加载。
 
 `PHS_PREWARM` 只会把配置的维度打开进 handle pool。mmap 打开 `.idx/.bin` 不等于立即把整个 `.bin` 读入物理内存，但被访问过的页会进入 OS page cache，并可能体现在 RSS 或容器内存统计中。
 

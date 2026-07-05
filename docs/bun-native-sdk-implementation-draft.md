@@ -197,11 +197,11 @@ range-store-native /
 建议 SDK 对业务后端暴露一个稳定对象：
 
 ```ts
-import { PokerHandsRange } from "@your-scope/range-store-native";
+import { getPokerHandsRangeSingleton } from "@your-scope/range-store-native";
 
-const ranges = new PokerHandsRange({
+const ranges = getPokerHandsRangeSingleton({
   dataDir: "/data/range-strata",
-  maxOpenHandles: 8,
+  maxOpenHandles: 2,
   verifyChecksums: false,
 });
 
@@ -243,10 +243,6 @@ type DimensionInput = {
   strategy?: string;
   playerCount: 6 | 8 | 9;
   depthBb: 100 | 200 | 300;
-};
-
-type ConcreteLineIdRequest = DimensionInput & {
-  concreteLine: string;
 };
 
 type HandsByActionsRequest = DimensionInput & {
@@ -307,9 +303,6 @@ type QueryBatchData = {
 ```ts
 class PokerHandsRange {
   constructor(options: PokerHandsRangeOptions);
-
-  // Raw shortcut for lower-level callers. Business code should use getConcreteLines.
-  getConcreteLineIdRaw(request: ConcreteLineIdRequest): number;
 
   getConcreteLines(request: {
     strategy?: string;
@@ -753,7 +746,7 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 6. 暴露 `prewarm`。已完成。
 7. 暴露 `stats`。已完成。
 8. metadata 高频路径加缓存。已完成：`RangeStoreFacade` 缓存 `concrete_line -> concrete_line_id` 和 drill scenario abstract lines。
-9. 暴露 `getConcreteLines`、`getAbstractLines` 的 envelope 版本及对应 `Raw` 版本；`getConcreteLineIdRaw` 只保留为底层快捷入口。已完成。
+9. 暴露 `getConcreteLines`、`getAbstractLines` 的 envelope 版本；`concreteLine -> concreteLineId` 统一通过 `getConcreteLines({ concreteLine })` 完成，业务 SDK 不再保留重复的 `getConcreteLineId` 方法。已完成。
 10. 文档补充 Bun 后端接入示例。
 
 验收：
@@ -827,7 +820,7 @@ cargo run -p poker-hands-storage-tools -- benchmark-native `
 
 1. backend 镜像内包含 Bun 业务代码和 native addon。
 2. RangeDB 通过只读 PVC 挂载。
-3. backend 启动时构造 `PokerHandsRange` 并打开数据目录。
+3. backend 启动时构造一个进程级 `PokerHandsRange` singleton 并打开数据目录，业务模块复用该实例，不要按请求或按模块重复构造。
 4. readiness 在 native store 打开并完成可选 prewarm 后再通过。
 5. 验证滚动发布和数据版本回滚。
 

@@ -1,4 +1,7 @@
-use range_store_core::action_schema::{decode_action_blob, ActionName, ActionSchemaError};
+use range_store_core::action_schema::{
+    decode_action_blob, load_action_schema, ActionName, ActionSchemaError,
+};
+use range_store_core::sqlite::{Connection, Value};
 
 fn push_action(bytes: &mut Vec<u8>, action_type: u8, action_size: f32, amount_bb: f32) {
     bytes.push(action_type);
@@ -40,4 +43,45 @@ fn rejects_unknown_action_type() {
     push_action(&mut blob, 99, 0.0, 0.0);
     let err = decode_action_blob(&blob, 1).unwrap_err();
     assert_eq!(err, ActionSchemaError::UnknownActionType(99));
+}
+
+#[test]
+fn loads_one_action_schema_by_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let meta_path = directory.path().join("meta.db");
+    let connection = Connection::open(&meta_path, false).unwrap();
+    connection
+        .exec(
+            "CREATE TABLE action_schemas (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               action_count INTEGER NOT NULL,
+               action_blob BLOB NOT NULL,
+               checksum INTEGER NOT NULL,
+               schema_key TEXT NOT NULL UNIQUE
+             );",
+        )
+        .unwrap();
+
+    let mut blob = Vec::new();
+    push_action(&mut blob, 0, 0.0, 0.0);
+    push_action(&mut blob, 4, 2.5, 2.5);
+    connection
+        .execute(
+            "INSERT INTO action_schemas(id, action_count, action_blob, checksum, schema_key)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            &[
+                Value::from(7u32),
+                Value::from(2u32),
+                Value::Blob(blob),
+                Value::from(0u32),
+                Value::from("fixture"),
+            ],
+        )
+        .unwrap();
+    drop(connection);
+
+    let schema = load_action_schema(&meta_path, 7).unwrap().unwrap();
+    assert_eq!(schema.len(), 2);
+    assert_eq!(schema[1].action_name, ActionName::Raise);
+    assert!(load_action_schema(&meta_path, 8).unwrap().is_none());
 }

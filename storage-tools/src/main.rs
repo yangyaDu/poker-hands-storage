@@ -10,6 +10,7 @@ use poker_hands_storage_tools::benchmark::compare::{
 };
 use poker_hands_storage_tools::benchmark::hot::parse_benchmark_args;
 use poker_hands_storage_tools::benchmark::native::parse_benchmark_native_args;
+use poker_hands_storage_tools::benchmark::native::run_core_worker_from_input_path;
 use poker_hands_storage_tools::benchmark::run_cold_benchmark;
 use poker_hands_storage_tools::benchmark::run_hot_benchmark;
 use poker_hands_storage_tools::benchmark::run_native_benchmark;
@@ -39,6 +40,7 @@ fn run() -> Result<(), ToolError> {
         Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
         Some("benchmark-native") => run_benchmark_native(args.collect()),
+        Some("benchmark-native-core-worker") => run_benchmark_native_core_worker(args.collect()),
         Some("benchmark-sqlite") => run_benchmark_sqlite(args.collect()),
         Some("benchmark-compare") => run_benchmark_compare_cmd(args.collect()),
         Some("benchmark-cold") => run_benchmark_cold(args.collect()),
@@ -170,6 +172,15 @@ fn run_benchmark_native(args: Vec<String>) -> Result<(), ToolError> {
             "Bun native benchmark failed",
         ));
     }
+    Ok(())
+}
+
+fn run_benchmark_native_core_worker(args: Vec<String>) -> Result<(), ToolError> {
+    let input_path = args
+        .first()
+        .ok_or_else(|| ToolError::invalid_argument("worker input path is required"))?;
+    let output = run_core_worker_from_input_path(PathBuf::from(input_path).as_path())?;
+    println!("{output}");
     Ok(())
 }
 

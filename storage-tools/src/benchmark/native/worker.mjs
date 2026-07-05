@@ -94,6 +94,17 @@ function measureCase(name, description, items, warmupIterations, operation) {
   };
 }
 
+function runWarmupItems(items, warmupIterations, operation) {
+  const effectiveWarmup = Math.min(items.length, warmupIterations);
+  for (let index = 0; index < effectiveWarmup; index += 1) {
+    try {
+      operation(items[index], index);
+    } catch {
+      // Warmup errors are intentionally ignored; measured cases report them.
+    }
+  }
+}
+
 function dimensionRequest(item) {
   return {
     strategy: item.strategy,
@@ -206,8 +217,8 @@ function pushStoreCases(cases, mode, store) {
   );
   cases.push(
     measureCase(
-      `${prefix}:batch`,
-      `Run a batch of concrete_line_id + hand lookups through ${prefix} business envelope API.`,
+      `${prefix}:batch-hand-strategy`,
+      `Run the default batch-size concrete_line_id + hand lookup case through ${prefix}.`,
       input.workload.batchQueries,
       input.warmupIterations,
       (item) =>
@@ -267,100 +278,152 @@ function pushStoreCases(cases, mode, store) {
   );
 }
 
-const workerStart = performance.now();
-const memoryBefore = memorySnapshot("Bun process memory before native import.");
-
-const sdkImportStart = performance.now();
-const sdkModule = await import(pathToFileURL(input.nativeEntry).href);
-const sdkImportMs = performance.now() - sdkImportStart;
-
-const directRequireStart = performance.now();
-const directModule = require(input.nativeNodeEntry);
-const directRequireMs = performance.now() - directRequireStart;
-
-const directConstructorStart = performance.now();
-const directStore = new directModule.PokerHandsRange({
-  dataDir: input.dataDir,
-  maxOpenHandles: input.maxOpenHandles,
-  verifyChecksums: input.verifyChecksums,
-});
-const directConstructorMs = performance.now() - directConstructorStart;
-
-const sdkConstructorStart = performance.now();
-const sdkStore = new sdkModule.PokerHandsRange({
-  dataDir: input.dataDir,
-  maxOpenHandles: input.maxOpenHandles,
-  verifyChecksums: input.verifyChecksums,
-});
-const sdkConstructorMs = performance.now() - sdkConstructorStart;
-
-let directFirstQueryMs = 0;
-let directFirstQueryResultCount = 0;
-let sdkFirstQueryMs = 0;
-let sdkFirstQueryResultCount = 0;
-let firstQuery = null;
-let directStatsAfterFirstQuery = null;
-let sdkStatsAfterFirstQuery = null;
-if (input.workload.handQueries.length > 0) {
-  firstQuery = input.workload.handQueries[0];
-  const directFirstQueryStart = performance.now();
-  const directResult = directStore.queryHandStrategy({
-    ...dimensionRequest(firstQuery),
-    concreteLineId: firstQuery.concreteLineId,
-    holeCards: firstQuery.holeCards,
+function warmupStore(mode, store) {
+  runWarmupItems(input.concreteLineQueries, input.warmupIterations, (item) => {
+    const concreteLineId = resolveConcreteLineId(store, item);
+    if (concreteLineId !== item.concreteLineId) {
+      throw new Error(
+        `concrete line id mismatch: expected ${item.concreteLineId}, got ${concreteLineId}`,
+      );
+    }
+    return 1;
   });
-  directFirstQueryMs = performance.now() - directFirstQueryStart;
-  directFirstQueryResultCount = readApiData(directResult).actions.length;
-  directStatsAfterFirstQuery = readApiData(directStore.stats());
-
-  const sdkFirstQueryStart = performance.now();
-  const sdkResult = sdkStore.queryHandStrategy({
-    ...dimensionRequest(firstQuery),
-    concreteLineId: firstQuery.concreteLineId,
-    holeCards: firstQuery.holeCards,
+  runWarmupItems(input.workload.handQueries, input.warmupIterations, (item) =>
+    readApiData(
+      store.queryHandStrategy({
+        ...dimensionRequest(item),
+        concreteLineId: item.concreteLineId,
+        holeCards: item.holeCards,
+      }),
+    ).actions.length,
+  );
+  runWarmupItems(input.workload.batchQueries, input.warmupIterations, (item) =>
+    countBatchActionsEnvelope(
+      store.queryBatch({
+        ...dimensionRequest(item),
+        items: item.requests,
+      }),
+    ),
+  );
+  for (const [, queries] of input.workload.batchQueriesBySize) {
+    runWarmupItems(queries, input.warmupIterations, (item) =>
+      countBatchActionsEnvelope(
+        store.queryBatch({
+          ...dimensionRequest(item),
+          items: item.requests,
+        }),
+      ),
+    );
+  }
+  runWarmupItems(input.workload.handsByActionsQueries, input.warmupIterations, (item) =>
+    callHandsByActions(mode, store, item, item.concreteLineId),
+  );
+  runWarmupItems(input.lineToHandsByActionsQueries, input.warmupIterations, (item) => {
+    const concreteLineId = resolveConcreteLineId(store, item);
+    if (concreteLineId !== item.concreteLineId) {
+      throw new Error(
+        `concrete line id mismatch: expected ${item.concreteLineId}, got ${concreteLineId}`,
+      );
+    }
+    return callHandsByActions(mode, store, item, concreteLineId);
   });
-  sdkFirstQueryMs = performance.now() - sdkFirstQueryStart;
-  sdkFirstQueryResultCount = readApiData(sdkResult).actions.length;
-  sdkStatsAfterFirstQuery = readApiData(sdkStore.stats());
 }
 
-const cases = [];
-pushStoreCases(cases, "direct", directStore);
-pushStoreCases(cases, "sdk", sdkStore);
+const workerStart = performance.now();
+const mode = input.mode;
+if (mode !== "direct" && mode !== "sdk") {
+  console.error(`Invalid native benchmark mode: ${mode}`);
+  process.exit(2);
+}
 
-const memoryAfter = memorySnapshot("Bun process memory after native benchmark.");
-const directStatsAfterBenchmark = readApiData(directStore.stats());
-const sdkStatsAfterBenchmark = readApiData(sdkStore.stats());
+const memoryBefore = memorySnapshot(`Bun process memory before native ${mode} import.`);
+let importMs = 0;
+let requireMs = 0;
+let StoreClass = null;
+
+if (mode === "direct") {
+  const directRequireStart = performance.now();
+  const directModule = require(input.nativeNodeEntry);
+  requireMs = performance.now() - directRequireStart;
+  StoreClass = directModule.PokerHandsRange;
+} else {
+  const sdkImportStart = performance.now();
+  const sdkModule = await import(pathToFileURL(input.nativeEntry).href);
+  importMs = performance.now() - sdkImportStart;
+  StoreClass = sdkModule.PokerHandsRange;
+}
+
+const memoryAfterImport = memorySnapshot(`Bun process memory after native ${mode} import.`);
+const constructorStart = performance.now();
+const store = new StoreClass({
+  dataDir: input.dataDir,
+  maxOpenHandles: input.maxOpenHandles,
+  verifyChecksums: input.verifyChecksums,
+});
+const constructorMs = performance.now() - constructorStart;
+const memoryAfterConstructor = memorySnapshot(
+  `Bun process memory after native ${mode} constructor.`,
+);
+
+let firstQueryMs = 0;
+let firstQueryResultCount = 0;
+let firstQuery = null;
+let statsAfterFirstQuery = null;
+if (input.workload.handQueries.length > 0) {
+  firstQuery = input.workload.handQueries[0];
+  const firstQueryStart = performance.now();
+  const result = store.queryHandStrategy({
+    ...dimensionRequest(firstQuery),
+    concreteLineId: firstQuery.concreteLineId,
+    holeCards: firstQuery.holeCards,
+  });
+  firstQueryMs = performance.now() - firstQueryStart;
+  firstQueryResultCount = readApiData(result).actions.length;
+  statsAfterFirstQuery = readApiData(store.stats());
+}
+const memoryAfterFirstQuery = memorySnapshot(
+  `Bun process memory after native ${mode} first query.`,
+);
+const warmupStart = performance.now();
+warmupStore(mode, store);
+const warmupMs = performance.now() - warmupStart;
+const memoryAfterWarmup = memorySnapshot(`Bun process memory after native ${mode} warmup.`);
+
+const cases = [];
+pushStoreCases(cases, mode, store);
+
+const memoryAfter = memorySnapshot(`Bun process memory after native ${mode} benchmark.`);
+const statsAfterBenchmark = readApiData(store.stats());
 
 const output = {
   coldStart: {
-    mode: "bun-native-worker",
-    importMs: sdkImportMs,
-    constructorMs: sdkConstructorMs,
-    firstQueryMs: sdkFirstQueryMs,
-    directRequireMs,
-    directConstructorMs,
-    directFirstQueryMs,
-    sdkImportMs,
-    sdkConstructorMs,
-    sdkFirstQueryMs,
+    mode: `bun-native-${mode}-worker`,
+    importMs,
+    requireMs,
+    constructorMs,
+    firstQueryMs,
+    warmupMs,
     totalMs: performance.now() - workerStart,
-    firstQueryResultCount: sdkFirstQueryResultCount,
-    directFirstQueryResultCount,
-    sdkFirstQueryResultCount,
+    firstQueryResultCount,
     firstQuery,
-    directStatsAfterFirstQuery,
-    sdkStatsAfterFirstQuery,
+    statsAfterFirstQuery,
+    memoryAfterImport,
+    memoryAfterConstructor,
+    memoryAfterFirstQuery,
+    memoryAfterWarmup,
   },
   cases,
   memoryBefore,
+  memoryAfterImport,
+  memoryAfterConstructor,
+  memoryAfterWarmup,
   memoryAfter,
   notes: [
     `Native entry: ${input.nativeEntry}`,
     `Native node entry: ${input.nativeNodeEntry}`,
+    `Native benchmark mode: ${mode}`,
     `Bun runtime: ${Bun.version}`,
-    `Native direct stats after benchmark: schemaCount=${directStatsAfterBenchmark.schemaCount}, openHandleCount=${directStatsAfterBenchmark.openHandleCount}`,
-    `Native sdk stats after benchmark: schemaCount=${sdkStatsAfterBenchmark.schemaCount}, openHandleCount=${sdkStatsAfterBenchmark.openHandleCount}`,
+    `Native ${mode} stats after benchmark: schemaCount=${statsAfterBenchmark.schemaCount}, openHandleCount=${statsAfterBenchmark.openHandleCount}`,
   ],
 };
 

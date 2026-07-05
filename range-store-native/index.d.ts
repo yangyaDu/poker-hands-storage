@@ -14,17 +14,6 @@ export interface ActionResult {
   handEv?: number
 }
 
-export interface ConcreteLineIdRequest {
-  strategy?: string
-  playerCount: number
-  depthBb: number
-  concreteLine: string
-}
-
-export interface ConcreteLineIdData {
-  concreteLineId: number
-}
-
 export interface ConcreteLinesRequest {
   strategy?: string
   playerCount: number
@@ -125,7 +114,6 @@ export interface PokerHandsRangeOptions {
 
 export declare class PokerHandsRange {
   constructor(options: PokerHandsRangeOptions)
-  getConcreteLineId(request: ConcreteLineIdRequest): ApiResponse<ConcreteLineIdData>
   getConcreteLines(request: ConcreteLinesRequest): ApiResponse<ConcreteLinesData>
   getAbstractLines(request: AbstractLinesRequest): ApiResponse<AbstractLinesData>
   handsByActions(request: HandsByActionsRequest): ApiResponse<HandsByActionsResponse>
@@ -140,6 +128,10 @@ export declare class PokerHandsRange {
 export type RangeStoreOptions = PokerHandsRangeOptions
 
 export declare const RangeStore: typeof PokerHandsRange
+
+export declare function getPokerHandsRangeSingleton(
+  options: PokerHandsRangeOptions,
+): PokerHandsRange
 
 export interface StatsResponse {
   schemaCount: number

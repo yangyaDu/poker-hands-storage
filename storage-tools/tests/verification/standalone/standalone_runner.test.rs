@@ -130,6 +130,29 @@ fn standalone_verify_reports_bad_action_schema_checksum() {
 }
 
 #[test]
+fn standalone_verify_reports_missing_concrete_line_lookup_index() {
+    let directory = tempfile::tempdir().unwrap();
+    let (_, output_path) = build_verify_fixture(directory.path());
+    let meta = Connection::open(&output_path.join("meta.db"), false).unwrap();
+    meta.exec("DROP INDEX idx_concrete_lines_default_6max_100BB_concrete_line")
+        .unwrap();
+    drop(meta);
+
+    let report = run_standalone_verify(&StandaloneVerifyOptions {
+        dir: output_path,
+        verify_checksums: false,
+        out_path: None,
+        md_path: None,
+    })
+    .unwrap();
+
+    assert!(!report.totals.catalog_ok);
+    assert!(report.failures.iter().any(|failure| {
+        failure.layer == VerifyLayer::Catalog && failure.reason == "MISSING_INDEX"
+    }));
+}
+
+#[test]
 fn standalone_verify_reports_idx_out_of_order() {
     let directory = tempfile::tempdir().unwrap();
     let (_, output_path) = build_verify_fixture(directory.path());

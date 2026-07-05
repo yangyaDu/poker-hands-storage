@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
 use range_store_core::DimensionReader;
 use serde::Serialize;
@@ -8,8 +9,10 @@ use utoipa::ToSchema;
 use crate::errors::AppError;
 use crate::query::dimension_handle_pool::HandlePool;
 use crate::storage::manifest::{load_manifest, queryable_dimensions};
-use crate::storage::metadata::{ConcreteLineFilter, ConcreteLineRow, MetadataReader};
-use range_store_core::action_schema::ActionDef;
+use crate::storage::metadata::{
+    CachedMetadataReader, ConcreteLineFilter, ConcreteLineRow, MetadataReader,
+};
+use range_store_core::action_schema::{load_action_schema_from_connection, ActionDef};
 use range_store_core::dimension::DimensionRef;
 use range_store_core::hole_cards::{parse_hole_cards, ParsedHand};
 use range_store_core::query::{
@@ -17,10 +20,80 @@ use range_store_core::query::{
 };
 
 pub struct QueryService {
-    action_schemas: Vec<Option<Vec<ActionDef>>>,
+    action_schemas: ActionSchemaCache,
     metadata: MetadataReader,
+    cached_metadata: CachedMetadataReader,
     pool: HandlePool,
     verify_checksums: bool,
+}
+
+#[derive(Debug)]
+struct ActionSchemaCache {
+    connection: Mutex<LockedActionSchemaConnection>,
+    state: RwLock<HashMap<u32, Arc<Vec<ActionDef>>>>,
+}
+
+struct LockedActionSchemaConnection {
+    connection: crate::storage::sqlite::Connection,
+}
+
+impl std::fmt::Debug for LockedActionSchemaConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockedActionSchemaConnection")
+            .finish_non_exhaustive()
+    }
+}
+
+// The SQLite connection is opened read-only with SQLITE_OPEN_NOMUTEX. This
+// wrapper is private and only accessed while ActionSchemaCache's Mutex is held.
+unsafe impl Send for LockedActionSchemaConnection {}
+
+impl ActionSchemaCache {
+    fn open(meta_path: &Path) -> Result<Self, AppError> {
+        let connection = crate::storage::sqlite::Connection::open(meta_path, true)?;
+        Ok(Self {
+            connection: Mutex::new(LockedActionSchemaConnection { connection }),
+            state: RwLock::new(HashMap::new()),
+        })
+    }
+
+    fn get(&self, schema_id: u32) -> Result<Arc<Vec<ActionDef>>, AppError> {
+        {
+            let state = self
+                .state
+                .read()
+                .map_err(|_| AppError::invalid_format("Action schema cache lock poisoned"))?;
+            if let Some(schema) = state.get(&schema_id) {
+                return Ok(Arc::clone(schema));
+            }
+        }
+
+        let connection = self.connection()?;
+        let schema = load_action_schema_from_connection(&connection.connection, schema_id)?
+            .ok_or_else(|| AppError::action_schema_not_found(schema_id))?;
+        drop(connection);
+
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| AppError::invalid_format("Action schema cache lock poisoned"))?;
+        Ok(Arc::clone(
+            state.entry(schema_id).or_insert_with(|| Arc::new(schema)),
+        ))
+    }
+
+    fn connection(&self) -> Result<MutexGuard<'_, LockedActionSchemaConnection>, AppError> {
+        self.connection
+            .lock()
+            .map_err(|_| AppError::invalid_format("Action schema cache lock poisoned"))
+    }
+
+    fn len(&self) -> usize {
+        self.state
+            .read()
+            .map(|state| state.len())
+            .unwrap_or_default()
+    }
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
@@ -104,9 +177,9 @@ impl QueryService {
         let meta_path = meta_path.into();
         require_file(&meta_path)?;
 
-        let metadata = MetadataReader::new(meta_path);
-        let schemas_map = metadata.load_action_schemas()?;
-        let schema_ids: HashSet<u32> = schemas_map.keys().copied().collect();
+        let metadata = MetadataReader::new(meta_path.clone());
+        let cached_metadata = CachedMetadataReader::load(&data_dir, &meta_path)?;
+        let schema_ids = metadata.load_action_schema_ids()?;
         metadata.validate_dimension_schema_refs(&schema_ids)?;
 
         for dimension in &dimensions {
@@ -122,16 +195,10 @@ impl QueryService {
             }
         }
 
-        // Convert HashMap to Vec for O(1) index lookup
-        let max_id = schemas_map.keys().copied().max().unwrap_or(0) as usize;
-        let mut action_schemas = vec![None; max_id + 1];
-        for (id, schema) in schemas_map {
-            action_schemas[id as usize] = Some(schema);
-        }
-
         Ok(Self {
-            action_schemas,
+            action_schemas: ActionSchemaCache::open(&meta_path)?,
             metadata,
+            cached_metadata,
             pool: HandlePool::new(data_dir, dimensions, max_open_handles),
             verify_checksums,
         })
@@ -177,9 +244,7 @@ impl QueryService {
             ));
         };
 
-        let action_schema = self
-            .get_action_schema(fragment.action_schema_id)
-            .ok_or_else(|| AppError::action_schema_not_found(fragment.action_schema_id))?;
+        let action_schema = self.get_action_schema(fragment.action_schema_id)?;
         let mut actions = Vec::with_capacity(fragment.cells.len());
         for cell in fragment.cells {
             let action = action_schema.get(cell.action_id as usize).ok_or_else(|| {
@@ -249,15 +314,17 @@ impl QueryService {
 
             match reader.query_many_hands(*concrete_line_id, &hand_ids, self.verify_checksums) {
                 Ok(Some((action_schema_id, pack_results))) => {
-                    let action_schema = self.get_action_schema(action_schema_id);
+                    let action_schema = self
+                        .get_action_schema(action_schema_id)
+                        .map_err(|error| (error.public_code(), error.message().to_owned()));
                     for (group_pos, &item_idx) in group_indices.iter().enumerate() {
                         let item = &items[item_idx];
                         let parsed = item.parsed.as_ref().unwrap();
                         let result = match &pack_results[group_pos] {
                             Some(fragment) => match action_schema {
-                                Some(schema) => {
+                                Ok(ref schema) => {
                                     let actions =
-                                        self.build_action_results(schema, &fragment.cells);
+                                        self.build_action_results(schema.as_ref(), &fragment.cells);
                                     match actions {
                                         Ok(actions) => BatchItemResult {
                                             concrete_line_id: item.concrete_line_id,
@@ -278,17 +345,14 @@ impl QueryService {
                                         },
                                     }
                                 }
-                                None => BatchItemResult {
+                                Err((code, ref message)) => BatchItemResult {
                                     concrete_line_id: item.concrete_line_id,
                                     input_hole_cards: item.input_hole_cards.clone(),
                                     hand_code: Some(parsed.hand_code.clone()),
                                     strategy: None,
                                     error: Some(ErrorInfo {
-                                        code: 500,
-                                        message: format!(
-                                            "Action schema {} not found",
-                                            action_schema_id
-                                        ),
+                                        code,
+                                        message: message.clone(),
                                     }),
                                 },
                             },
@@ -412,10 +476,8 @@ impl QueryService {
 
     /// O(1) action schema lookup by index.
     #[inline]
-    fn get_action_schema(&self, id: u32) -> Option<&Vec<ActionDef>> {
-        self.action_schemas
-            .get(id as usize)
-            .and_then(|opt| opt.as_ref())
+    fn get_action_schema(&self, id: u32) -> Result<Arc<Vec<ActionDef>>, AppError> {
+        self.action_schemas.get(id)
     }
 
     pub fn prewarm(&self, dimension: &DimensionRef) -> Result<usize, AppError> {
@@ -444,11 +506,20 @@ impl QueryService {
         dimension: &DimensionRef,
         filter: ConcreteLineFilter<'_>,
     ) -> Result<Vec<ConcreteLineRow>, AppError> {
-        Ok(self.metadata.get_concrete_lines(
+        let (abstract_line, concrete_line) = match filter {
+            ConcreteLineFilter::Abstract(abstract_line) => (Some(abstract_line), None),
+            ConcreteLineFilter::Concrete(concrete_line) => (None, Some(concrete_line)),
+            ConcreteLineFilter::AbstractAndConcrete {
+                abstract_line,
+                concrete_line,
+            } => (Some(abstract_line), Some(concrete_line)),
+        };
+        Ok(self.cached_metadata.get_concrete_lines(
             &dimension.strategy,
             dimension.player_count,
             dimension.depth_bb,
-            filter,
+            abstract_line,
+            concrete_line,
         )?)
     }
 
@@ -459,7 +530,7 @@ impl QueryService {
         player_count: u32,
         drill_depth: u32,
     ) -> Result<Vec<String>, AppError> {
-        let lines = self.metadata.get_drill_scenario_lines(
+        let lines = self.cached_metadata.get_drill_scenario_lines(
             strategy,
             drill_name,
             player_count,
@@ -500,13 +571,16 @@ impl QueryService {
             ));
         };
 
-        let action_schema = self
-            .get_action_schema(result.action_schema_id)
-            .ok_or_else(|| AppError::action_schema_not_found(result.action_schema_id))?;
+        let action_schema = self.get_action_schema(result.action_schema_id)?;
         let filters = action_filters.unwrap_or_default();
         let frequency_filter = FrequencyFilter::from_request(frequency);
         let actions_text = format_action_filters(&filters);
-        let hands = match_hands_by_actions(result.pack, action_schema, &filters, &frequency_filter);
+        let hands = match_hands_by_actions(
+            result.pack,
+            action_schema.as_ref(),
+            &filters,
+            &frequency_filter,
+        );
 
         if hands.is_empty() {
             return Err(AppError::no_hands_found(
@@ -523,7 +597,7 @@ impl QueryService {
     }
 
     pub fn schema_count(&self) -> usize {
-        self.action_schemas.iter().filter(|s| s.is_some()).count()
+        self.action_schemas.len()
     }
 
     pub fn open_handle_count(&self) -> usize {

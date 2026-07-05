@@ -1,6 +1,6 @@
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::{Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
 use serde::Serialize;
 
@@ -92,6 +92,17 @@ impl MetadataReader {
             schemas.insert(id, decode_action_blob(&action_blob, action_count)?);
         }
         Ok(schemas)
+    }
+
+    pub fn load_action_schema_ids(&self) -> Result<HashSet<u32>, MetadataError> {
+        let connection = self.open()?;
+        let mut statement = connection.prepare("SELECT id FROM action_schemas ORDER BY id")?;
+        statement.start(&[])?;
+        let mut ids = HashSet::new();
+        while statement.step_row()? {
+            ids.insert(statement.column_u32(0)?);
+        }
+        Ok(ids)
     }
 
     pub fn validate_dimension_schema_refs(
@@ -373,16 +384,32 @@ fn concrete_line_filter_not_found(
 
 /// A lazily populated in-memory metadata index.
 ///
-/// Construction only reads the manifest. Concrete-line and drill metadata are
-/// loaded into HashMaps on first access for the requested dimension/strategy.
+/// Construction only reads the manifest. Metadata rows are queried from
+/// `meta.db` on first access for the requested key, then cached in memory.
 #[derive(Debug)]
 pub struct CachedMetadataReader {
-    meta_path: PathBuf,
+    connection: Mutex<LockedMetadataConnection>,
     /// strategy -> list of dimensions under that strategy
     strategies: Vec<String>,
     dimensions: HashSet<ConcreteDimensionKey>,
     state: RwLock<CachedMetadataState>,
 }
+
+struct LockedMetadataConnection {
+    connection: Connection,
+}
+
+impl std::fmt::Debug for LockedMetadataConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockedMetadataConnection")
+            .finish_non_exhaustive()
+    }
+}
+
+// The SQLite wrapper opens read-only metadata handles with SQLITE_OPEN_NOMUTEX.
+// This private wrapper is only exposed behind CachedMetadataReader's Mutex, and
+// statements are prepared/stepped/finalized while the mutex guard is held.
+unsafe impl Send for LockedMetadataConnection {}
 
 #[derive(Debug, Default)]
 struct CachedMetadataState {
@@ -392,8 +419,6 @@ struct CachedMetadataState {
     concrete_by_abstract: HashMap<ConcreteByAbstractKey, Vec<ConcreteLineRow>>,
     /// (strategy, drill_name, player_count, drill_depth) -> Vec<String>
     drill_lines: HashMap<DrillKey, Vec<String>>,
-    loaded_concrete_dimensions: HashSet<ConcreteDimensionKey>,
-    loaded_drill_strategies: HashSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -456,8 +481,10 @@ impl CachedMetadataReader {
             })
             .collect();
 
+        let connection = Connection::open(meta_path, true)?;
+
         Ok(Self {
-            meta_path: meta_path.to_path_buf(),
+            connection: Mutex::new(LockedMetadataConnection { connection }),
             strategies,
             dimensions,
             state: RwLock::new(CachedMetadataState::default()),
@@ -472,58 +499,22 @@ impl CachedMetadataReader {
         self.state.write().map_err(|_| metadata_cache_lock_error())
     }
 
-    fn ensure_concrete_dimension_loaded(
-        &self,
-        strategy: &str,
-        player_count: u32,
-        depth_bb: u32,
-    ) -> Result<(), MetadataError> {
-        let dimension = ConcreteDimensionKey {
+    fn connection(&self) -> Result<MutexGuard<'_, LockedMetadataConnection>, MetadataError> {
+        self.connection
+            .lock()
+            .map_err(|_| metadata_cache_lock_error())
+    }
+
+    fn concrete_dimension_known(&self, strategy: &str, player_count: u32, depth_bb: u32) -> bool {
+        self.dimensions.contains(&ConcreteDimensionKey {
             strategy: strategy.to_owned(),
             player_count,
             depth_bb,
-        };
-        if !self.dimensions.contains(&dimension) {
-            return Ok(());
-        }
-
-        {
-            let state = self.read_state()?;
-            if state.loaded_concrete_dimensions.contains(&dimension) {
-                return Ok(());
-            }
-        }
-
-        let mut state = self.write_state()?;
-        if state.loaded_concrete_dimensions.contains(&dimension) {
-            return Ok(());
-        }
-        let connection = Connection::open(&self.meta_path, true)?;
-        load_concrete_dimension_for_dim(&mut state, &connection, strategy, player_count, depth_bb)?;
-        state.loaded_concrete_dimensions.insert(dimension);
-        Ok(())
+        })
     }
 
-    fn ensure_drill_strategy_loaded(&self, strategy: &str) -> Result<(), MetadataError> {
-        if !self.strategies.iter().any(|known| known == strategy) {
-            return Ok(());
-        }
-
-        {
-            let state = self.read_state()?;
-            if state.loaded_drill_strategies.contains(strategy) {
-                return Ok(());
-            }
-        }
-
-        let mut state = self.write_state()?;
-        if state.loaded_drill_strategies.contains(strategy) {
-            return Ok(());
-        }
-        let connection = Connection::open(&self.meta_path, true)?;
-        load_drill_strategy(&mut state, &connection, strategy)?;
-        state.loaded_drill_strategies.insert(strategy.to_owned());
-        Ok(())
+    fn drill_strategy_known(&self, strategy: &str) -> bool {
+        self.strategies.iter().any(|known| known == strategy)
     }
 
     /// Look up the concrete_line_id for a specific (dimension, concrete_line).
@@ -534,16 +525,40 @@ impl CachedMetadataReader {
         depth_bb: u32,
         concrete_line: &str,
     ) -> Result<Option<u32>, MetadataError> {
-        self.ensure_concrete_dimension_loaded(strategy, player_count, depth_bb)?;
-        let state = self.read_state()?;
+        if !self.concrete_dimension_known(strategy, player_count, depth_bb) {
+            return Ok(None);
+        }
+
+        let key = ConcreteByConcreteKey {
+            strategy: strategy.to_owned(),
+            player_count,
+            depth_bb,
+            concrete_line: concrete_line.to_owned(),
+        };
+
+        {
+            let state = self.read_state()?;
+            if let Some(row) = state.concrete_by_concrete.get(&key) {
+                return Ok(Some(row.concrete_line_id));
+            }
+        }
+
+        let connection = self.connection()?;
+        let rows = query_concrete_by_concrete(
+            &connection.connection,
+            strategy,
+            player_count,
+            depth_bb,
+            concrete_line,
+        )?;
+        drop(connection);
+        let mut state = self.write_state()?;
+        for row in rows {
+            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row);
+        }
         Ok(state
             .concrete_by_concrete
-            .get(&ConcreteByConcreteKey {
-                strategy: strategy.to_owned(),
-                player_count,
-                depth_bb,
-                concrete_line: concrete_line.to_owned(),
-            })
+            .get(&key)
             .map(|row| row.concrete_line_id))
     }
 
@@ -556,73 +571,22 @@ impl CachedMetadataReader {
         abstract_line: Option<&str>,
         concrete_line: Option<&str>,
     ) -> Result<Vec<ConcreteLineRow>, MetadataError> {
-        self.ensure_concrete_dimension_loaded(strategy, player_count, depth_bb)?;
-        let state = self.read_state()?;
-        match (
-            abstract_line.map(|v| v.trim()),
-            concrete_line.map(|v| v.trim()),
-        ) {
-            (Some(abstract_), Some(conc)) if !abstract_.is_empty() && !conc.is_empty() => {
-                let key = ConcreteByConcreteKey {
-                    strategy: strategy.to_owned(),
+        let abstract_line = abstract_line.map(str::trim);
+        let concrete_line = concrete_line.map(str::trim);
+        match (abstract_line, concrete_line) {
+            (Some(abstract_), Some(conc)) if !abstract_.is_empty() && !conc.is_empty() => self
+                .get_concrete_lines_by_abstract_and_concrete(
+                    strategy,
                     player_count,
                     depth_bb,
-                    concrete_line: conc.to_owned(),
-                };
-                match state.concrete_by_concrete.get(&key) {
-                    Some(row) if row.abstract_line == abstract_ => Ok(vec![row.clone()]),
-                    Some(_) => Err(MetadataError::ConcreteLineFilterNotFound {
-                        strategy: strategy.to_owned(),
-                        player_count,
-                        depth_bb,
-                        abstract_line: abstract_.to_owned(),
-                        concrete_line: conc.to_owned(),
-                    }),
-                    None => Err(MetadataError::ConcreteLineFilterNotFound {
-                        strategy: strategy.to_owned(),
-                        player_count,
-                        depth_bb,
-                        abstract_line: abstract_.to_owned(),
-                        concrete_line: conc.to_owned(),
-                    }),
-                }
-            }
+                    abstract_,
+                    conc,
+                ),
             (Some(abstract_), None) if !abstract_.is_empty() => {
-                let key = ConcreteByAbstractKey {
-                    strategy: strategy.to_owned(),
-                    player_count,
-                    depth_bb,
-                    abstract_line: abstract_.to_owned(),
-                };
-                state
-                    .concrete_by_abstract
-                    .get(&key)
-                    .cloned()
-                    .ok_or_else(|| MetadataError::AbstractLineNotFound {
-                        strategy: strategy.to_owned(),
-                        player_count,
-                        depth_bb,
-                        abstract_line: abstract_.to_owned(),
-                    })
+                self.get_concrete_lines_by_abstract(strategy, player_count, depth_bb, abstract_)
             }
             (None, Some(conc)) if !conc.is_empty() => {
-                let key = ConcreteByConcreteKey {
-                    strategy: strategy.to_owned(),
-                    player_count,
-                    depth_bb,
-                    concrete_line: conc.to_owned(),
-                };
-                state
-                    .concrete_by_concrete
-                    .get(&key)
-                    .cloned()
-                    .map(|row| vec![row])
-                    .ok_or_else(|| MetadataError::ConcreteLineValueNotFound {
-                        strategy: strategy.to_owned(),
-                        player_count,
-                        depth_bb,
-                        concrete_line: conc.to_owned(),
-                    })
+                self.get_concrete_lines_by_concrete(strategy, player_count, depth_bb, conc)
             }
             _ => Err(MetadataError::AbstractLineNotFound {
                 strategy: strategy.to_owned(),
@@ -633,6 +597,179 @@ impl CachedMetadataReader {
         }
     }
 
+    fn get_concrete_lines_by_abstract(
+        &self,
+        strategy: &str,
+        player_count: u32,
+        depth_bb: u32,
+        abstract_line: &str,
+    ) -> Result<Vec<ConcreteLineRow>, MetadataError> {
+        if !self.concrete_dimension_known(strategy, player_count, depth_bb) {
+            return Err(MetadataError::AbstractLineNotFound {
+                strategy: strategy.to_owned(),
+                player_count,
+                depth_bb,
+                abstract_line: abstract_line.to_owned(),
+            });
+        }
+
+        let key = ConcreteByAbstractKey {
+            strategy: strategy.to_owned(),
+            player_count,
+            depth_bb,
+            abstract_line: abstract_line.to_owned(),
+        };
+        {
+            let state = self.read_state()?;
+            if let Some(rows) = state.concrete_by_abstract.get(&key) {
+                return Ok(rows.clone());
+            }
+        }
+
+        let connection = self.connection()?;
+        let rows = query_concrete_by_abstract(
+            &connection.connection,
+            strategy,
+            player_count,
+            depth_bb,
+            abstract_line,
+        )?;
+        drop(connection);
+        if rows.is_empty() {
+            return Err(MetadataError::AbstractLineNotFound {
+                strategy: strategy.to_owned(),
+                player_count,
+                depth_bb,
+                abstract_line: abstract_line.to_owned(),
+            });
+        }
+        let mut state = self.write_state()?;
+        state.concrete_by_abstract.insert(key, rows.clone());
+        for row in &rows {
+            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row.clone());
+        }
+        Ok(rows)
+    }
+
+    fn get_concrete_lines_by_concrete(
+        &self,
+        strategy: &str,
+        player_count: u32,
+        depth_bb: u32,
+        concrete_line: &str,
+    ) -> Result<Vec<ConcreteLineRow>, MetadataError> {
+        if !self.concrete_dimension_known(strategy, player_count, depth_bb) {
+            return Err(MetadataError::ConcreteLineValueNotFound {
+                strategy: strategy.to_owned(),
+                player_count,
+                depth_bb,
+                concrete_line: concrete_line.to_owned(),
+            });
+        }
+
+        let key = ConcreteByConcreteKey {
+            strategy: strategy.to_owned(),
+            player_count,
+            depth_bb,
+            concrete_line: concrete_line.to_owned(),
+        };
+        {
+            let state = self.read_state()?;
+            if let Some(row) = state.concrete_by_concrete.get(&key) {
+                return Ok(vec![row.clone()]);
+            }
+        }
+
+        let connection = self.connection()?;
+        let rows = query_concrete_by_concrete(
+            &connection.connection,
+            strategy,
+            player_count,
+            depth_bb,
+            concrete_line,
+        )?;
+        drop(connection);
+        if rows.is_empty() {
+            return Err(MetadataError::ConcreteLineValueNotFound {
+                strategy: strategy.to_owned(),
+                player_count,
+                depth_bb,
+                concrete_line: concrete_line.to_owned(),
+            });
+        }
+        let mut state = self.write_state()?;
+        for row in &rows {
+            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row.clone());
+        }
+        Ok(rows)
+    }
+
+    fn get_concrete_lines_by_abstract_and_concrete(
+        &self,
+        strategy: &str,
+        player_count: u32,
+        depth_bb: u32,
+        abstract_line: &str,
+        concrete_line: &str,
+    ) -> Result<Vec<ConcreteLineRow>, MetadataError> {
+        if !self.concrete_dimension_known(strategy, player_count, depth_bb) {
+            return Err(MetadataError::ConcreteLineFilterNotFound {
+                strategy: strategy.to_owned(),
+                player_count,
+                depth_bb,
+                abstract_line: abstract_line.to_owned(),
+                concrete_line: concrete_line.to_owned(),
+            });
+        }
+
+        let key = ConcreteByConcreteKey {
+            strategy: strategy.to_owned(),
+            player_count,
+            depth_bb,
+            concrete_line: concrete_line.to_owned(),
+        };
+        {
+            let state = self.read_state()?;
+            if let Some(row) = state.concrete_by_concrete.get(&key) {
+                if row.abstract_line == abstract_line {
+                    return Ok(vec![row.clone()]);
+                }
+                return Err(MetadataError::ConcreteLineFilterNotFound {
+                    strategy: strategy.to_owned(),
+                    player_count,
+                    depth_bb,
+                    abstract_line: abstract_line.to_owned(),
+                    concrete_line: concrete_line.to_owned(),
+                });
+            }
+        }
+
+        let connection = self.connection()?;
+        let rows = query_concrete_by_abstract_and_concrete(
+            &connection.connection,
+            strategy,
+            player_count,
+            depth_bb,
+            abstract_line,
+            concrete_line,
+        )?;
+        drop(connection);
+        if rows.is_empty() {
+            return Err(MetadataError::ConcreteLineFilterNotFound {
+                strategy: strategy.to_owned(),
+                player_count,
+                depth_bb,
+                abstract_line: abstract_line.to_owned(),
+                concrete_line: concrete_line.to_owned(),
+            });
+        }
+        let mut state = self.write_state()?;
+        for row in &rows {
+            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row.clone());
+        }
+        Ok(rows)
+    }
+
     /// Get drill scenario abstract lines.
     pub fn get_drill_scenario_lines(
         &self,
@@ -641,23 +778,48 @@ impl CachedMetadataReader {
         player_count: u32,
         drill_depth: u32,
     ) -> Result<Vec<String>, MetadataError> {
-        self.ensure_drill_strategy_loaded(strategy)?;
-        let state = self.read_state()?;
-        state
-            .drill_lines
-            .get(&DrillKey {
+        if !self.drill_strategy_known(strategy) {
+            return Err(MetadataError::DrillScenarioNotFound {
                 strategy: strategy.to_owned(),
                 drill_name: drill_name.to_owned(),
                 player_count,
                 drill_depth,
-            })
-            .cloned()
-            .ok_or_else(|| MetadataError::DrillScenarioNotFound {
+            });
+        }
+
+        let key = DrillKey {
+            strategy: strategy.to_owned(),
+            drill_name: drill_name.to_owned(),
+            player_count,
+            drill_depth,
+        };
+        {
+            let state = self.read_state()?;
+            if let Some(lines) = state.drill_lines.get(&key) {
+                return Ok(lines.clone());
+            }
+        }
+
+        let connection = self.connection()?;
+        let lines = query_drill_lines(
+            &connection.connection,
+            strategy,
+            drill_name,
+            player_count,
+            drill_depth,
+        )?;
+        drop(connection);
+        if lines.is_empty() {
+            return Err(MetadataError::DrillScenarioNotFound {
                 strategy: strategy.to_owned(),
                 drill_name: drill_name.to_owned(),
                 player_count,
                 drill_depth,
-            })
+            });
+        }
+        let mut state = self.write_state()?;
+        state.drill_lines.insert(key, lines.clone());
+        Ok(lines)
     }
 
     /// Return the list of known strategy names.
@@ -666,13 +828,82 @@ impl CachedMetadataReader {
     }
 }
 
-fn load_concrete_dimension_for_dim(
+fn cache_concrete_row(
     state: &mut CachedMetadataState,
+    strategy: &str,
+    player_count: u32,
+    depth_bb: u32,
+    row: ConcreteLineRow,
+) {
+    let concrete_key = ConcreteByConcreteKey {
+        strategy: strategy.to_owned(),
+        player_count,
+        depth_bb,
+        concrete_line: row.concrete_line.clone(),
+    };
+    state.concrete_by_concrete.insert(concrete_key, row);
+}
+
+fn query_concrete_by_abstract(
     connection: &Connection,
     strategy: &str,
     player_count: u32,
     depth_bb: u32,
-) -> Result<(), MetadataError> {
+    abstract_line: &str,
+) -> Result<Vec<ConcreteLineRow>, MetadataError> {
+    query_concrete_lines(
+        connection,
+        strategy,
+        player_count,
+        depth_bb,
+        "abstract_line = ?1",
+        vec![Value::from(abstract_line)],
+    )
+}
+
+fn query_concrete_by_concrete(
+    connection: &Connection,
+    strategy: &str,
+    player_count: u32,
+    depth_bb: u32,
+    concrete_line: &str,
+) -> Result<Vec<ConcreteLineRow>, MetadataError> {
+    query_concrete_lines(
+        connection,
+        strategy,
+        player_count,
+        depth_bb,
+        "concrete_line = ?1",
+        vec![Value::from(concrete_line)],
+    )
+}
+
+fn query_concrete_by_abstract_and_concrete(
+    connection: &Connection,
+    strategy: &str,
+    player_count: u32,
+    depth_bb: u32,
+    abstract_line: &str,
+    concrete_line: &str,
+) -> Result<Vec<ConcreteLineRow>, MetadataError> {
+    query_concrete_lines(
+        connection,
+        strategy,
+        player_count,
+        depth_bb,
+        "abstract_line = ?1 AND concrete_line = ?2",
+        vec![Value::from(abstract_line), Value::from(concrete_line)],
+    )
+}
+
+fn query_concrete_lines(
+    connection: &Connection,
+    strategy: &str,
+    player_count: u32,
+    depth_bb: u32,
+    where_clause: &str,
+    values: Vec<Value>,
+) -> Result<Vec<ConcreteLineRow>, MetadataError> {
     let table = quote_identifier(&get_concrete_lines_table_name(
         strategy,
         player_count,
@@ -681,70 +912,170 @@ fn load_concrete_dimension_for_dim(
     let sql = format!(
         "SELECT concrete_line_id, abstract_line, concrete_line \
              FROM {table} \
+             WHERE {where_clause} \
              ORDER BY concrete_line_id"
     );
     let mut statement = connection.prepare(&sql)?;
-    statement.start(&[])?;
+    statement.start(&values)?;
 
+    let mut rows = Vec::new();
     while statement.step_row()? {
-        let row = ConcreteLineRow {
+        rows.push(ConcreteLineRow {
             concrete_line_id: statement.column_u32(0)?,
             abstract_line: statement.column_text(1)?,
             concrete_line: statement.column_text(2)?,
-        };
-        let concrete_key = ConcreteByConcreteKey {
-            strategy: strategy.to_owned(),
-            player_count,
-            depth_bb,
-            concrete_line: row.concrete_line.clone(),
-        };
-        state.concrete_by_concrete.insert(concrete_key, row.clone());
-
-        let abstract_key = ConcreteByAbstractKey {
-            strategy: strategy.to_owned(),
-            player_count,
-            depth_bb,
-            abstract_line: row.abstract_line.clone(),
-        };
-        state
-            .concrete_by_abstract
-            .entry(abstract_key)
-            .or_default()
-            .push(row);
+        });
     }
-    Ok(())
+    Ok(rows)
 }
 
-fn load_drill_strategy(
-    state: &mut CachedMetadataState,
+fn query_drill_lines(
     connection: &Connection,
     strategy: &str,
-) -> Result<(), MetadataError> {
+    drill_name: &str,
+    player_count: u32,
+    drill_depth: u32,
+) -> Result<Vec<String>, MetadataError> {
     let table = quote_identifier(&get_drill_scenario_table_name(strategy))?;
     let sql = format!(
-        "SELECT drill_name, abstract_line, player_count, drill_depth \
+        "SELECT abstract_line \
              FROM {table} \
-             ORDER BY drill_name, player_count, drill_depth, abstract_line"
+             WHERE drill_name = ?1 AND player_count = ?2 AND drill_depth = ?3 \
+             ORDER BY abstract_line"
     );
     let mut statement = connection.prepare(&sql)?;
-    statement.start(&[])?;
+    statement.start(&[
+        Value::from(drill_name),
+        Value::from(player_count),
+        Value::from(drill_depth),
+    ])?;
 
+    let mut lines = Vec::new();
     while statement.step_row()? {
-        let key = DrillKey {
-            strategy: strategy.to_owned(),
-            drill_name: statement.column_text(0)?,
-            player_count: statement.column_u32(2)?,
-            drill_depth: statement.column_u32(3)?,
-        };
-        state
-            .drill_lines
-            .entry(key)
-            .or_default()
-            .push(statement.column_text(1)?);
+        lines.push(statement.column_text(0)?);
     }
-    Ok(())
+    Ok(lines)
 }
 
 fn metadata_cache_lock_error() -> MetadataError {
     MetadataError::Sqlite(SqliteError("metadata cache lock poisoned".to_owned()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    #[test]
+    fn cached_metadata_reader_loads_only_requested_keys() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let meta_path = build_metadata_fixture(temp.path());
+        let reader = CachedMetadataReader::load(temp.path(), &meta_path).unwrap();
+
+        let id = reader
+            .get_concrete_line_id("default", 6, 100, "F-F-F-R2")
+            .unwrap();
+        assert_eq!(id, Some(2));
+
+        {
+            let state = reader.read_state().unwrap();
+            assert_eq!(state.concrete_by_concrete.len(), 1);
+            assert_eq!(state.concrete_by_abstract.len(), 0);
+            assert!(state.drill_lines.is_empty());
+        }
+
+        let abstract_rows = reader
+            .get_concrete_lines("default", 6, 100, Some("F-F-F"), None)
+            .unwrap();
+        assert_eq!(abstract_rows.len(), 2);
+
+        {
+            let state = reader.read_state().unwrap();
+            assert_eq!(state.concrete_by_concrete.len(), 2);
+            assert_eq!(state.concrete_by_abstract.len(), 1);
+            assert!(state.drill_lines.is_empty());
+        }
+
+        let exact_rows = reader
+            .get_concrete_lines("default", 6, 100, Some("F-F-F"), Some("F-F-F-R2"))
+            .unwrap();
+        assert_eq!(exact_rows.len(), 1);
+        assert_eq!(exact_rows[0].concrete_line_id, 2);
+
+        let drill_lines = reader
+            .get_drill_scenario_lines("default", "rfi", 6, 100)
+            .unwrap();
+        assert_eq!(drill_lines, vec!["F-F-F".to_owned(), "F-F-F-R2".to_owned()]);
+    }
+
+    #[test]
+    fn cached_metadata_reader_returns_not_found_for_unknown_dimension_without_sqlite_error() {
+        let temp = tempfile::TempDir::new().unwrap();
+        let meta_path = build_metadata_fixture(temp.path());
+        let reader = CachedMetadataReader::load(temp.path(), &meta_path).unwrap();
+
+        let error = reader
+            .get_concrete_lines("default", 9, 100, Some("F-F-F"), None)
+            .unwrap_err();
+        assert!(matches!(error, MetadataError::AbstractLineNotFound { .. }));
+    }
+
+    fn build_metadata_fixture(root: &Path) -> PathBuf {
+        fs::write(
+            root.join("manifest.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "format": "PFSP",
+                "version": 1,
+                "sourceDbChecksum": "fixture",
+                "builtAt": "2026-07-05T00:00:00Z",
+                "dimensions": [{
+                    "strategy": "default",
+                    "playerCount": 6,
+                    "depthBb": 100,
+                    "concreteLineCount": 2,
+                    "packCount": 2,
+                    "status": "success",
+                    "binFile": "ranges_default_6max_100BB.bin",
+                    "idxFile": "ranges_default_6max_100BB.idx"
+                }],
+                "files": ["meta.db", "ranges_default_6max_100BB.bin", "ranges_default_6max_100BB.idx"]
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+
+        let meta_path = root.join("meta.db");
+        let connection = Connection::open(&meta_path, false).unwrap();
+        connection
+            .exec(
+                "CREATE TABLE concrete_lines_default_6max_100BB (
+                   concrete_line_id INTEGER PRIMARY KEY,
+                   abstract_line TEXT NOT NULL,
+                   concrete_line TEXT NOT NULL,
+                   UNIQUE(abstract_line, concrete_line)
+                 );
+                 CREATE INDEX idx_concrete_lines_default_6max_100BB_concrete_line
+                   ON concrete_lines_default_6max_100BB(concrete_line);
+                 CREATE TABLE drill_scenario_lines_default (
+                   id INTEGER PRIMARY KEY AUTOINCREMENT,
+                   drill_name TEXT NOT NULL,
+                   abstract_line TEXT NOT NULL,
+                   player_count INTEGER NOT NULL,
+                   drill_depth INTEGER NOT NULL DEFAULT 100,
+                   UNIQUE(drill_name, player_count, drill_depth, abstract_line)
+                 );
+                 INSERT INTO concrete_lines_default_6max_100BB
+                   VALUES (1, 'F-F-F', 'F-F-F');
+                 INSERT INTO concrete_lines_default_6max_100BB
+                   VALUES (2, 'F-F-F', 'F-F-F-R2');
+                 INSERT INTO drill_scenario_lines_default(
+                   drill_name, abstract_line, player_count, drill_depth
+                 ) VALUES ('rfi', 'F-F-F', 6, 100);
+                 INSERT INTO drill_scenario_lines_default(
+                   drill_name, abstract_line, player_count, drill_depth
+                 ) VALUES ('rfi', 'F-F-F-R2', 6, 100);",
+            )
+            .unwrap();
+        meta_path
+    }
 }

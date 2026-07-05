@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
-use crate::action_schema::{load_action_schemas, ActionDef, ActionSchemaLoadError};
+use crate::action_schema::{load_action_schema_from_connection, ActionDef, ActionSchemaLoadError};
 use crate::dimension::DimensionRef;
 use crate::hole_cards::{parse_hole_cards, HandDictError};
 use crate::manifest::{queryable_dimensions, ManifestError};
+use crate::sqlite::{Connection, SqliteError};
 use crate::DimensionReader;
 
 use super::handle_pool::{HandlePool, HandlePoolError};
@@ -153,7 +154,7 @@ impl StoreQueryService {
         require_file(&meta_path)?;
 
         Ok(Self {
-            action_schemas: ActionSchemaCache::new(meta_path),
+            action_schemas: ActionSchemaCache::new(meta_path)?,
             pool: HandlePool::new(data_dir, dimensions, max_open_handles),
             verify_checksums,
         })
@@ -366,22 +367,37 @@ impl StoreQueryService {
 
 #[derive(Debug)]
 struct ActionSchemaCache {
-    meta_path: PathBuf,
+    connection: Mutex<LockedActionSchemaConnection>,
     state: RwLock<ActionSchemaCacheState>,
 }
 
 #[derive(Debug, Default)]
 struct ActionSchemaCacheState {
     schemas: HashMap<u32, Arc<Vec<ActionDef>>>,
-    loaded_all: bool,
 }
 
+struct LockedActionSchemaConnection {
+    connection: Connection,
+}
+
+impl std::fmt::Debug for LockedActionSchemaConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("LockedActionSchemaConnection")
+            .finish_non_exhaustive()
+    }
+}
+
+// The SQLite handle is opened with SQLITE_OPEN_NOMUTEX and is only touched while
+// this private wrapper is held behind ActionSchemaCache's Mutex.
+unsafe impl Send for LockedActionSchemaConnection {}
+
 impl ActionSchemaCache {
-    fn new(meta_path: PathBuf) -> Self {
-        Self {
-            meta_path,
+    fn new(meta_path: PathBuf) -> Result<Self, StoreQueryError> {
+        let connection = Connection::open(&meta_path, true).map_err(action_schema_sqlite_error)?;
+        Ok(Self {
+            connection: Mutex::new(LockedActionSchemaConnection { connection }),
             state: RwLock::new(ActionSchemaCacheState::default()),
-        }
+        })
     }
 
     fn get(&self, schema_id: u32) -> Result<Arc<Vec<ActionDef>>, StoreQueryError> {
@@ -392,26 +408,28 @@ impl ActionSchemaCache {
             if let Some(schema) = state.schemas.get(&schema_id) {
                 return Ok(Arc::clone(schema));
             }
-            if state.loaded_all {
-                return Err(StoreQueryError::ActionSchemaNotFound(schema_id));
-            }
         }
+
+        let connection = self.connection()?;
+        let schema = load_action_schema_from_connection(&connection.connection, schema_id)?
+            .ok_or(StoreQueryError::ActionSchemaNotFound(schema_id))?;
+        drop(connection);
 
         let mut state = self.state.write().map_err(|_| {
             StoreQueryError::Internal("Action schema cache lock poisoned".to_owned())
         })?;
-        if !state.loaded_all {
-            state.schemas = load_action_schemas(&self.meta_path)?
-                .into_iter()
-                .map(|(id, schema)| (id, Arc::new(schema)))
-                .collect();
-            state.loaded_all = true;
-        }
-        state
-            .schemas
-            .get(&schema_id)
-            .cloned()
-            .ok_or(StoreQueryError::ActionSchemaNotFound(schema_id))
+        Ok(Arc::clone(
+            state
+                .schemas
+                .entry(schema_id)
+                .or_insert_with(|| Arc::new(schema)),
+        ))
+    }
+
+    fn connection(&self) -> Result<MutexGuard<'_, LockedActionSchemaConnection>, StoreQueryError> {
+        self.connection
+            .lock()
+            .map_err(|_| StoreQueryError::Internal("Action schema cache lock poisoned".to_owned()))
     }
 
     fn len(&self) -> usize {
@@ -420,6 +438,10 @@ impl ActionSchemaCache {
             .map(|state| state.schemas.len())
             .unwrap_or_default()
     }
+}
+
+fn action_schema_sqlite_error(error: SqliteError) -> StoreQueryError {
+    StoreQueryError::ActionSchema(ActionSchemaLoadError::Sqlite(error))
 }
 
 /// Result of a single batch item.

@@ -19,7 +19,7 @@ fn uses_documented_defaults() {
     assert_eq!(config.bind, "0.0.0.0:8080".parse().unwrap());
     assert_eq!(config.data_dir, PathBuf::from("/data"));
     assert_eq!(config.meta_db, PathBuf::from("/data/meta.db"));
-    assert_eq!(config.max_open_handles, 3);
+    assert_eq!(config.max_open_handles, 2);
     assert!(!config.verify_checksums);
     assert!(config.prewarm.is_empty());
 }

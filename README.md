@@ -179,7 +179,7 @@ docker compose -f .docker/docker-compose.yml up --build
 | `PHS_BIND` | `0.0.0.0:8080` | 监听地址 |
 | `PHS_DATA_DIR` | `/data` | 数据目录 |
 | `PHS_META_DB` | `${PHS_DATA_DIR}/meta.db` | 元数据数据库路径 |
-| `PHS_MAX_OPEN_HANDLES` | `3` | 最大打开句柄数 |
+| `PHS_MAX_OPEN_HANDLES` | `2` | 最大打开句柄数；单 9max 服务可先设为 `1` 或 `2` |
 | `PHS_VERIFY_CHECKSUMS` | `false` | 启用 CRC32C 校验 |
 | `PHS_PREWARM` | 空 | 启动预热维度 |
 | `PHS_SQLITE3_LIB` | 自动检测 | SQLite 动态库路径 |

@@ -79,6 +79,8 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
             .to_owned(),
         "`drill-scenarios-metadata` reads runtime meta.db SQLite tables; it is metadata-path evidence, not .idx/.bin strategy-pack performance."
             .to_owned(),
+        "`batch-hand-strategy` is the default --batch-size case; `batch-size-*` entries are the sweep cases and should be summarized separately."
+            .to_owned(),
         "No hard performance threshold is applied; use reports for local comparison and regression observation."
             .to_owned(),
     ];

@@ -2,7 +2,7 @@ use std::fmt;
 use std::io;
 
 use crate::storage::manifest::ManifestError;
-use range_store_core::action_schema::ActionSchemaError;
+use range_store_core::action_schema::{ActionSchemaError, ActionSchemaLoadError};
 use range_store_core::dimension::NamingError;
 use range_store_core::hole_cards::HandDictError;
 use range_store_core::metadata::MetadataError;
@@ -220,6 +220,15 @@ impl From<ManifestError> for AppError {
 impl From<ActionSchemaError> for AppError {
     fn from(error: ActionSchemaError) -> Self {
         Self::invalid_format(error.to_string())
+    }
+}
+
+impl From<ActionSchemaLoadError> for AppError {
+    fn from(error: ActionSchemaLoadError) -> Self {
+        match error {
+            ActionSchemaLoadError::Sqlite(error) => Self::new("META_DB_ERROR", error.to_string()),
+            ActionSchemaLoadError::Schema(error) => Self::invalid_format(error.to_string()),
+        }
     }
 }
 

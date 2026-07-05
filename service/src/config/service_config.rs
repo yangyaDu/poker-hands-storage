@@ -7,7 +7,7 @@ use range_store_core::dimension::DimensionRef;
 
 const DEFAULT_BIND: &str = "0.0.0.0:8080";
 const DEFAULT_DATA_DIR: &str = "/data";
-const DEFAULT_MAX_OPEN_HANDLES: usize = 3;
+const DEFAULT_MAX_OPEN_HANDLES: usize = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {

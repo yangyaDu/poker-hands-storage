@@ -127,7 +127,7 @@ fn parse_benchmark_native_args_uses_defaults() {
         PathBuf::from("range-store-native/index.js")
     );
     assert_eq!(command.bun, PathBuf::from("bun"));
-    assert_eq!(command.max_open_handles, 8);
+    assert_eq!(command.max_open_handles, 2);
     assert_eq!(
         command.out_path,
         PathBuf::from("reports/benchmark-bun-native.json")

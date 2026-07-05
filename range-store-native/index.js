@@ -57,22 +57,6 @@ export class PokerHandsRange {
     });
   }
 
-  getConcreteLineId(request) {
-    try {
-      const id = this.#native.getConcreteLineId({
-        ...toNativeDimension(request),
-        concreteLine: request.concreteLine,
-      });
-      return normalizeApiResult({
-        code: 0,
-        data: { concreteLineId: id },
-        message: null,
-      });
-    } catch (error) {
-      return apiErrorResult(error);
-    }
-  }
-
   getConcreteLines(request) {
     try {
       const result = this.#native.getConcreteLines({
@@ -209,3 +193,27 @@ export class PokerHandsRange {
 }
 
 export const RangeStore = PokerHandsRange;
+
+let singletonStore = null;
+let singletonOptionsKey = null;
+
+function singletonKey(options) {
+  return JSON.stringify({
+    dataDir: options.dataDir,
+    maxOpenHandles: options.maxOpenHandles ?? null,
+    verifyChecksums: options.verifyChecksums ?? null,
+  });
+}
+
+export function getPokerHandsRangeSingleton(options) {
+  const key = singletonKey(options);
+  if (singletonStore === null) {
+    singletonStore = new PokerHandsRange(options);
+    singletonOptionsKey = key;
+    return singletonStore;
+  }
+  if (singletonOptionsKey !== key) {
+    throw new Error("PokerHandsRange singleton was already initialized with different options");
+  }
+  return singletonStore;
+}
