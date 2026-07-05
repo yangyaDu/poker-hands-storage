@@ -26,14 +26,6 @@ pub struct DimensionInput {
 }
 
 #[napi(object)]
-pub struct ConcreteLineIdRequest {
-    pub strategy: Option<String>,
-    pub player_count: u32,
-    pub depth_bb: u32,
-    pub concrete_line: String,
-}
-
-#[napi(object)]
 pub struct ConcreteLinesRequest {
     pub strategy: Option<String>,
     pub player_count: u32,
@@ -154,15 +146,6 @@ impl PokerHandsRange {
         Ok(Self {
             inner: Arc::new(inner),
         })
-    }
-
-    #[napi]
-    pub fn get_concrete_line_id(&self, request: ConcreteLineIdRequest) -> Result<u32> {
-        let dimension =
-            dimension_from_parts(request.strategy, request.player_count, request.depth_bb);
-        self.inner
-            .get_concrete_line_id(&dimension, &request.concrete_line)
-            .map_err(to_napi_error)
     }
 
     #[napi]

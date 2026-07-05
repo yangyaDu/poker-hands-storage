@@ -83,25 +83,6 @@ impl RangeStoreFacade {
         )?)
     }
 
-    /// Fast path: look up concrete_line_id from the in-memory cache.
-    pub fn get_concrete_line_id(
-        &self,
-        dimension: &DimensionRef,
-        concrete_line: &str,
-    ) -> Result<u32, RangeStoreError> {
-        if let Some(id) = self.cached_metadata.get_concrete_line_id(
-            &dimension.strategy,
-            dimension.player_count,
-            dimension.depth_bb,
-            concrete_line,
-        )? {
-            return Ok(id);
-        }
-        let rows =
-            self.get_concrete_lines(dimension, ConcreteLineFilter::Concrete(concrete_line))?;
-        Ok(rows[0].concrete_line_id)
-    }
-
     /// Fast path: look up drill scenario lines from the in-memory cache.
     pub fn get_drill_scenario_lines(
         &self,

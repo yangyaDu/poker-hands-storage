@@ -78,7 +78,7 @@
 | 数据损坏检测机制 | 已满足 | manifest、header、CRC32C、action schema checksum | 无 |
 | 单个场景 + 单手牌查询 benchmark | 已满足 | `binary-vs-sqlite-benchmark-report.md` | 无 |
 | 单个行动线下全部起手牌查询 benchmark | 已满足 | `hands-by-actions` case | 无 |
-| Drill 高频随机 metadata benchmark | 已满足基础报告，需复核性能原因 | `drill-scenarios-metadata` case | 补隔离 microbenchmark |
+| Drill 高频随机 metadata benchmark | 已满足，性能原因已复核 | `drill-scenarios-metadata` case；`benchmark-drill-metadata` 隔离 raw/prepared/cached 三组路径 | 无 |
 | 批量查询 benchmark | 已满足 | batch cases | 无 |
 | P50/P95/P99 查询耗时 | 已满足 | benchmark 报告 | 无 |
 | 查询性能不低于 SQLite | 策略数据路径满足，metadata 路径需单独解释 | benchmark 报告 | 用 microbenchmark 复核 metadata |
@@ -106,7 +106,7 @@
 
 ### Drill metadata 隔离 microbenchmark
 
-当前 `drill-scenarios-metadata` 报告显示 runtime `meta.db` 慢于源 SQLite，但该查询不读取 `.idx/.bin` 策略数据，不能代表二进制策略热路径性能。
+历史 `drill-scenarios-metadata` 报告显示 runtime `meta.db` 慢于源 SQLite，但该查询不读取 `.idx/.bin` 策略数据，不能代表二进制策略热路径性能。2026-07-05 已补 `benchmark-drill-metadata` 隔离复测：旧慢点主要来自每次 schema 探测和 SQL prepare；prepared SQLite 已明显改善，`CachedMetadataReader` 命中缓存后为内存 HashMap 查询。
 
 下一步应隔离 prepared SQL、schema resolution 和 query plan，确认差异来源，再决定是否加索引或缓存。
 

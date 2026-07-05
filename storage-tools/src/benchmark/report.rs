@@ -135,6 +135,7 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     markdown.push_str(match report.engine.as_str() {
         "sqlite" => "# SQLite Baseline Benchmark Report\n\n",
         "bun-native" => "# Bun Native SDK Benchmark Report\n\n",
+        "drill-metadata" => "# Drill Metadata Benchmark Report\n\n",
         _ => "# Range Strata Binary Benchmark Report\n\n",
     });
     markdown.push_str(&format!("Generated at: {}\n\n", report.generated_at));

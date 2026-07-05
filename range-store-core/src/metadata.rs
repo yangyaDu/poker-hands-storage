@@ -517,51 +517,6 @@ impl CachedMetadataReader {
         self.strategies.iter().any(|known| known == strategy)
     }
 
-    /// Look up the concrete_line_id for a specific (dimension, concrete_line).
-    pub fn get_concrete_line_id(
-        &self,
-        strategy: &str,
-        player_count: u32,
-        depth_bb: u32,
-        concrete_line: &str,
-    ) -> Result<Option<u32>, MetadataError> {
-        if !self.concrete_dimension_known(strategy, player_count, depth_bb) {
-            return Ok(None);
-        }
-
-        let key = ConcreteByConcreteKey {
-            strategy: strategy.to_owned(),
-            player_count,
-            depth_bb,
-            concrete_line: concrete_line.to_owned(),
-        };
-
-        {
-            let state = self.read_state()?;
-            if let Some(row) = state.concrete_by_concrete.get(&key) {
-                return Ok(Some(row.concrete_line_id));
-            }
-        }
-
-        let connection = self.connection()?;
-        let rows = query_concrete_by_concrete(
-            &connection.connection,
-            strategy,
-            player_count,
-            depth_bb,
-            concrete_line,
-        )?;
-        drop(connection);
-        let mut state = self.write_state()?;
-        for row in rows {
-            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row);
-        }
-        Ok(state
-            .concrete_by_concrete
-            .get(&key)
-            .map(|row| row.concrete_line_id))
-    }
-
     /// Get concrete lines filtered by abstract_line and/or concrete_line.
     pub fn get_concrete_lines(
         &self,
@@ -972,14 +927,9 @@ mod tests {
         let meta_path = build_metadata_fixture(temp.path());
         let reader = CachedMetadataReader::load(temp.path(), &meta_path).unwrap();
 
-        let id = reader
-            .get_concrete_line_id("default", 6, 100, "F-F-F-R2")
-            .unwrap();
-        assert_eq!(id, Some(2));
-
         {
             let state = reader.read_state().unwrap();
-            assert_eq!(state.concrete_by_concrete.len(), 1);
+            assert_eq!(state.concrete_by_concrete.len(), 0);
             assert_eq!(state.concrete_by_abstract.len(), 0);
             assert!(state.drill_lines.is_empty());
         }

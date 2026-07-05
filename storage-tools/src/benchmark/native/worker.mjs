@@ -167,6 +167,17 @@ function callHandsByActions(mode, store, item, concreteLineId) {
   return readApiData(store.handsByActions(request)).holeCards.length;
 }
 
+function callDrillScenario(store, item) {
+  return readApiData(
+    store.getAbstractLines({
+      strategy: item.strategy,
+      drillName: item.drillName,
+      playerCount: item.playerCount,
+      drillDepth: item.drillDepth,
+    }),
+  ).abstractLines.length;
+}
+
 function resolveConcreteLineId(store, item) {
   const data = readApiData(
     store.getConcreteLines({
@@ -261,6 +272,16 @@ function pushStoreCases(cases, mode, store) {
 
   cases.push(
     measureCase(
+      `${prefix}:drill-scenarios-metadata`,
+      `Read drill scenario abstract lines through ${prefix} getAbstractLines.`,
+      input.workload.drillScenarioQueries,
+      input.warmupIterations,
+      (item) => callDrillScenario(store, item),
+    ),
+  );
+
+  cases.push(
+    measureCase(
       `${prefix}:line-to-hands-by-actions`,
       `Resolve concrete_line and then run handsByActions through ${prefix}.`,
       input.lineToHandsByActionsQueries,
@@ -317,6 +338,9 @@ function warmupStore(mode, store) {
   }
   runWarmupItems(input.workload.handsByActionsQueries, input.warmupIterations, (item) =>
     callHandsByActions(mode, store, item, item.concreteLineId),
+  );
+  runWarmupItems(input.workload.drillScenarioQueries, input.warmupIterations, (item) =>
+    callDrillScenario(store, item),
   );
   runWarmupItems(input.lineToHandsByActionsQueries, input.warmupIterations, (item) => {
     const concreteLineId = resolveConcreteLineId(store, item);

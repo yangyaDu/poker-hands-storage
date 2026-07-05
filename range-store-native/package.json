@@ -10,7 +10,8 @@
     "build:native:win": "bunx @napi-rs/cli build --release --target x86_64-pc-windows-msvc --dts native.d.ts",
     "build:native:linux": "bunx @napi-rs/cli build --release --target x86_64-unknown-linux-gnu --dts native.d.ts",
     "build:native:debug": "bunx @napi-rs/cli build --target x86_64-pc-windows-msvc --dts native.d.ts",
-    "test:sdk": "bun test tests/sdk-contract.test.js"
+    "test:sdk": "bun test tests/sdk-contract.test.js",
+    "test:http-consistency": "bun test tests/http-consistency.test.js"
   },
   "files": [
     "index.js",

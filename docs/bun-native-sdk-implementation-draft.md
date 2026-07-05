@@ -687,7 +687,7 @@ benchmark 的验收口径应以 `Bun native binary` 为生产主路径，但 ben
 | 阶段 1：核心能力下沉 | 已完成最小闭环 | metadata 和 `RangeStoreFacade` 已进入 `range-store-core` |
 | 阶段 2：新增 range-store-native 最小版本 | 已完成最小闭环 | `PokerHandsRange` 已支持 concrete line lookup、hands-by-actions、单手牌查询、prewarm、stats |
 | 阶段 3：业务接口补齐 | 已完成当前口径 | 默认业务方法 `queryHandStrategy`、`queryBatch`、`handsByActions`、metadata 查询均返回业务码 envelope；`getConcreteLines` 同时覆盖 abstract line 列表查询和 concrete line 精确查 id；直接返回/抛异常版本统一使用 `Raw` 后缀 |
-| 阶段 4：native benchmark | 已完成 direct/sdk 区分 | `storage-tools benchmark-native` 已同时输出 `native-direct:*` 和 `native-sdk:*` case、冷启动分解和 Bun 子进程内存观察 |
+| 阶段 4：native benchmark | 已完成 fair runner + drill + 一致性抽样 | `storage-tools benchmark-native` 已输出 `core:*`、`native-direct:*`、`native-sdk:*` case、drill metadata case、冷启动分解和 Bun 子进程内存观察；HTTP 一致性抽样由 `bun run test:http-consistency` 覆盖 |
 | 阶段 5：Kubernetes 接入验证 | 未完成 | 需要 Linux `.node` 和业务后端容器验证 |
 
 ### 阶段 1：核心能力下沉
@@ -745,7 +745,7 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 5. `handsByActions` 使用业务码 envelope。已完成，`data` 只包含 `{ holeCards }`。
 6. 暴露 `prewarm`。已完成。
 7. 暴露 `stats`。已完成。
-8. metadata 高频路径加缓存。已完成：`RangeStoreFacade` 缓存 `concrete_line -> concrete_line_id` 和 drill scenario abstract lines。
+8. metadata 高频路径加缓存。已完成：`RangeStoreFacade` 复用 `CachedMetadataReader`，对 `concrete_line` / `abstract_line` concrete-lines lookup 和 drill scenario abstract lines 做 key-level lazy cache。
 9. 暴露 `getConcreteLines`、`getAbstractLines` 的 envelope 版本；`concreteLine -> concreteLineId` 统一通过 `getConcreteLines({ concreteLine })` 完成，业务 SDK 不再保留重复的 `getConcreteLineId` 方法。已完成。
 10. 文档补充 Bun 后端接入示例。
 
@@ -766,7 +766,7 @@ cargo test -p range-store-native --target x86_64-pc-windows-msvc
 4. 输出 p50 / p95 / p99。已完成，复用 `BenchmarkRunReport` case 指标。
 5. 输出冷启动分解。已完成，记录 dynamic import、`PokerHandsRange` 构造、首次 hand query。
 6. 输出内存观察结果。已完成，记录 Bun 子进程 `process.memoryUsage()` 前后值。
-7. 输出 native SDK 与 HTTP service 的结果一致性抽样。待补：当前基础版本验证 worker error count 和 result count，未直接调用 HTTP service 做逐项一致性比较。
+7. 输出 native SDK 与 HTTP service 的结果一致性抽样。已完成：`range-store-native/tests/http-consistency.test.js` 在同一数据目录下抽样比较 `concrete-lines`、`drill-scenarios`、`hand-strategy`、batch、`hands-by-actions`，命令为 `PHS_HTTP_URL=http://... bun run test:http-consistency`。
 
 命令示例：
 
@@ -787,7 +787,7 @@ cargo run -p poker-hands-storage-tools -- benchmark-native `
 | --- | --- |
 | `--native-entry` | Bun SDK JS 入口，默认 `range-store-native/index.js` |
 | `--bun` | Bun 可执行文件，默认 `bun` |
-| `--max-open-handles` | 传给 `PokerHandsRange` 的 handle pool 上限，默认 8 |
+| `--max-open-handles` | 传给 `PokerHandsRange` 的 handle pool 上限，默认 2 |
 | `--verify-checksum` | 构造 native store 时启用 checksum 验证 |
 | `--workload` / `--write-workload` | 读取或写出共享 workload，便于和 SQLite / Rust core direct 使用同一批查询 |
 
@@ -799,12 +799,17 @@ cargo run -p poker-hands-storage-tools -- benchmark-native `
 - `*:hand-strategy`：单个 `concrete_line_id + hand` 业务 envelope 查询。
 - `*:batch` 和 `*:batch-size-*`：批量业务 envelope 查询。
 - `*:hands-by-actions`：单行动线手牌范围查询。
+- `*:drill-scenarios-metadata`：通过 `getAbstractLines` 查询 drill scenario abstract lines。
 - `*:line-to-hands-by-actions`：`getConcreteLines({ concreteLine }) -> concreteLineId -> handsByActions` 组合链路。
 
-暂未覆盖：
+附加 benchmark：
 
-- `drill-scenarios` metadata benchmark 查询。native SDK 已暴露 `getAbstractLines`，后续可把该 case 加入 native benchmark。
-- native SDK 与 HTTP service 的逐项一致性抽样。后续可以在 `storage-tools` 中增加 HTTP 被测端或复用 service client。
+- `benchmark-drill-metadata`：隔离比较 raw SQLite schema-detect、prepared SQLite、CachedMetadataReader 三组 drill metadata 路径。
+- `bun run test:http-consistency`：对 native SDK 和 HTTP service 做逐项结果一致性抽样；需要先启动 HTTP service 并设置 `PHS_HTTP_URL`。
+
+仍未覆盖：
+
+- HTTP service 作为独立被测端加入同一个 `benchmark-native` workload 的性能对比；目前已有结果一致性抽样，但不是 HTTP 性能 benchmark。
 
 验收：
 

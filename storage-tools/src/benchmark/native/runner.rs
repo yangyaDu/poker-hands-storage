@@ -15,7 +15,8 @@ use crate::benchmark::report::{
     BenchmarkOptionsSummary, BenchmarkRunReport, ReportInput,
 };
 use crate::benchmark::types::{
-    BenchmarkWorkload, HandsByActionsBenchmarkItem, WorkloadOptions, WorkloadSource,
+    BenchmarkWorkload, DrillScenarioBenchmarkItem, HandsByActionsBenchmarkItem, WorkloadOptions,
+    WorkloadSource,
 };
 use crate::benchmark::workload::{
     create_benchmark_workload, read_workload_json, write_workload_json,
@@ -160,8 +161,7 @@ pub fn run_native_benchmark(
         "OS page cache is still shared across worker processes; use repeated runs and randomized order before treating small differences as engine differences.".to_owned(),
         "Top-level memory report uses the native-sdk worker only; core and native-direct RSS are recorded in notes to avoid summing stores across processes.".to_owned(),
         "Cold start is measured inside each worker as import/require where applicable + store construction + first hand query + explicit warmup.".to_owned(),
-        "Result counts are case-specific: concrete line lookups, action entries, batch action entries, and matching hands.".to_owned(),
-        "Native SDK exposes metadata lookup APIs, but this command currently does not measure the drill-scenarios case.".to_owned(),
+        "Result counts are case-specific: concrete line lookups, abstract lines for drill metadata, action entries, batch action entries, and matching hands.".to_owned(),
         "Exact concrete-line lookup cases skip empty concrete_line rows because the business API treats empty strings as invalid input.".to_owned(),
         "`*:batch-hand-strategy` is the default --batch-size case; `*:batch-size-*` entries are the batch-size sweep and should not be interpreted as separate API semantics.".to_owned(),
     ];
@@ -502,6 +502,13 @@ fn measure_core_cases(
         |item, _| core_hands_by_actions_count(store, item, item.concrete_line_id),
     ));
     cases.push(measure_benchmark_case(
+        "core:drill-scenarios-metadata",
+        "Read drill scenario abstract lines through core RangeStoreFacade cached metadata.",
+        &input.workload.drill_scenario_queries,
+        input.warmup_iterations,
+        |item, _| core_drill_scenario_line_count(store, item),
+    ));
+    cases.push(measure_benchmark_case(
         "core:line-to-hands-by-actions",
         "Resolve concrete_line and then run handsByActions through core RangeStoreFacade.",
         &input.line_to_hands_by_actions_queries,
@@ -533,6 +540,9 @@ fn warmup_core_store(store: &RangeStoreFacade, input: &NativeWorkerInput) {
     }
     for item in input.workload.hands_by_actions_queries.iter().take(warmup) {
         let _ = core_hands_by_actions_count(store, item, item.concrete_line_id);
+    }
+    for item in input.workload.drill_scenario_queries.iter().take(warmup) {
+        let _ = core_drill_scenario_line_count(store, item);
     }
     for item in input.line_to_hands_by_actions_queries.iter().take(warmup) {
         if let Ok(concrete_line_id) = core_resolve_line_to_hands_concrete_line_id(store, item) {
@@ -626,6 +636,21 @@ fn core_hands_by_actions_count(
             item.frequency,
         )
         .map(|hands| hands.len())
+        .map_err(|error| error.to_string())
+}
+
+fn core_drill_scenario_line_count(
+    store: &RangeStoreFacade,
+    item: &DrillScenarioBenchmarkItem,
+) -> Result<usize, String> {
+    store
+        .get_drill_scenario_lines(
+            &item.strategy,
+            &item.drill_name,
+            item.player_count,
+            item.drill_depth,
+        )
+        .map(|lines| lines.len())
         .map_err(|error| error.to_string())
 }
 
