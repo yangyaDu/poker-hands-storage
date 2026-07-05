@@ -30,7 +30,7 @@
 - 运行时：HTTP API、Swagger/OpenAPI、Docker/Compose/Kubernetes 模板、Bun/Node native SDK。
 - 离线工具：SQLite 到二进制构建、`build --resume`、standalone/cross verify、hot/cold/native benchmark。
 - 数据正确性：full cross verify 覆盖 23,806,716 条源记录，失败数为 0。
-- 性能口径：已覆盖 SQLite vs Binary hot/cold、drill metadata、Rust core、Bun native direct/SDK、HTTP service 和 `concrete_line -> handsByActions` 单链路。
+- 性能口径：已覆盖 SQLite vs Binary hot/cold、drill metadata、Rust core、Bun native SDK、HTTP service 和 `concrete_line -> handsByActions` 单链路。
 
 当前剩余工作：
 

@@ -24,7 +24,7 @@ V1 遵循当前 `preflop-storage` Range Strata Binary 契约：
 - `range-store-native` 提供 Bun/Node 进程内 native SDK，复用同一套 core 查询语义。
 - `storage-tools` 提供离线构建、standalone/cross verify、hot/cold/native/metadata benchmark 和报告生成。
 - full cross verify 已对 9 个维度、23,806,716 条源记录完成 bit-exact 校验，失败数为 0。
-- 最新 benchmark 已覆盖 SQLite vs Binary hot/cold、drill metadata、Rust core、Bun native direct/SDK、HTTP service 和 `concrete_line -> handsByActions` 组合链路。
+- 最新 benchmark 已覆盖 SQLite vs Binary hot/cold、drill metadata、Rust core、Bun native SDK、HTTP service 和 `concrete_line -> handsByActions` 组合链路。
 
 仍需推进：
 

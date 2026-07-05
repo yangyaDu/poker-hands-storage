@@ -269,7 +269,7 @@ SQLite 对比 benchmark 的当前报告显示：
 
 Native benchmark 的一致性口径：
 
-- `benchmark-native` 复用同一 workload JSON，对比 `core:*`、`native-direct:*`、`native-sdk:*`、`http-service:*` case。
+- `benchmark-native` 复用同一 workload JSON，对比 `core:*`、`native-sdk:*`、`http-service:*` case。
 - 最新 9max:100BB fair benchmark 中这些入口的错误数均为 0。
 - `range-store-native/tests/http-consistency.test.js` 可在启动 HTTP service 后对 native SDK 和 HTTP service 做抽样一致性验证：
 

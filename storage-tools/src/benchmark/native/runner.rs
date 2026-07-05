@@ -36,7 +36,6 @@ use super::types::BenchmarkNativeCommand;
 #[serde(rename_all = "kebab-case")]
 enum NativeWorkerMode {
     Core,
-    Direct,
     HttpService,
     Sdk,
 }
@@ -45,7 +44,6 @@ impl NativeWorkerMode {
     fn label(self) -> &'static str {
         match self {
             Self::Core => "core",
-            Self::Direct => "native-direct",
             Self::HttpService => "http-service",
             Self::Sdk => "native-sdk",
         }
@@ -58,7 +56,6 @@ struct NativeWorkerInput {
     mode: NativeWorkerMode,
     data_dir: String,
     native_entry: String,
-    native_node_entry: String,
     #[serde(default)]
     http_base_url: Option<String>,
     max_open_handles: u32,
@@ -132,9 +129,8 @@ pub fn run_native_benchmark(
                 concrete_line_queries.clone(),
                 line_to_hands_by_actions_queries.clone(),
             )?,
-            NativeWorkerMode::Direct | NativeWorkerMode::Sdk => run_native_worker(
+            NativeWorkerMode::Sdk => run_native_worker(
                 command,
-                *mode,
                 workload.clone(),
                 concrete_line_queries.clone(),
                 line_to_hands_by_actions_queries.clone(),
@@ -146,9 +142,6 @@ pub fn run_native_benchmark(
     let core_output = outputs
         .remove(&NativeWorkerMode::Core)
         .ok_or_else(|| ToolError::invalid_format("missing core benchmark output"))?;
-    let direct_output = outputs
-        .remove(&NativeWorkerMode::Direct)
-        .ok_or_else(|| ToolError::invalid_format("missing native-direct benchmark output"))?;
     let http_output = outputs
         .remove(&NativeWorkerMode::HttpService)
         .ok_or_else(|| ToolError::invalid_format("missing http-service benchmark output"))?;
@@ -157,7 +150,6 @@ pub fn run_native_benchmark(
         .ok_or_else(|| ToolError::invalid_format("missing native-sdk benchmark output"))?;
 
     let mut cases = core_output.cases.clone();
-    cases.extend(direct_output.cases.clone());
     cases.extend(sdk_output.cases.clone());
     cases.extend(http_output.cases.clone());
     let memory = BenchmarkMemoryReport::new(
@@ -166,7 +158,7 @@ pub fn run_native_benchmark(
     );
     let totals = build_totals(&cases);
     let mut notes = vec![
-        "Fair entry benchmark; storage-tools runs core, native-direct, native-sdk, and http-service in separate child processes using the same workload JSON.".to_owned(),
+        "Fair entry benchmark; storage-tools runs core, native-sdk, and http-service in separate child processes using the same workload JSON.".to_owned(),
         format!(
             "Entry execution order is randomized by seed: {}.",
             entry_order
@@ -176,24 +168,19 @@ pub fn run_native_benchmark(
                 .join(", ")
         ),
         "OS page cache is still shared across worker processes; use repeated runs and randomized order before treating small differences as engine differences.".to_owned(),
-        "Top-level memory report uses the native-sdk worker only; core and native-direct RSS are recorded in notes to avoid summing stores across processes.".to_owned(),
+        "Top-level memory report uses the native-sdk worker only; core and http-service RSS are recorded in notes to avoid summing stores across processes.".to_owned(),
         "Cold start is measured inside each worker as import/require where applicable + store construction + first hand query + explicit warmup.".to_owned(),
         "Result counts are case-specific: concrete line lookups, abstract lines for drill metadata, action entries, batch action entries, and matching hands.".to_owned(),
         "Exact concrete-line lookup cases skip empty concrete_line rows because the business API treats empty strings as invalid input.".to_owned(),
         "`*:batch-hand-strategy` is the default --batch-size case; `*:batch-size-*` entries are the batch-size sweep and should not be interpreted as separate API semantics.".to_owned(),
     ];
     notes.extend(worker_memory_notes(NativeWorkerMode::Core, &core_output));
-    notes.extend(worker_memory_notes(
-        NativeWorkerMode::Direct,
-        &direct_output,
-    ));
     notes.extend(worker_memory_notes(NativeWorkerMode::Sdk, &sdk_output));
     notes.extend(worker_memory_notes(
         NativeWorkerMode::HttpService,
         &http_output,
     ));
     notes.extend(core_output.notes);
-    notes.extend(direct_output.notes);
     notes.extend(sdk_output.notes);
     notes.extend(http_output.notes);
 
@@ -228,7 +215,6 @@ pub fn run_native_benchmark(
     report.cold_start = Some(serde_json::json!({
         "entryOrder": entry_order.iter().map(|mode| mode.label()).collect::<Vec<_>>(),
         "core": core_output.cold_start,
-        "direct": direct_output.cold_start,
         "sdk": sdk_output.cold_start,
         "httpService": http_output.cold_start,
     }));
@@ -272,7 +258,6 @@ fn benchmark_workload_path(command: &BenchmarkNativeCommand) -> Option<String> {
 fn benchmark_entry_order(seed: u64) -> Vec<NativeWorkerMode> {
     let mut order = vec![
         NativeWorkerMode::Core,
-        NativeWorkerMode::Direct,
         NativeWorkerMode::HttpService,
         NativeWorkerMode::Sdk,
     ];
@@ -304,9 +289,6 @@ fn run_core_worker_process(
         native_entry: absolute_existing_path(&command.native_entry, "--native-entry")?
             .display()
             .to_string(),
-        native_node_entry: native_node_entry(&command.native_entry)?
-            .display()
-            .to_string(),
         http_base_url: None,
         max_open_handles: command.max_open_handles,
         verify_checksums: command.verify_checksums,
@@ -333,20 +315,16 @@ fn run_core_worker_process(
 
 fn run_native_worker(
     command: &BenchmarkNativeCommand,
-    mode: NativeWorkerMode,
     workload: BenchmarkWorkload,
     concrete_line_queries: Vec<ConcreteLineLookupQuery>,
     line_to_hands_by_actions_queries: Vec<LineToHandsByActionsQuery>,
 ) -> Result<NativeWorkerOutput, ToolError> {
     let input = NativeWorkerInput {
-        mode,
+        mode: NativeWorkerMode::Sdk,
         data_dir: absolute_existing_path(&command.dir, "--dir")?
             .display()
             .to_string(),
         native_entry: absolute_existing_path(&command.native_entry, "--native-entry")?
-            .display()
-            .to_string(),
-        native_node_entry: native_node_entry(&command.native_entry)?
             .display()
             .to_string(),
         http_base_url: None,
@@ -390,9 +368,6 @@ fn run_http_service_worker(
             .display()
             .to_string(),
         native_entry: absolute_existing_path(&command.native_entry, "--native-entry")?
-            .display()
-            .to_string(),
-        native_node_entry: native_node_entry(&command.native_entry)?
             .display()
             .to_string(),
         http_base_url: Some(base_url.url.clone()),
@@ -1126,19 +1101,6 @@ fn format_optional_i64(value: Option<i64>) -> String {
     value
         .map(|value| value.to_string())
         .unwrap_or_else(|| "unavailable".to_owned())
-}
-
-fn native_node_entry(native_entry: &Path) -> Result<PathBuf, ToolError> {
-    let entry = if native_entry.is_absolute() {
-        native_entry.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(native_entry)
-    };
-    let node_entry = entry
-        .parent()
-        .ok_or_else(|| ToolError::invalid_argument("--native-entry must have a parent directory"))?
-        .join("index.node");
-    absolute_existing_path(&node_entry, "index.node")
 }
 
 fn write_worker_input(input: &NativeWorkerInput) -> Result<PathBuf, ToolError> {

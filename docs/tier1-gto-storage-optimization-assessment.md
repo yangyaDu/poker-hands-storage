@@ -27,7 +27,7 @@
 - cold-start 报告已按同一查询口径比较 Binary 和 SQLite。
 - Docker 服务、`/ready`、版本化数据目录、发布和回滚流程已具备。
 - `storage-tools build --resume` 和 `build-state.json` 已补齐构建中断后继续能力。
-- Bun/Node native SDK 已具备当前核心查询能力，并已有 core / native-direct / native-sdk / HTTP service fair benchmark。
+- Bun/Node native SDK 已具备当前核心查询能力，并已有 core / native-sdk / HTTP service fair benchmark。
 - Drill metadata 隔离 microbenchmark 已完成，旧慢点主要定位为 schema 探测和 SQL prepare 开销；真实 HTTP/native 路径走 `CachedMetadataReader` key-level lazy cache。
 
 仍需补齐或复核：

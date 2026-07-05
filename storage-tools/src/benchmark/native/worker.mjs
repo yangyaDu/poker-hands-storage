@@ -1,5 +1,4 @@
 import { readFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { performance } from "node:perf_hooks";
 
@@ -10,7 +9,6 @@ if (!inputPath) {
 }
 
 const input = JSON.parse(readFileSync(inputPath, "utf8"));
-const require = createRequire(import.meta.url);
 
 function memorySnapshot(note) {
   const memory = process.memoryUsage();
@@ -355,27 +353,16 @@ function warmupStore(mode, store) {
 
 const workerStart = performance.now();
 const mode = input.mode;
-if (mode !== "direct" && mode !== "sdk") {
+if (mode !== "sdk") {
   console.error(`Invalid native benchmark mode: ${mode}`);
   process.exit(2);
 }
 
 const memoryBefore = memorySnapshot(`Bun process memory before native ${mode} import.`);
-let importMs = 0;
-let requireMs = 0;
-let StoreClass = null;
-
-if (mode === "direct") {
-  const directRequireStart = performance.now();
-  const directModule = require(input.nativeNodeEntry);
-  requireMs = performance.now() - directRequireStart;
-  StoreClass = directModule.PokerHandsRange;
-} else {
-  const sdkImportStart = performance.now();
-  const sdkModule = await import(pathToFileURL(input.nativeEntry).href);
-  importMs = performance.now() - sdkImportStart;
-  StoreClass = sdkModule.PokerHandsRange;
-}
+const sdkImportStart = performance.now();
+const sdkModule = await import(pathToFileURL(input.nativeEntry).href);
+const importMs = performance.now() - sdkImportStart;
+const StoreClass = sdkModule.PokerHandsRange;
 
 const memoryAfterImport = memorySnapshot(`Bun process memory after native ${mode} import.`);
 const constructorStart = performance.now();
@@ -423,7 +410,6 @@ const output = {
   coldStart: {
     mode: `bun-native-${mode}-worker`,
     importMs,
-    requireMs,
     constructorMs,
     firstQueryMs,
     warmupMs,
@@ -444,7 +430,6 @@ const output = {
   memoryAfter,
   notes: [
     `Native entry: ${input.nativeEntry}`,
-    `Native node entry: ${input.nativeNodeEntry}`,
     `Native benchmark mode: ${mode}`,
     `Bun runtime: ${Bun.version}`,
     `Native ${mode} stats after benchmark: schemaCount=${statsAfterBenchmark.schemaCount}, openHandleCount=${statsAfterBenchmark.openHandleCount}`,

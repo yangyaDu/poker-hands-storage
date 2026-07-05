@@ -107,7 +107,7 @@ BB range  = /range/hands-by-actions(full_id, actions=[], frequency=0.005)
 
 目的：覆盖用户预演行动线逐步拼接的真实访问模式，而不是使用同一 `abstract_line` 下的 concrete ids 轮转来近似。
 
-当前状态：`benchmark-native` 已覆盖单条 `concrete_line -> concrete_line_id -> handsByActions` 链路，并同时测 core、native-direct、native-sdk、HTTP service。仍缺完整业务 prefix/full 双节点组合链路。
+当前状态：`benchmark-native` 已覆盖单条 `concrete_line -> concrete_line_id -> handsByActions` 链路，并同时测 core、native-sdk、HTTP service。仍缺完整业务 prefix/full 双节点组合链路。
 
 建议实现：
 
