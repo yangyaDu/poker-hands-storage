@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [1.1.0] - 2026-07-05
+
+### Added
+
+- **CachedMetadataReader** — Lazy-loaded metadata index cached in `range-store-core`, eliminates redundant SQLite lookups during query batches
+- **Native benchmark runner** — New `bench_native` command in `storage-tools` with metadata drill queries (`dimensions`, `dimension_strategies`, `concrete_lines`, `action_schemas`) and `hands_by_actions` single-link benchmark
+- **P90 latency metric** — Added p90 benchmark metric to native runner output for tail-latency visibility
+- **Query batch error propagation** — Batch queries now return structured error codes per item instead of failing the entire batch
+- **Lazy-loaded action schemas** — Action schema metadata loaded on first access rather than at startup, reducing cold start footprint
+- **Service directory refactor** — Simplified service module organization with clearer ownership boundaries
+- **Documentation updates** — Expanded README, docs index, verification guide, and tier1 optimization plan; added agent references for native-sdk, benchmark, build, and service
+- **Obsidian vault config** — Bundled Obsidian workspace configuration for local documentation navigation
+
+### Changed
+
+- **Simplified native benchmark worker** — Reduced complexity in benchmark runner and worker code while preserving coverage
+- **Rewritten hand_query_service** — Cleaner separation between single-hand and batch query paths
+
+### Performance
+
+- Reduced cold-start metadata load time via lazy loading
+- Improved batch query resilience with per-item error handling
+
 ## [1.0.0] - 2026-07-04
 
 ### Added
