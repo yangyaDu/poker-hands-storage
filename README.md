@@ -9,6 +9,29 @@ V1 遵循当前 `preflop-storage` Range Strata Binary 契约：
 - `ranges_{strategy}_{player_count}max_{depth_bb}BB.idx`
 - `ranges_{strategy}_{player_count}max_{depth_bb}BB.bin`
 
+## 当前状态
+
+当前项目已经形成完整闭环：
+
+```text
+1.45GB slim SQLite -> 345.5MB Range Strata Binary -> HTTP service / Bun native SDK
+```
+
+主要已完成内容：
+
+- `range-store-core` 提供只读存储格式、metadata lookup、LRU handle pool 和业务查询 facade。
+- `service` 提供 HTTP API、Swagger/OpenAPI、请求校验、错误码映射、Docker 运行入口。
+- `range-store-native` 提供 Bun/Node 进程内 native SDK，复用同一套 core 查询语义。
+- `storage-tools` 提供离线构建、standalone/cross verify、hot/cold/native/metadata benchmark 和报告生成。
+- full cross verify 已对 9 个维度、23,806,716 条源记录完成 bit-exact 校验，失败数为 0。
+- 最新 benchmark 已覆盖 SQLite vs Binary hot/cold、drill metadata、Rust core、Bun native direct/SDK、HTTP service 和 `concrete_line -> handsByActions` 组合链路。
+
+仍需推进：
+
+- 更完整的业务 `line-transition` benchmark：同时覆盖 prefix/full 两个节点的组合访问链路。
+- Linux `.node` 产物、业务容器和 Kubernetes 只读 PVC 挂载验证。
+- 最终验收前把边界 case 清单文档化，并按发布目录重跑必要 verify/benchmark。
+
 ## 环境准备
 
 | 依赖 | 要求 | 说明 |
@@ -54,10 +77,10 @@ cargo build --workspace --target x86_64-pc-windows-msvc
 
 ```text
 poker-hands-storage/
-├── Cargo.toml                  # Workspace 根配置（三个 member crate）
+├── Cargo.toml                  # Workspace 根配置（四个 member crate）
 ├── Cargo.lock
-├── AGENTS.md                   # AI 编码助手项目指令
 ├── rustfmt.toml                # 代码格式化配置
+├── .agents/                    # AI 编码助手项目指令和按需参考
 │
 ├── range-store-core/           # 共享存储核心库（无 HTTP 依赖）
 │   ├── src/
@@ -78,6 +101,13 @@ poker-hands-storage/
 │       ├── domain/             # action_schema / dimension / hole_cards 测试
 │       ├── storage/            # manifest reader / sqlite connection 测试
 │       └── traversal_and_decode.rs  # idx + bin 联合遍历测试
+│
+├── range-store-native/         # Bun/Node 进程内 native SDK（napi-rs）
+│   ├── src/lib.rs              # N-API 绑定，复用 RangeStoreFacade
+│   ├── index.js                # JS SDK 包装层，返回业务 envelope
+│   ├── index.d.ts              # TypeScript 类型声明
+│   ├── package.json            # native build / SDK test 脚本
+│   └── tests/                  # SDK contract 与 HTTP consistency 测试
 │
 ├── service/                    # HTTP API 服务（axum 0.8）
 │   ├── src/
@@ -112,6 +142,7 @@ poker-hands-storage/
 │   │       ├── cold/           # 冷启动基准
 │   │       ├── sqlite/         # SQLite 基线基准
 │   │       ├── compare/        # 二进制 vs SQLite 对比报告
+│   │       ├── native/         # Rust core / Bun native / HTTP service 对比
 │   │       ├── workload.rs     # 工作负载生成
 │   │       ├── metrics.rs      # QPS / 延迟 / 百分位统计
 │   │       └── report.rs       # 基准报告生成
@@ -193,7 +224,9 @@ docker compose -f .docker/docker-compose.yml up --build
 | [二进制存储方案设计](docs/range-db-binary-storage-design.md) | `.idx/.bin` 文件格式、pack 编码、CRC32C 校验 |
 | [存储架构调研报告](docs/storage-architecture-research.md) | 技术选型、mmap、SQLite 动态加载、性能基准 |
 | [数据一致性验证](docs/data-verification-and-format-validation.md) | standalone / cross 验证流程、报告格式 |
+| [Benchmark 总报告](docs/binary-vs-sqlite-benchmark-report.md) | SQLite vs Binary、core/native/HTTP、hot/cold/metadata 结果 |
 | [Docker 部署指南](docs/docker-deployment-guide.md) | Dockerfile、compose、容器运行、健康检查 |
+| [Bun Native SDK 方案](docs/bun-native-sdk-implementation-draft.md) | 进程内 SDK、N-API 边界、native benchmark 和 Kubernetes 接入计划 |
 
 ## Agent Skills
 

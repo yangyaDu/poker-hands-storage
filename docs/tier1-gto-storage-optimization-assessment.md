@@ -1,6 +1,6 @@
 # 档位一：GTO 数据瘦身与查询性能优化验收评估
 
-更新日期：2026-07-03
+更新日期：2026-07-05
 
 ## 文档职责
 
@@ -16,7 +16,7 @@
 当前项目已经完成核心路径：
 
 ```text
-1.45GB slim SQLite -> 345MB Range Strata Binary -> Docker HTTP API
+1.45GB slim SQLite -> 345.5MB Range Strata Binary -> Docker HTTP API / Bun native SDK
 ```
 
 当前可确认：
@@ -27,11 +27,13 @@
 - cold-start 报告已按同一查询口径比较 Binary 和 SQLite。
 - Docker 服务、`/ready`、版本化数据目录、发布和回滚流程已具备。
 - `storage-tools build --resume` 和 `build-state.json` 已补齐构建中断后继续能力。
+- Bun/Node native SDK 已具备当前核心查询能力，并已有 core / native-direct / native-sdk / HTTP service fair benchmark。
+- Drill metadata 隔离 microbenchmark 已完成，旧慢点主要定位为 schema 探测和 SQL prepare 开销；真实 HTTP/native 路径走 `CachedMetadataReader` key-level lazy cache。
 
 仍需补齐或复核：
 
-- 真实业务 `line-transition` 访问链路 benchmark。
-- Drill metadata 隔离 microbenchmark。
+- 完整业务 `line-transition` 访问链路 benchmark：当前已有 `concrete_line -> handsByActions` 单链路，还缺 prefix/full 双节点组合链路。
+- Linux `.node` 产物、业务容器和 Kubernetes 只读 PVC 挂载验证。
 - 边界 case 验证清单可继续细化。
 
 ## 数据口径
@@ -89,26 +91,34 @@
 | 支持进度输出 | 部分满足 | 当前有维度级输出 | 可后续补百分比进度 |
 | 支持失败中断后重新执行 | 已满足 | `--resume`、`build-state.json` | 发布流程继续使用版本目录 |
 | 转换后校验 | 已满足 | standalone/cross verify | 无 |
-| 查询 SDK / 查询接口 | 已满足查询接口 | Docker HTTP API、OpenAPI、API 文档 | 当前不单独做 SDK |
+| 查询 SDK / 查询接口 | 已满足 HTTP 和 Bun native 当前核心能力 | Docker HTTP API、OpenAPI、`range-store-native`、API 文档、native benchmark | Linux 生产产物和业务容器验证 |
 | 明确错误码 | 已满足 | `api-business-contract.md` | 行为变更时同步 |
 | Docker 部署流程 | 已满足 | `docker-deployment-guide.md` | 生产环境按资源重测 |
 | 新增数据版本和回滚 | 已满足文档流程 | `docker-deployment-guide.md` | 实际发布时演练 |
 
 ## 剩余缺口
 
-### 真实业务 `line-transition` benchmark
+### 完整业务 `line-transition` benchmark
 
-当前 benchmark 已覆盖单个 `concrete_line_id` 下的 `hands-by-actions`，但还没有覆盖业务后端按完整行动线拆 prefix/full 节点后的组合访问链路。
+当前 benchmark 已覆盖两层原子能力：
+
+- 单个 `concrete_line_id` 下的 `hands-by-actions`。
+- `concrete_line -> concrete_line_id -> handsByActions` 单链路。
+
+还没有覆盖业务后端按完整行动线拆 prefix/full 节点后的组合访问链路，例如先查前序节点 BTN range，再查当前节点 BB range。
 
 该缺口不影响现有 API 正确性，但会影响我们判断是否需要 batch 接口或轻量 path index。
 
 实施计划见 `docs/tier1-gto-storage-optimization-implementation-plan.md`。
 
-### Drill metadata 隔离 microbenchmark
+### Native 生产接入验证
 
-历史 `drill-scenarios-metadata` 报告显示 runtime `meta.db` 慢于源 SQLite，但该查询不读取 `.idx/.bin` 策略数据，不能代表二进制策略热路径性能。2026-07-05 已补 `benchmark-drill-metadata` 隔离复测：旧慢点主要来自每次 schema 探测和 SQL prepare；prepared SQLite 已明显改善，`CachedMetadataReader` 命中缓存后为内存 HashMap 查询。
+当前 native SDK 已在 Windows MSVC 本地完成核心功能、SDK contract、HTTP consistency 测试入口和 fair benchmark。生产接入前还需要：
 
-下一步应隔离 prepared SQL、schema resolution 和 query plan，确认差异来源，再决定是否加索引或缓存。
+- 构建 Linux x64 `.node` 产物。
+- 在业务后端容器内验证 Bun 能稳定加载 native addon。
+- 用只读 PVC 或等效只读数据挂载验证多副本读取。
+- 将 native store singleton 纳入业务 readiness。
 
 ### 边界 case 清单
 
@@ -127,8 +137,8 @@
 
 更严格地按真实业务接入视角看，建议在对外最终验收前补完：
 
-1. `line-transition` 访问链路 benchmark。
-2. Drill metadata 隔离 microbenchmark。
+1. 完整 `line-transition` prefix/full 双节点访问链路 benchmark。
+2. Linux native SDK 和业务容器只读数据挂载验证。
 3. 边界 case 清单的文档化。
 
 完成后即可把本文状态更新为“档位一通过”。

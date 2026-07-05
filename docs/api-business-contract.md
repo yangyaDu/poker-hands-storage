@@ -1,6 +1,6 @@
 # API 业务逻辑和接口契约
 
-更新日期：2026-06-28
+更新日期：2026-07-05
 
 ## 总体说明
 
@@ -202,7 +202,7 @@ F-F-F-R2-F-R7-R15
 5. 通过 `/range/hands-by-actions` 查询完整行动线中 BB 的手牌范围。
 6. 如需某个具体手牌在当前节点的策略，用 `/range/hand-strategy` 查询该 `concrete_line_id + hole_cards` 的 actions。
 
-该访问模式不是“同一 `abstract_line` 下 concrete ids 轮转”，后续 benchmark 应单独建模为 `line-transition` workload。
+该访问模式不是“同一 `abstract_line` 下 concrete ids 轮转”。当前 `benchmark-native` 已覆盖单条 `concrete_line -> concrete_line_id -> handsByActions` 链路；完整业务 `line-transition` 仍需补 prefix/full 双节点组合 workload。
 
 错误：
 

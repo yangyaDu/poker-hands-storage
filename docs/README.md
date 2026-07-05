@@ -1,6 +1,6 @@
 # Poker Hands Storage 文档地图
 
-更新日期：2026-07-04
+更新日期：2026-07-05
 
 ## 收束原则
 
@@ -15,6 +15,28 @@
 - Docker 构建、部署、发布、回滚和 prewarm 内存策略只在 `docker-deployment-guide.md` 里维护。
 - `tier1-gto-storage-optimization-assessment.md` 只做验收状态和缺口判断。
 - `tier1-gto-storage-optimization-implementation-plan.md` 只做阶段计划、执行状态和下一步队列。
+
+## 当前项目快照
+
+当前项目的主链路是：
+
+```text
+1.45GB slim SQLite -> 345.5MB Range Strata Binary -> HTTP service / Bun native SDK
+```
+
+当前已完成：
+
+- 存储格式：`manifest.json`、`meta.db`、9 个维度的 `.idx/.bin` 运行目录。
+- 运行时：HTTP API、Swagger/OpenAPI、Docker/Compose/Kubernetes 模板、Bun/Node native SDK。
+- 离线工具：SQLite 到二进制构建、`build --resume`、standalone/cross verify、hot/cold/native benchmark。
+- 数据正确性：full cross verify 覆盖 23,806,716 条源记录，失败数为 0。
+- 性能口径：已覆盖 SQLite vs Binary hot/cold、drill metadata、Rust core、Bun native direct/SDK、HTTP service 和 `concrete_line -> handsByActions` 单链路。
+
+当前剩余工作：
+
+- 补完整业务 `line-transition` benchmark：一个 full line 派生 prefix/full 两个查询节点，量化串行组合耗时。
+- 验证 Linux `.node` 产物、业务容器和 Kubernetes 只读 PVC 挂载。
+- 最终验收前把边界 case 清单文档化，并按发布目录重跑必要 verify/benchmark。
 
 ## 文档职责
 
@@ -99,4 +121,6 @@ concrete_line -> concrete_line_id
 concrete_line_id + actions + frequency -> hole_cards
 ```
 
-当前不新建树形 range payload `.idx/.bin`。如果后续 `line-transition` benchmark 证明 HTTP 往返或 `concrete_line` lookup 是瓶颈，优先考虑 batch 接口或轻量 path index，而不是复制 169 手牌策略数据。
+当前 `benchmark-native` 已覆盖单条 `concrete_line -> concrete_line_id -> handsByActions` 链路，用于量化 metadata lookup 加一次范围查询的成本。它还不是完整业务 `line-transition`：完整链路还需要从一个 full line 派生 prefix/full 两个节点，并分别查询两个节点的手牌范围。
+
+当前不新建树形 range payload `.idx/.bin`。如果完整 `line-transition` benchmark 证明 HTTP 往返或 `concrete_line` lookup 是瓶颈，优先考虑 batch 原子接口或轻量 path index，而不是复制 169 手牌策略数据。

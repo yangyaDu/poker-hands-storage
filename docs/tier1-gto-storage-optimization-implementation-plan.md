@@ -1,6 +1,6 @@
 # 档位一：GTO 数据瘦身与查询性能优化实施方案
 
-更新日期：2026-07-03
+更新日期：2026-07-05
 
 ## 文档职责
 
@@ -24,12 +24,13 @@
 | 阶段 1：补全量 cross verify 报告 | 已完成 | `docs/data-verification-and-format-validation.md` |
 | 阶段 2：刷新 cold compare 报告 | 已完成 | `docs/binary-vs-sqlite-benchmark-report.md` |
 | 阶段 3：补 `hands-by-actions` benchmark | 已完成 | `docs/binary-vs-sqlite-benchmark-report.md` |
-| 阶段 4：补 drill 高频随机 metadata benchmark | 已完成基础报告 | 仍需隔离 microbenchmark 复核 |
+| 阶段 4：补 drill 高频随机 metadata benchmark | 已完成 | 已补隔离 microbenchmark，旧慢点主要来自 schema 探测和 SQL prepare |
 | 阶段 4.4：收束具体行动线 lookup 原子接口 | 已完成 | `docs/api-business-contract.md` |
-| 阶段 4.5：补真实业务 `line-transition` 访问链路 benchmark | 待实施 | 见本文“下一步实施队列” |
+| 阶段 4.5：补真实业务 `line-transition` 访问链路 benchmark | 部分完成 | 已覆盖 `concrete_line -> handsByActions` 单链路；待补 prefix/full 双节点链路 |
 | 阶段 5：实现构建断点续跑 | 已完成 | `storage-tools build --resume`、`build-state.json` |
 | 阶段 6：补发布和回滚流程 | 已完成 | `docs/docker-deployment-guide.md` |
-| 阶段 7：同步最终验收文档 | 进行中 | 本次已完成 docs 职责收束 |
+| 阶段 7：同步最终验收文档 | 进行中 | 当前文档已同步到 2026-07-05 进展 |
+| 阶段 8：Bun native 生产接入验证 | 待实施 | Linux `.node`、业务容器、只读 PVC/Kubernetes 验证 |
 
 ## 当前目标
 
@@ -47,6 +48,7 @@
 - standalone/cross verify 能证明二进制格式和 SQLite 源数据一致。
 - benchmark 能分别说明 hot、cold、metadata、策略数据和真实业务访问链路。
 - Docker 部署能通过 `/ready` 和 smoke 查询验证。
+- Bun native SDK 能在业务进程内复用 core 查询语义，并与 HTTP service 保持结果一致。
 - 文档职责清晰，避免同一结论在多处重复维护。
 
 ## 实施原则
@@ -94,16 +96,18 @@ BB range  = /range/hands-by-actions(full_id, actions=[], frequency=0.005)
 
 后续优化优先级：
 
-1. 先补 `line-transition` benchmark，用真实访问链路量化延迟。
+1. 先补完整 `line-transition` benchmark，用真实 prefix/full 双节点访问链路量化延迟。
 2. 如果主要成本来自 HTTP 往返，优先做 batch 原子接口。
 3. 如果主要成本来自 `concrete_line -> concrete_line_id`，再评估轻量 path index。
 4. 不复制每个节点的 169 手牌策略 payload。
 
 ## 下一步实施队列
 
-### 1. 阶段 4.5：真实业务 `line-transition` benchmark
+### 1. 阶段 4.5：完整业务 `line-transition` benchmark
 
 目的：覆盖用户预演行动线逐步拼接的真实访问模式，而不是使用同一 `abstract_line` 下的 concrete ids 轮转来近似。
+
+当前状态：`benchmark-native` 已覆盖单条 `concrete_line -> concrete_line_id -> handsByActions` 链路，并同时测 core、native-direct、native-sdk、HTTP service。仍缺完整业务 prefix/full 双节点组合链路。
 
 建议实现：
 
@@ -123,25 +127,26 @@ BB range  = /range/hands-by-actions(full_id, actions=[], frequency=0.005)
 - 结论同步到 `docs/binary-vs-sqlite-benchmark-report.md` 和 `docs/tier1-gto-storage-optimization-assessment.md`。
 - 明确是否需要 batch 接口或 path index。
 
-### 2. Drill metadata 隔离 microbenchmark
+### 2. Bun native 生产接入验证
 
-目的：复核当前 runner 口径下 runtime `meta.db` 慢于源 SQLite 的原因，避免误判为 `.idx/.bin` 策略查询性能问题。
+目的：确认生产形态不是只在 Windows 本地可用，而是能在业务后端容器中稳定加载 native addon 并读取只读 RangeDB。
 
 建议实现：
 
-- 固定 prepared SQL。
-- 缓存 schema resolution。
-- 单独测源 SQLite 和 runtime `meta.db` 的同类 SQL。
-- 输出 explain/query plan、p50、p95、p99。
+- 构建 Linux x64 `.node` 产物。
+- 在业务后端镜像或等效 smoke 容器中加载 `range-store-native/index.js`。
+- 通过只读目录挂载验证 `PokerHandsRange` constructor、`stats`、`prewarm`、`getConcreteLines`、`handsByActions`。
+- 在 Kubernetes 或等效环境验证只读 PVC 挂载、多副本读取和 readiness。
 
 验收：
 
-- 如果隔离后差异消失，记录当前 runner 口径限制。
-- 如果仍明显慢，再决定是否补索引或 service 层缓存。
+- 容器内 SDK smoke 通过。
+- 多副本只读读取同一数据目录通过。
+- readiness 只在 native store 打开并完成必要 prewarm 后通过。
 
-### 3. 最终验收文档刷新
+### 3. 边界 case 清单和最终验收文档刷新
 
-目的：阶段 4.5 和 metadata microbenchmark 完成后，更新最终验收状态。
+目的：阶段 4.5、native 生产接入验证和边界 case 清单完成后，更新最终验收状态。
 
 需要同步：
 
@@ -167,5 +172,6 @@ BB range  = /range/hands-by-actions(full_id, actions=[], frequency=0.005)
 3. 策略数据 hot query 不慢于 SQLite，且 benchmark 覆盖单手、批量、`hands-by-actions`。
 4. cold-start 报告明确区分 open/prewarm 成本和首个查询成本。
 5. Docker 镜像可构建，容器可启动，`/ready` 和 smoke 查询通过。
-6. 发布使用版本化数据目录，支持回滚旧目录。
-7. 文档职责清晰，专项细节只有一个权威位置。
+6. Bun native SDK 在 Linux 业务容器内可加载，并能通过只读数据挂载完成核心 smoke。
+7. 发布使用版本化数据目录，支持回滚旧目录。
+8. 文档职责清晰，专项细节只有一个权威位置。

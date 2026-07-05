@@ -1,6 +1,6 @@
 # SQLite 与二进制数据一致性验证报告
 
-更新日期：2026-07-01
+更新日期：2026-07-05
 
 ## 目标
 
@@ -10,6 +10,26 @@
 2. 与源 SQLite 一致：从源 `range.db` 抽样或全量读取 rows，解码二进制 pack 后逐项比对。
 
 当前工具位于 `storage-tools`，运行时核心格式能力位于 `range-store-core`。
+
+## 验证覆盖面总览
+
+当前验证分为六层：
+
+| 层级 | 覆盖内容 | 主要入口 |
+| --- | --- | --- |
+| 格式自洽 | `manifest.json`、`meta.db`、`.idx`、`.bin`、header、record 边界、CRC32C | `storage-tools verify --mode standalone` |
+| 源数据一致性 | 二进制解码结果与源 SQLite `range_data_*` rows 对齐 | `storage-tools verify --mode cross` |
+| Float32 精度 | `frequency`、`hand_ev` 按 IEEE754 Float32 bit-exact 比对 | cross verify |
+| 查询结果抽样 | benchmark workload 下 Binary 和 SQLite result count / case 兼容性 | `benchmark --verify-results`、`benchmark-compare` |
+| API 边界 | HTTP 路由、OpenAPI、请求校验、错误码、batch 单项错误 | `service/tests/http/*` |
+| Native 边界 | Bun SDK envelope、lazy schema cache、native 与 HTTP 抽样一致性 | `range-store-native/tests/*` |
+
+验证口径说明：
+
+- `verify` 是数据正确性的主证据；正式发布以 full cross verify 为准。
+- benchmark 的 `errors=0` 和 `result match=true` 是性能报告的结果一致性护栏，不替代 full cross verify。
+- native/HTTP consistency 测试证明两种运行时边界复用同一 core 语义，不证明源数据全量正确性。
+- 运行时 `PHS_VERIFY_CHECKSUMS=true` 或 SDK `verifyChecksums=true` 可以在查询时校验 pack CRC32C，但会增加每次查询成本。
 
 ## 验证命令
 
@@ -63,6 +83,8 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
 | `reports/range-strata-verify-standalone.md` | 2026-06-26T15:10:25Z | 通过 |
 | `reports/range-strata-verify-cross.md` | 2026-06-26T15:11:32Z | 通过 |
 | `reports/range-strata-verify-cross-full.md` | 2026-07-01T14:52:14Z | 通过 |
+
+2026-07-05 的新增工作主要是 native/HTTP benchmark、drill metadata microbenchmark、metadata lazy cache 与 indexed meta 复测；full cross verify 结果仍以 2026-07-01 的全量报告为当前数据正确性快照。若重新生成发布目录，应对新目录重新执行 full cross verify。
 
 Standalone 摘要：
 
@@ -244,6 +266,20 @@ SQLite 对比 benchmark 的当前报告显示：
 - workload compatible 为 true。
 - 所有 case `errors` 为 `0/0`。
 - `result match` 为 true。
+
+Native benchmark 的一致性口径：
+
+- `benchmark-native` 复用同一 workload JSON，对比 `core:*`、`native-direct:*`、`native-sdk:*`、`http-service:*` case。
+- 最新 9max:100BB fair benchmark 中这些入口的错误数均为 0。
+- `range-store-native/tests/http-consistency.test.js` 可在启动 HTTP service 后对 native SDK 和 HTTP service 做抽样一致性验证：
+
+```powershell
+$env:PHS_HTTP_URL = "http://127.0.0.1:8080"
+Set-Location range-store-native
+bun run test:http-consistency
+```
+
+`test:http-consistency` 覆盖 `concrete-lines`、`drill-scenarios`、`hand-strategy`、batch 和 `hands-by-actions`。它是运行时边界一致性测试，不替代源 SQLite full cross verify。
 
 ## 发布前验收建议
 

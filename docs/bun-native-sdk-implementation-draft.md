@@ -1,6 +1,6 @@
 # Bun 进程内 Native SDK 实现草案
 
-更新日期：2026-07-04
+更新日期：2026-07-05
 
 ## 状态
 
@@ -13,13 +13,14 @@
 - `service` 的 metadata 读取改为复用 `range-store-core::metadata`。
 - 新增 `range-store-native` workspace crate 和 npm 包骨架。
 - `range-store-native` 已暴露 `PokerHandsRange`、`getConcreteLines`、`getAbstractLines`、`handsByActions`、`queryHandStrategy`、`queryBatch`、`prewarm`、`stats`。
-- Windows MSVC 目标下已通过 Rust workspace test、clippy 和 Bun native smoke。
+- `storage-tools benchmark-native` 已完成 Rust core、native direct、native SDK、HTTP service 的 fair runner，并覆盖 hot、cold、RSS、drill metadata 和 `line-to-hands-by-actions` 单链路。
+- Windows MSVC 目标下已具备 Rust workspace test、clippy、Bun SDK contract 和 HTTP consistency 测试入口。
 
 尚未完成：
 
-- native benchmark 编排和正式报告。
 - Linux 生产目标 `.node` 产物构建和容器化验证。
 - Kubernetes PVC 挂载验证。
+- 完整业务 `line-transition` prefix/full 双节点 benchmark。
 
 当前项目已经具备 `range-store-core`、`service`、`storage-tools` 的清晰边界。新的方向不是推翻现有结构，而是在这个边界上新增一个面向 Bun/TypeScript 后端的进程内 native SDK，让业务后端像访问 SQLite 一样直接访问只读 RangeDB 文件。
 
