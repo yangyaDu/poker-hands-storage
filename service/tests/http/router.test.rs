@@ -11,12 +11,17 @@ use poker_hands_storage_service::query::QueryService;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-#[tokio::test]
-async fn serves_query_and_metadata_workflows() {
+fn build_test_app() -> (tempfile::TempDir, Router) {
     let directory = tempfile::tempdir().unwrap();
     let data_dir = api_test_fixture::build_api_test_store(directory.path());
     let service = Arc::new(QueryService::open(&data_dir, 2, true).unwrap());
     let app = router(service);
+    (directory, app)
+}
+
+#[tokio::test]
+async fn health_and_ready_endpoints_return_ok() {
+    let (_directory, app) = build_test_app();
 
     let (status, health) = call_json(&app, Method::GET, "/health", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -29,6 +34,11 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(ready["code"], 0);
     assert_eq!(ready["data"]["dimensions_known"][0], "default_6max_100BB");
     assert!(ready["message"].is_null());
+}
+
+#[tokio::test]
+async fn openapi_spec_advertises_all_range_endpoints() {
+    let (_directory, app) = build_test_app();
 
     let (status, openapi) = call_json(&app, Method::GET, "/api-docs/openapi.json", None).await;
     assert_eq!(status, StatusCode::OK);
@@ -78,6 +88,11 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert!(swagger.contains("Scalar.createApiReference"));
     assert!(swagger.contains("/api-docs/openapi.json"));
+}
+
+#[tokio::test]
+async fn hand_strategy_query_returns_expected_frequency() {
+    let (_directory, app) = build_test_app();
 
     let query = json!({
         "strategy": "default",
@@ -93,6 +108,11 @@ async fn serves_query_and_metadata_workflows() {
     assert!(result["data"].get("exists").is_none());
     assert_eq!(result["data"]["actions"].as_array().unwrap().len(), 2);
     assert!(result["message"].is_null());
+}
+
+#[tokio::test]
+async fn hand_strategy_query_rejects_invalid_requests() {
+    let (_directory, app) = build_test_app();
 
     let invalid_payload = json!({
         "strategy": "",
@@ -194,6 +214,11 @@ async fn serves_query_and_metadata_workflows() {
             "dimension default:6:100",
         ],
     );
+}
+
+#[tokio::test]
+async fn hand_strategy_batch_query_returns_per_item_results() {
+    let (_directory, app) = build_test_app();
 
     let batch = json!({
         "strategy": "default",
@@ -223,6 +248,11 @@ async fn serves_query_and_metadata_workflows() {
         result["data"]["results"][1]["error"]["code"],
         error_code::BAD_REQUEST
     );
+}
+
+#[tokio::test]
+async fn prewarm_endpoint_loads_dimension() {
+    let (_directory, app) = build_test_app();
 
     let prewarm = json!({
         "dimensions": [
@@ -234,6 +264,11 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(result["code"], 0);
     assert_eq!(result["data"]["prewarmed"], 1);
     assert_eq!(result["data"]["total_open"], 1);
+}
+
+#[tokio::test]
+async fn concrete_lines_endpoint_supports_abstract_and_concrete_filters() {
+    let (_directory, app) = build_test_app();
 
     let concrete_lines = json!({
         "strategy": "default",
@@ -313,6 +348,11 @@ async fn serves_query_and_metadata_workflows() {
             "dimension=default:6:100",
         ],
     );
+}
+
+#[tokio::test]
+async fn drill_scenarios_endpoint_returns_abstract_lines() {
+    let (_directory, app) = build_test_app();
 
     let drill_lines = json!({});
     let (status, result) = call_json(
@@ -353,8 +393,13 @@ async fn serves_query_and_metadata_workflows() {
             "drill_depth=100",
         ],
     );
+}
 
-    // hands-by-actions: query all hands in the concrete line
+#[tokio::test]
+async fn hands_by_actions_endpoint_filters_by_action_and_frequency() {
+    let (_directory, app) = build_test_app();
+
+    // query all hands in the concrete line
     let hands_by_actions = json!({
         "strategy": "default",
         "player_count": 6,
@@ -374,7 +419,7 @@ async fn serves_query_and_metadata_workflows() {
     assert!(result["data"].get("concrete_line_id").is_none());
     assert!(result["data"].get("actions").is_none());
 
-    // hands-by-actions: empty actions means all hands
+    // empty actions means all hands
     let hands_by_actions_empty = json!({
         "strategy": "default",
         "player_count": 6,
@@ -392,7 +437,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
 
-    // hands-by-actions: filter by action "fold" (no amount)
+    // filter by action "fold" (no amount)
     let hands_by_actions_fold = json!({
         "strategy": "default",
         "player_count": 6,
@@ -410,7 +455,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["data"]["hands"], json!(["AA"]));
 
-    // hands-by-actions: action names use OR semantics, and amount-bearing names match any size
+    // action names use OR semantics, and amount-bearing names match any size
     let hands_by_actions_raise = json!({
         "strategy": "default",
         "player_count": 6,
@@ -428,7 +473,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
 
-    // hands-by-actions: absent action names do not suppress other action matches
+    // absent action names do not suppress other action matches
     let hands_by_actions_raise_with_absent = json!({
         "strategy": "default",
         "player_count": 6,
@@ -446,7 +491,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
 
-    // hands-by-actions: filter with action absent from schema returns 404
+    // filter with action absent from schema returns 404
     let hands_by_actions_none = json!({
         "strategy": "default",
         "player_count": 6,
@@ -474,7 +519,7 @@ async fn serves_query_and_metadata_workflows() {
         ],
     );
 
-    // hands-by-actions: frequency filter excludes low-frequency actions but returns hands
+    // frequency filter excludes low-frequency actions but returns hands
     let hands_by_actions_freq = json!({
         "strategy": "default",
         "player_count": 6,
@@ -492,7 +537,7 @@ async fn serves_query_and_metadata_workflows() {
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["data"]["hands"], json!(["AA", "KK"]));
 
-    // hands-by-actions: explicit frequency is strict greater-than, not greater-than-or-equal
+    // explicit frequency is strict greater-than, not greater-than-or-equal
     let hands_by_actions_freq_strict = json!({
         "strategy": "default",
         "player_count": 6,
@@ -520,8 +565,13 @@ async fn serves_query_and_metadata_workflows() {
             "dimension=default:6:100",
         ],
     );
+}
 
-    // hands-by-actions: filters resolve but no hands meet frequency
+#[tokio::test]
+async fn hands_by_actions_endpoint_rejects_invalid_requests() {
+    let (_directory, app) = build_test_app();
+
+    // filters resolve but no hands meet frequency
     let hands_by_actions_no_hands = json!({
         "strategy": "default",
         "player_count": 6,

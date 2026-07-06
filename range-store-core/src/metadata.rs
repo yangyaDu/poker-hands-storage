@@ -552,6 +552,36 @@ impl CachedMetadataReader {
         }
     }
 
+    fn read_through_cached_concrete<L, S>(
+        &self,
+        cache_lookup: impl Fn(
+            &CachedMetadataState,
+        ) -> Result<Option<Vec<ConcreteLineRow>>, MetadataError>,
+        loader: L,
+        on_empty: impl Fn() -> MetadataError,
+        cache_store: S,
+    ) -> Result<Vec<ConcreteLineRow>, MetadataError>
+    where
+        L: FnOnce(&Connection) -> Result<Vec<ConcreteLineRow>, MetadataError>,
+        S: FnOnce(&mut CachedMetadataState, &[ConcreteLineRow]),
+    {
+        {
+            let state = self.read_state()?;
+            if let Some(cached) = cache_lookup(&state)? {
+                return Ok(cached);
+            }
+        }
+        let connection = self.connection()?;
+        let rows = loader(&connection.connection)?;
+        drop(connection);
+        if rows.is_empty() {
+            return Err(on_empty());
+        }
+        let mut state = self.write_state()?;
+        cache_store(&mut state, &rows);
+        Ok(rows)
+    }
+
     fn get_concrete_lines_by_abstract(
         &self,
         strategy: &str,
@@ -568,42 +598,44 @@ impl CachedMetadataReader {
             });
         }
 
-        let key = ConcreteByAbstractKey {
-            strategy: strategy.to_owned(),
-            player_count,
-            depth_bb,
-            abstract_line: abstract_line.to_owned(),
-        };
-        {
-            let state = self.read_state()?;
-            if let Some(rows) = state.concrete_by_abstract.get(&key) {
-                return Ok(rows.clone());
-            }
-        }
-
-        let connection = self.connection()?;
-        let rows = query_concrete_by_abstract(
-            &connection.connection,
-            strategy,
-            player_count,
-            depth_bb,
-            abstract_line,
-        )?;
-        drop(connection);
-        if rows.is_empty() {
-            return Err(MetadataError::AbstractLineNotFound {
+        self.read_through_cached_concrete(
+            |state| {
+                let key = ConcreteByAbstractKey {
+                    strategy: strategy.to_owned(),
+                    player_count,
+                    depth_bb,
+                    abstract_line: abstract_line.to_owned(),
+                };
+                Ok(state.concrete_by_abstract.get(&key).cloned())
+            },
+            |connection| {
+                query_concrete_by_abstract(
+                    connection,
+                    strategy,
+                    player_count,
+                    depth_bb,
+                    abstract_line,
+                )
+            },
+            || MetadataError::AbstractLineNotFound {
                 strategy: strategy.to_owned(),
                 player_count,
                 depth_bb,
                 abstract_line: abstract_line.to_owned(),
-            });
-        }
-        let mut state = self.write_state()?;
-        state.concrete_by_abstract.insert(key, rows.clone());
-        for row in &rows {
-            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row.clone());
-        }
-        Ok(rows)
+            },
+            |state, rows| {
+                let key = ConcreteByAbstractKey {
+                    strategy: strategy.to_owned(),
+                    player_count,
+                    depth_bb,
+                    abstract_line: abstract_line.to_owned(),
+                };
+                state.concrete_by_abstract.insert(key, rows.to_vec());
+                for row in rows {
+                    cache_concrete_row(state, strategy, player_count, depth_bb, row.clone());
+                }
+            },
+        )
     }
 
     fn get_concrete_lines_by_concrete(
@@ -622,41 +654,40 @@ impl CachedMetadataReader {
             });
         }
 
-        let key = ConcreteByConcreteKey {
-            strategy: strategy.to_owned(),
-            player_count,
-            depth_bb,
-            concrete_line: concrete_line.to_owned(),
-        };
-        {
-            let state = self.read_state()?;
-            if let Some(row) = state.concrete_by_concrete.get(&key) {
-                return Ok(vec![row.clone()]);
-            }
-        }
-
-        let connection = self.connection()?;
-        let rows = query_concrete_by_concrete(
-            &connection.connection,
-            strategy,
-            player_count,
-            depth_bb,
-            concrete_line,
-        )?;
-        drop(connection);
-        if rows.is_empty() {
-            return Err(MetadataError::ConcreteLineValueNotFound {
+        self.read_through_cached_concrete(
+            |state| {
+                let key = ConcreteByConcreteKey {
+                    strategy: strategy.to_owned(),
+                    player_count,
+                    depth_bb,
+                    concrete_line: concrete_line.to_owned(),
+                };
+                Ok(state
+                    .concrete_by_concrete
+                    .get(&key)
+                    .map(|row| vec![row.clone()]))
+            },
+            |connection| {
+                query_concrete_by_concrete(
+                    connection,
+                    strategy,
+                    player_count,
+                    depth_bb,
+                    concrete_line,
+                )
+            },
+            || MetadataError::ConcreteLineValueNotFound {
                 strategy: strategy.to_owned(),
                 player_count,
                 depth_bb,
                 concrete_line: concrete_line.to_owned(),
-            });
-        }
-        let mut state = self.write_state()?;
-        for row in &rows {
-            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row.clone());
-        }
-        Ok(rows)
+            },
+            |state, rows| {
+                for row in rows {
+                    cache_concrete_row(state, strategy, player_count, depth_bb, row.clone());
+                }
+            },
+        )
     }
 
     fn get_concrete_lines_by_abstract_and_concrete(
@@ -677,52 +708,51 @@ impl CachedMetadataReader {
             });
         }
 
-        let key = ConcreteByConcreteKey {
-            strategy: strategy.to_owned(),
-            player_count,
-            depth_bb,
-            concrete_line: concrete_line.to_owned(),
-        };
-        {
-            let state = self.read_state()?;
-            if let Some(row) = state.concrete_by_concrete.get(&key) {
-                if row.abstract_line == abstract_line {
-                    return Ok(vec![row.clone()]);
-                }
-                return Err(MetadataError::ConcreteLineFilterNotFound {
+        self.read_through_cached_concrete(
+            |state| {
+                let key = ConcreteByConcreteKey {
                     strategy: strategy.to_owned(),
                     player_count,
                     depth_bb,
-                    abstract_line: abstract_line.to_owned(),
                     concrete_line: concrete_line.to_owned(),
-                });
-            }
-        }
-
-        let connection = self.connection()?;
-        let rows = query_concrete_by_abstract_and_concrete(
-            &connection.connection,
-            strategy,
-            player_count,
-            depth_bb,
-            abstract_line,
-            concrete_line,
-        )?;
-        drop(connection);
-        if rows.is_empty() {
-            return Err(MetadataError::ConcreteLineFilterNotFound {
+                };
+                if let Some(row) = state.concrete_by_concrete.get(&key) {
+                    if row.abstract_line == abstract_line {
+                        return Ok(Some(vec![row.clone()]));
+                    }
+                    return Err(MetadataError::ConcreteLineFilterNotFound {
+                        strategy: strategy.to_owned(),
+                        player_count,
+                        depth_bb,
+                        abstract_line: abstract_line.to_owned(),
+                        concrete_line: concrete_line.to_owned(),
+                    });
+                }
+                Ok(None)
+            },
+            |connection| {
+                query_concrete_by_abstract_and_concrete(
+                    connection,
+                    strategy,
+                    player_count,
+                    depth_bb,
+                    abstract_line,
+                    concrete_line,
+                )
+            },
+            || MetadataError::ConcreteLineFilterNotFound {
                 strategy: strategy.to_owned(),
                 player_count,
                 depth_bb,
                 abstract_line: abstract_line.to_owned(),
                 concrete_line: concrete_line.to_owned(),
-            });
-        }
-        let mut state = self.write_state()?;
-        for row in &rows {
-            cache_concrete_row(&mut state, strategy, player_count, depth_bb, row.clone());
-        }
-        Ok(rows)
+            },
+            |state, rows| {
+                for row in rows {
+                    cache_concrete_row(state, strategy, player_count, depth_bb, row.clone());
+                }
+            },
+        )
     }
 
     /// Get drill scenario abstract lines.
