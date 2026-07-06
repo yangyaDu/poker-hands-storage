@@ -70,6 +70,7 @@ describe("PokerHandsRange SDK contract", () => {
       message: null,
     });
     expect(result.data.results[0].actions.length).toBeGreaterThan(0);
+    expect(result.data.results[0].handCode).toBe("AA");
     expect(result.data.results[0].error).toBeUndefined();
     expect(result.data.results[1].error).toMatchObject({
       code: 1000,

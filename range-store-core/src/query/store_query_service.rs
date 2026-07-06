@@ -213,55 +213,140 @@ impl StoreQueryService {
         requests: &[(u32, String)],
     ) -> Result<Vec<BatchItemResult>, StoreQueryError> {
         let reader = self.pool.get_or_open(dimension)?;
-        Ok(requests
-            .iter()
-            .map(|(concrete_line_id, hole_cards)| {
-                match self.query_single(&reader, dimension, *concrete_line_id, hole_cards) {
-                    Ok(result) => BatchItemResult {
-                        concrete_line_id: *concrete_line_id,
-                        input_hole_cards: hole_cards.clone(),
-                        actions: Some(result.actions),
-                        error: None,
-                    },
-                    Err(error) => BatchItemResult {
-                        concrete_line_id: *concrete_line_id,
-                        input_hole_cards: hole_cards.clone(),
-                        actions: None,
-                        error: Some(error.to_string()),
-                    },
-                }
-            })
-            .collect())
-    }
+        let mut results: Vec<Option<BatchItemResult>> = vec![None; requests.len()];
+        let mut groups: HashMap<u32, Vec<ParsedBatchRequest>> = HashMap::new();
 
-    pub fn query_batch_detailed(
-        &self,
-        dimension: &DimensionRef,
-        requests: &[(u32, String)],
-    ) -> Result<Vec<DetailedBatchItemResult>, StoreQueryError> {
-        let reader = self.pool.get_or_open(dimension)?;
-        Ok(requests
-            .iter()
-            .map(|(concrete_line_id, hole_cards)| {
-                match self.query_single(&reader, dimension, *concrete_line_id, hole_cards) {
-                    Ok(result) => DetailedBatchItemResult {
-                        concrete_line_id: *concrete_line_id,
-                        hole_cards: hole_cards.clone(),
-                        hand_code: Some(result.hand_code),
-                        actions: Some(result.actions),
-                        error: None,
-                    },
-                    Err(error) => DetailedBatchItemResult {
-                        concrete_line_id: *concrete_line_id,
-                        hole_cards: hole_cards.clone(),
-                        hand_code: None,
-                        actions: None,
-                        error: Some(BatchItemError {
-                            code: error.public_code(),
-                            message: error.to_string(),
-                        }),
-                    },
+        for (index, (concrete_line_id, hole_cards)) in requests.iter().enumerate() {
+            match parse_hole_cards(hole_cards) {
+                Ok(parsed) => {
+                    groups
+                        .entry(*concrete_line_id)
+                        .or_default()
+                        .push(ParsedBatchRequest {
+                            index,
+                            hand_id: parsed.hand_id,
+                            parsed_input: parsed.input,
+                            hand_code: parsed.hand_code,
+                        });
                 }
+                Err(error) => {
+                    results[index] = Some(detailed_batch_error(
+                        *concrete_line_id,
+                        hole_cards.clone(),
+                        StoreQueryError::HandParse(error),
+                    ));
+                }
+            }
+        }
+
+        for (concrete_line_id, group) in groups {
+            let hand_ids = group.iter().map(|item| item.hand_id).collect::<Vec<_>>();
+            let decoded = match reader.query_many_hands(
+                concrete_line_id,
+                &hand_ids,
+                self.verify_checksums,
+            ) {
+                Ok(Some((_action_schema_id, decoded))) if decoded.len() == group.len() => decoded,
+                Ok(Some((_action_schema_id, decoded))) => {
+                    let error = StoreQueryError::Internal(format!(
+                        "Batch decode result length {} does not match request length {} for concrete_line_id {}",
+                        decoded.len(),
+                        group.len(),
+                        concrete_line_id
+                    ));
+                    fill_group_error(&mut results, requests, &group, concrete_line_id, error);
+                    continue;
+                }
+                Ok(None) => {
+                    fill_group_error(
+                        &mut results,
+                        requests,
+                        &group,
+                        concrete_line_id,
+                        concrete_line_not_found_error(dimension, concrete_line_id),
+                    );
+                    continue;
+                }
+                Err(error) => {
+                    fill_group_error(
+                        &mut results,
+                        requests,
+                        &group,
+                        concrete_line_id,
+                        StoreQueryError::Io(error.to_string()),
+                    );
+                    continue;
+                }
+            };
+
+            let action_schema_id = decoded
+                .iter()
+                .flatten()
+                .map(|fragment| fragment.action_schema_id)
+                .next();
+            let action_schema = match action_schema_id {
+                Some(action_schema_id) => match self.action_schemas.get(action_schema_id) {
+                    Ok(action_schema) => Some(action_schema),
+                    Err(error) => {
+                        fill_group_error(&mut results, requests, &group, concrete_line_id, error);
+                        continue;
+                    }
+                },
+                None => None,
+            };
+
+            for (item, fragment) in group.into_iter().zip(decoded) {
+                let hole_cards = requests[item.index].1.clone();
+                let Some(fragment) = fragment else {
+                    results[item.index] = Some(detailed_batch_error(
+                        concrete_line_id,
+                        hole_cards,
+                        missing_hand_or_line_error(
+                            &reader,
+                            dimension,
+                            concrete_line_id,
+                            &item.parsed_input,
+                        ),
+                    ));
+                    continue;
+                };
+
+                let action_schema = match &action_schema {
+                    Some(action_schema) => action_schema,
+                    None => {
+                        results[item.index] = Some(detailed_batch_error(
+                            concrete_line_id,
+                            hole_cards,
+                            StoreQueryError::ActionSchemaNotFound(fragment.action_schema_id),
+                        ));
+                        continue;
+                    }
+                };
+
+                results[item.index] = Some(BatchItemResult {
+                    concrete_line_id,
+                    hole_cards,
+                    hand_code: Some(item.hand_code),
+                    actions: Some(action_results_from_cells(
+                        action_schema.as_ref(),
+                        fragment.cells,
+                    )),
+                    error: None,
+                });
+            }
+        }
+
+        Ok(results
+            .into_iter()
+            .enumerate()
+            .map(|(index, result)| {
+                result.unwrap_or_else(|| {
+                    detailed_batch_error(
+                        requests[index].0,
+                        requests[index].1.clone(),
+                        StoreQueryError::Internal("Batch item was not processed".to_owned()),
+                    )
+                })
             })
             .collect())
     }
@@ -306,47 +391,6 @@ impl StoreQueryService {
     ) -> Result<Vec<String>, StoreQueryError> {
         let action_filters = parse_action_filters(action_names.to_vec())?;
         self.query_hands_by_actions(dimension, concrete_line_id, &action_filters, frequency)
-    }
-
-    fn query_single(
-        &self,
-        reader: &DimensionReader,
-        dimension: &DimensionRef,
-        concrete_line_id: u32,
-        hole_cards: &str,
-    ) -> Result<QueryResult, StoreQueryError> {
-        let parsed = parse_hole_cards(hole_cards)?;
-        let fragment = reader
-            .query(concrete_line_id, parsed.hand_id, self.verify_checksums)
-            .map_err(|e| StoreQueryError::Io(e.to_string()))?;
-        let Some(fragment) = fragment else {
-            return Err(missing_hand_or_line_error(
-                reader,
-                dimension,
-                concrete_line_id,
-                &parsed.input,
-            ));
-        };
-
-        let action_schema = self.action_schemas.get(fragment.action_schema_id)?;
-        let mut actions = Vec::with_capacity(fragment.cells.len());
-        for cell in fragment.cells {
-            if let Some(action) = action_schema.get(cell.action_id as usize) {
-                actions.push(ActionResult {
-                    action_name: action.action_name.as_str().to_owned(),
-                    action_size: action.action_size,
-                    amount_bb: action.amount_bb,
-                    frequency: cell.frequency,
-                    hand_ev: cell.hand_ev,
-                });
-            }
-        }
-
-        Ok(QueryResult {
-            input_hole_cards: parsed.input,
-            hand_code: parsed.hand_code,
-            actions,
-        })
     }
 
     /// Prewarm a dimension by opening its files.
@@ -450,17 +494,8 @@ fn action_schema_sqlite_error(error: SqliteError) -> StoreQueryError {
     StoreQueryError::ActionSchema(ActionSchemaLoadError::Sqlite(error))
 }
 
-/// Result of a single batch item.
 #[derive(Debug, Clone)]
 pub struct BatchItemResult {
-    pub concrete_line_id: u32,
-    pub input_hole_cards: String,
-    pub actions: Option<Vec<ActionResult>>,
-    pub error: Option<String>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DetailedBatchItemResult {
     pub concrete_line_id: u32,
     pub hole_cards: String,
     pub hand_code: Option<String>,
@@ -474,6 +509,14 @@ pub struct BatchItemError {
     pub message: String,
 }
 
+#[derive(Debug)]
+struct ParsedBatchRequest {
+    index: usize,
+    hand_id: u8,
+    parsed_input: String,
+    hand_code: String,
+}
+
 fn require_file(path: &Path) -> Result<(), StoreQueryError> {
     if path.is_file() {
         Ok(())
@@ -483,6 +526,65 @@ fn require_file(path: &Path) -> Result<(), StoreQueryError> {
             path.display()
         )))
     }
+}
+
+fn detailed_batch_error(
+    concrete_line_id: u32,
+    hole_cards: String,
+    error: StoreQueryError,
+) -> BatchItemResult {
+    BatchItemResult {
+        concrete_line_id,
+        hole_cards,
+        hand_code: None,
+        actions: None,
+        error: Some(BatchItemError {
+            code: error.public_code(),
+            message: error.to_string(),
+        }),
+    }
+}
+
+fn fill_group_error(
+    results: &mut [Option<BatchItemResult>],
+    requests: &[(u32, String)],
+    group: &[ParsedBatchRequest],
+    concrete_line_id: u32,
+    error: StoreQueryError,
+) {
+    let code = error.public_code();
+    let message = error.to_string();
+    for item in group {
+        results[item.index] = Some(BatchItemResult {
+            concrete_line_id,
+            hole_cards: requests[item.index].1.clone(),
+            hand_code: None,
+            actions: None,
+            error: Some(BatchItemError {
+                code,
+                message: message.clone(),
+            }),
+        });
+    }
+}
+
+fn action_results_from_cells(
+    action_schema: &[ActionDef],
+    cells: arrayvec::ArrayVec<crate::types::DecodedCellResult, 32>,
+) -> Vec<ActionResult> {
+    let mut actions = Vec::with_capacity(cells.len());
+    for cell in cells {
+        if let Some(action) = action_schema.get(cell.action_id as usize) {
+            actions.push(ActionResult {
+                action_name: action.action_name.as_str().to_owned(),
+                action_size: action.action_size,
+                amount_bb: action.amount_bb,
+                frequency: cell.frequency,
+                hand_ev: cell.hand_ev,
+            });
+        }
+    }
+    actions
 }
 
 fn missing_hand_or_line_error(

@@ -797,7 +797,7 @@ fn core_batch_action_count(
     let mut total = 0usize;
     for result in results {
         if let Some(error) = result.error {
-            return Err(error);
+            return Err(error.message);
         }
         if let Some(actions) = result.actions {
             total += actions.len();

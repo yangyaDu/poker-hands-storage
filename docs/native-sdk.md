@@ -51,7 +51,7 @@ interface PokerHandsRangeOptions {
 | `getAbstractLines(request)` | `{ code, data: { abstractLines }, message }` | 查询 drill 场景下的 abstract lines |
 | `handsByActions(request)` | `{ code, data: { holeCards }, message }` | 按 concrete line id、actions、frequency 过滤手牌 |
 | `queryHandStrategy(request)` | `{ code, data: { inputHoleCards, handCode, actions }, message }` | 查询单手牌策略 |
-| `queryBatch(request)` | `{ code, data: { results }, message }` | 批量查询单手牌策略，单项错误写入 item-level `error` |
+| `queryBatch(request)` | `{ code, data: { results: [{ concreteLineId, holeCards, handCode?, actions?, error? }] }, message }` | 批量查询单手牌策略，成功项返回 `handCode/actions`，失败项写入 item-level `{ code, message }` |
 | `prewarm(request)` | `{ code, data: { openHandleCount }, message }` | 打开指定维度并加载必要 metadata |
 | `stats()` | `{ code, data: { schemaCount, openHandleCount, knownDimensions }, message }` | 查询 SDK 内部缓存和 handle 状态 |
 

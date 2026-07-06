@@ -156,6 +156,7 @@ export class PokerHandsRange {
           results: result.results.map((item) => ({
             concreteLineId: item.concreteLineId,
             holeCards: item.inputHoleCards,
+            handCode: item.handCode,
             actions: item.actions?.map(fromNativeAction),
             error: item.error
               ? { code: item.error.code, message: item.error.message }

@@ -236,11 +236,11 @@ record_offset = header_size + index * 22
 
 `.idx` 不保存 `schema_key` 或 `action_blob`，只保存 `action_schema_id`，这是当前格式的刻意边界：
 
-| 不放入 `.idx` 的字段 | 原因 |
-| --- | --- |
-| `schema_key` | 只用于构建期去重；运行时已可通过 `action_schema_id` 直接定位 schema |
-| `action_blob` | 是变长 metadata，长度为 `action_count * 9`；放入 `.idx` 会破坏 22 字节定长 record |
-| action schema 全量定义 | 同一个 schema 会被大量 concrete line 复用；放入每条 `.idx` record 会重复存储 |
+| 不放入 `.idx` 的字段   | 原因                                                                              |
+| ---------------------- | --------------------------------------------------------------------------------- |
+| `schema_key`           | 只用于构建期去重；运行时已可通过 `action_schema_id` 直接定位 schema               |
+| `action_blob`          | 是变长 metadata，长度为 `action_count * 9`；放入 `.idx` 会破坏 22 字节定长 record |
+| action schema 全量定义 | 同一个 schema 会被大量 concrete line 复用；放入每条 `.idx` record 会重复存储      |
 
 因此 `.idx` 的职责保持为 hot path 定位信息：`concrete_line_id -> action_schema_id + offset + byte_length + checksum`。`action_schemas` 则放在 `meta.db` 中，负责保存可变长、可去重、可跨维度复用的动作定义。
 
@@ -248,10 +248,10 @@ record_offset = header_size + index * 22
 
 当前格式里有两类 CRC32C：
 
-| 位置 | 校验对象 | 保护内容 | 与谁关联 |
-| --- | --- | --- | --- |
-| `meta.db.action_schemas.checksum` | `action_blob` | action schema 的动作定义是否损坏 | 通过 `.idx.action_schema_id` 被引用 |
-| `.idx` record `checksum` | `.bin` 中的 pack payload | 该 `concrete_line_id` 的手牌、mask、frequency、EV 数据块是否损坏 | 通过同一条 `.idx` record 的 `offset/byte_length` 定位 |
+| 位置                              | 校验对象                 | 保护内容                                                         | 与谁关联                                              |
+| --------------------------------- | ------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------- |
+| `meta.db.action_schemas.checksum` | `action_blob`            | action schema 的动作定义是否损坏                                 | 通过 `.idx.action_schema_id` 被引用                   |
+| `.idx` record `checksum`          | `.bin` 中的 pack payload | 该 `concrete_line_id` 的手牌、mask、frequency、EV 数据块是否损坏 | 通过同一条 `.idx` record 的 `offset/byte_length` 定位 |
 
 可以把两者理解成两层完整性校验：
 
@@ -354,7 +354,7 @@ byte_length = hand_count * (5 + action_count * 8)
 示例：一个包含全部 169 手牌、32 个 action 的 pack：
 
 ```
-byte_length = 169 * (5 + 32 * 8) = 169 * 261 = 44,109 字节
+byte_length = 169 * (5 + 32 * 8) = 169 * 261 = 44,109 字节 <= 44KB
 ```
 
 ### 字段详细说明

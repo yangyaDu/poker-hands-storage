@@ -95,6 +95,7 @@ export interface QueryBatchRequest {
 export interface QueryBatchItemResponse {
   concreteLineId: number
   holeCards: string
+  handCode?: string
   actions?: Array<ActionResult>
   error?: {
     code: number

@@ -89,60 +89,240 @@ Pack 大小公式: `hand_count × (5 + action_count × 8)`
 
 ```
 QueryService::open_with_meta(data_dir, meta_db_path)
-  ├── 加载 manifest.json → 解析 BuildManifest
-  ├── queryable_dimensions() → 获取可查询维度列表
-  ├── MetadataReader::open(meta_db)
-  │     ├── load_action_schema_ids() → HashSet<u32>
-  │     │     SELECT id FROM action_schemas
-  │     ├── ActionSchemaCache::new(meta_db)
-  │     │     持有只读 SQLite 连接，按 schema_id 懒加载 ActionDef 列表
-  │     ├── validate_dimension_schema_refs() → FK 完整性检查
-  │     └── dimension_action_schema_ids() → 查询维度映射
-  ├── 为每个维度: DimensionReader::open(idx_path, bin_path)
-  │     ├── IdxReader::open() → mmap .idx, 验证 PFXI 头
-  │     └── BinReader::open() → mmap .bin, 验证 PFSP 头
-  ├── 交叉验证: .idx 中的 action_schema_id 全部存在于 action_schemas id 集合
-  └── 构建 HandlePool (LRU 缓存的 DimensionReader 池)
+  └── RangeStoreFacade::open_with_meta()
+      ├── CachedMetadataReader::load(data_dir, meta_db_path)
+      │     ├── 加载 manifest.json → 解析可查询维度
+      │     ├── 打开只读 meta.db 连接
+      │     └── concrete_lines / drill_lines 元数据按查询 key 懒加载并缓存
+      └── StoreQueryService::open_with_meta()
+            ├── 加载 manifest.json → 解析可查询维度
+            ├── ActionSchemaCache::new(meta_db)
+            │     └── 持有只读 SQLite 连接，按 action_schema_id 懒加载 ActionDef 列表
+            └── HandlePool::new(data_dir, dimensions, max_open_handles)
+                  └── 只记录可查询维度和 LRU 容量；不立即 mmap .idx/.bin
 ```
 
-### 2.2 Prewarm 校验
-`hand_query_service.rs:428`
+### 2.2 Prewarm：打开维度句柄
+`range-store-core/src/query/store_query_service.rs:397`
 
 ```
-1. 打开 DimensionReader
-2. 查 dimension_action_schemas 表 → 期望的 action_schema_id 集合
-3. 扫描 .idx 文件 → 实际的 action_schema_id 集合
-4. 对比两者，不一致则报错
+1. HTTP 启动时读取 PHS_PREWARM，或外部调用 /range/prewarm
+2. QueryService::prewarm()
+   └── RangeStoreFacade::prewarm()
+       └── StoreQueryService::prewarm()
+3. pool.get_or_open(dimension)
+   ├── DimensionReader::open(idx_path, bin_path)
+   ├── IdxReader::open() → mmap .idx，验证 PFXI 头和 dense record
+   └── BinReader::open() → mmap .bin，验证 PFSP 头
+4. 返回当前已打开的 dimension handle 数量
+
+注意: prewarm 只提前打开/mmap 维度 .idx/.bin 文件；action_schemas 仍然在第一次查询用到具体 action_schema_id 时懒加载。
 ```
 
 ### 2.3 单次查询：`query()`
-`hand_query_service.rs:147`
+`range-store-core/src/query/store_query_service.rs:164`
 
 ```
 输入: dimension + concrete_line_id + hole_cards
 
-1. parse_hole_cards("AsKh" → hand_id: 0..168)
-2. pool.get_or_open(dimension) → Arc<DimensionReader>
-3. reader.query(concrete_line_id, hand_id):
-   ├── IdxReader.find(concrete_line_id):
-   │     └── 直接计算: idx_offset = HEADER_SIZE + (concrete_line_id - first_concrete_line_id) × IDX_RECORD_SIZE
-   ├── BinReader.read_pack(record.offset, record.byte_length) → &pack_bytes
-   └── decode_pack_for_hand(pack, hand_count, action_count, hand_id):
-         ├── 在 hand_ids 中查找目标 hand_id（详见第五节）
-         ├── 读取 action_mask (u32)
-         └── 只返回 mask 位为 1 的 cell: (action_id, frequency, hand_ev)
-4. 通过 IdxRecord.action_schema_id 查 ActionSchemaCache，miss 时查 SQLite 并缓存 → Vec<ActionDef>
-5. 每个 cell: action_id → ActionDef.action_name → ActionResult
+1. StoreQueryService::query()
+   ├── parse_hole_cards(hole_cards)
+   │     └── 将 "AsKh" / "AKs" / "AKo" 等输入归一化为 hand_id: u8 (0..168)
+   └── pool.get_or_open(dimension)
+         └── 获取或打开对应维度的 DimensionReader
+
+2. DimensionReader::query(concrete_line_id, hand_id)
+   ├── IdxReader.find(concrete_line_id)
+   │     ├── dense idx 下直接计算 record 偏移:
+   │     │     idx_offset = 16 + (concrete_line_id - 1) * 22
+   │     └── 读取 22 字节 IdxRecord:
+   │           concrete_line_id
+   │           action_schema_id
+   │           hand_count
+   │           offset
+   │           byte_length
+   │           checksum
+   ├── BinReader.read_pack(record.offset, record.byte_length)
+   │     └── 从 .bin mmap 中切出该 concrete_line_id 对应的一个 pack payload
+   ├── read_and_validate_pack()
+   │     ├── 校验 hand_count > 0
+   │     ├── 校验 offset + byte_length 不越界
+   │     ├── 由 hand_count + byte_length 反推出 action_count:
+   │     │     action_count = (byte_length / hand_count - 5) / 8
+   │     ├── 校验 byte_length == hand_count * (5 + action_count * 8)
+   │     ├── 校验 action_count <= 32
+   │     └── 如果开启 verify_checksum，校验 pack payload 的 CRC32C
+   └── decode_pack_for_hand(pack, hand_count, action_count, hand_id)
+
+3. pack payload 内部解析
+   ├── hand_ids 段:
+   │     hand_ids[hand_count]
+   │     在已排序 hand_ids 中查找目标 hand_id（详见第五节）
+   ├── action_masks 段:
+   │     action_masks[hand_count]
+   │     取目标 hand_index 对应的 u32 mask
+   └── cells 段:
+         cells[hand_count][action_count]
+         cell_offset = cells_start + hand_index * action_count * 8
+         每个 cell 为 frequency f32 + hand_ev f32
+
+4. action_mask 与 cells 的映射
+   ├── action_id 从 0 遍历到 action_count - 1
+   ├── 如果 (mask >> action_id) & 1 == 0:
+   │     跳过该 action，说明这个手牌在该 action 上没有有效策略值
+   └── 如果 mask 位为 1:
+         从 cells[hand_index][action_id] 读取 frequency / hand_ev
+         返回 DecodedCellResult { action_id, frequency, hand_ev }
+
+5. action_schema 语义映射
+   ├── DimensionReader 返回:
+   │     PackDecodeResult { action_schema_id, cells }
+   ├── StoreQueryService 用 action_schema_id 查询 ActionSchemaCache
+   │     └── cache miss 时从 meta.db.action_schemas 读取 action_blob 并解码
+   ├── action_blob 解码得到:
+   │     action_count
+   │     actions[action_id] = (action_name/action_type, action_size, amount_bb)
+   └── 将每个 DecodedCellResult.action_id 映射到对应 action 定义:
+         ActionResult {
+           action_name,
+           action_size,
+           amount_bb,
+           frequency,
+           hand_ev
+         }
+
+关键边界:
+- hand_count 来自 .idx record，不来自 action_schema。
+- action_count 在查询热路径中由 .idx 的 hand_count + byte_length 推导；action_schema 中的 action_blob 提供 action_id 的业务语义。
+- .idx 负责定位和边界，.bin pack 负责具体手牌策略数值，meta.db.action_schemas 负责动作定义。
+- .idx 的一条 22 字节 record 对应 .bin 中 offset..offset+byte_length 的一个 pack payload。
 ```
 
 ### 2.4 批量查询：`query_batch()`
-`hand_query_service.rs:214`
+`range-store-core/src/query/store_query_service.rs:210`
 
 ```
-Phase 1: 解析所有 hole_cards → hand_ids
-Phase 2: 按 concrete_line_id 分组
-Phase 3: 每组调用 reader.query_many_hands() (一次 pack 解码多手牌)
-Phase 4: 填充错误条目
+外部入口:
+- HTTP: POST /range/hand-strategy-batch
+- Native SDK: PokerHandsRange.queryBatch()
+- Core: RangeStoreFacade::query_batch() / StoreQueryService::query_batch()
+
+输入: dimension + [{ concrete_line_id, hole_cards }]
+
+1. StoreQueryService::query_batch()
+   ├── pool.get_or_open(dimension)
+   │     └── 整个 batch 只打开/复用一个 DimensionReader
+   ├── 逐项 parse_hole_cards(hole_cards)
+   │     ├── 成功: 得到 hand_id + hand_code，进入后续分组
+   │     └── 失败: 直接写入该 item 的 error，不影响其他 item
+   └── 按 concrete_line_id 分组:
+         concrete_line_id -> [(原始 index, hand_id, hand_code)]
+
+2. 每个 concrete_line_id 分组调用一次 DimensionReader::query_many_hands()
+   ├── IdxReader.find(concrete_line_id)
+   │     └── 只查一次 .idx record
+   ├── BinReader.read_pack(record.offset, record.byte_length)
+   │     └── 只切一次 .bin pack payload
+   ├── read_and_validate_pack()
+   │     └── 只做一次 pack 边界、长度、action_count、checksum 校验
+   └── 对该组中的多个 hand_id 逐个 decode_pack_for_hand()
+         └── 返回 Vec<Option<PackDecodeResult>>
+
+3. item-level 结果回填
+   ├── concrete_line_id 不存在:
+   │     该组所有 item 写入 404 error
+   ├── 某个 hand_id 不在该 pack 的 hand_ids 段:
+   │     只给该 item 写入 not found error
+   ├── action_schema_id 存在:
+   │     对该组只查一次 ActionSchemaCache
+   └── 成功 item:
+         cell.action_id -> action_schema[action_id]
+         输出 action_name/action_size/amount_bb/frequency/hand_ev
+
+4. 保持原始请求顺序
+   └── 分组只是内部优化；最终 results 仍按输入 items 的顺序返回。
+
+关键边界:
+- `query_batch` 不是删除项：HTTP service、native SDK 和 benchmark 都有外部入口在使用。
+- 当前实现已经走 `query_many_hands()`；同一 concrete_line_id 的多手牌共享一次 idx lookup、一次 bin pack read、一次 pack 校验。
+- 错误语义仍是 item-level：单个 item 失败不会把整个 batch 变成失败响应。
+```
+
+### 2.5 按动作过滤手牌：`hands-by-actions`
+`range-store-core/src/query/store_query_service.rs:359`
+
+```
+外部入口:
+- HTTP: POST /range/hands-by-actions
+- Native SDK: PokerHandsRange.handsByActions()
+- Core: RangeStoreFacade::hands_by_actions() / StoreQueryService::query_hands_by_actions()
+
+输入: dimension + concrete_line_id + actions? + frequency?
+
+1. HTTP/SDK 请求层
+   ├── actions 为空或缺省:
+   │     表示不过滤具体动作，只要求手牌至少有一个有效 action 超过 frequency 阈值
+   ├── actions 非空:
+   │     parse_action_filters()
+   │     支持 fold/check/call/bet/raise/allin
+   │     bet/raise/allin 可以带 amount 后缀，例如 raise2.5
+   └── frequency 缺省:
+         使用 DEFAULT_HANDS_BY_ACTIONS_FREQUENCY = 0.005
+
+2. StoreQueryService::query_hands_by_actions()
+   ├── pool.get_or_open(dimension)
+   ├── reader.query_all(concrete_line_id)
+   │     ├── IdxReader.find(concrete_line_id)
+   │     ├── BinReader.read_pack(record.offset, record.byte_length)
+   │     ├── read_and_validate_pack()
+   │     └── decode_pack(pack, hand_count, action_count)
+   └── 得到 FullRangeDecodeResult:
+         action_schema_id
+         DecodedPack { hand_ids, action_masks, cells }
+
+3. 完整 pack 解码方式
+   ├── hand_ids:
+   │     pack 中实际存在的手牌列表
+   ├── action_masks:
+   │     每个 hand_index 一个 u32 mask
+   └── cells:
+         cells[hand_count][action_count]
+         每个 cell 带 exists/frequency/hand_ev
+         exists 由对应 hand 的 action_mask 位决定
+
+4. action filter 映射成 bit mask
+   ├── 通过 action_schema_id 读取 action_blob
+   ├── action_blob 解码出 action_schema[action_id]
+   ├── 每个 ActionFilter 去匹配 action_schema:
+   │     action_name 必须一致
+   │     如果 filter 指定 amount_bb，则 amount_bb 也必须一致
+   └── 得到 filter_mask:
+         bit(action_id) = 1 表示这个 action_id 被请求的 filters 命中
+
+5. match_hands_by_actions()
+   ├── 初始化 hand_masks[169] = 0
+   ├── 遍历 pack.cells:
+   │     如果 !cell.exists，跳过
+   │     如果 cell.frequency <= frequency_threshold，跳过
+   │     如果 cell.action_id >= 32，跳过
+   │     否则:
+   │       hand_masks[cell.hand_id] |= 1 << cell.action_id
+   └── 遍历 pack.hand_ids:
+         actions 为空:
+           hand_masks[hand_id] != 0 就返回该手牌
+         actions 非空:
+           hand_masks[hand_id] & filter_mask != 0 就返回该手牌
+
+6. 输出
+   ├── StoreQueryService 返回 Vec<hand_code>
+   ├── RangeStoreFacade::hands_by_actions() 会把空 Vec 转成 NoHandsFound 业务错误
+   └── HTTP/SDK 最终返回:
+         { holeCards: ["AA", "AKs", ...] }
+
+关键边界:
+- `query()` 是查一个 hand 的 action 策略；`hands-by-actions` 是反向查询，查“哪些 hand 满足某些 action/frequency 条件”。
+- `hands-by-actions` 必须完整解码一个 pack，因为它要扫描该 concrete line 下所有 hand/action cell。
+- action filter 的语义是 OR：多个 actions 中任意一个满足频率阈值即可返回该手牌。
 ```
 
 ## 四、hand_id 说明

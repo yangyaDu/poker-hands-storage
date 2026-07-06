@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use range_store_core::dimension::DimensionRef;
 use range_store_core::metadata::{ConcreteLineFilter, ConcreteLineRow};
 use range_store_core::query::{
-    ActionFilter, DetailedBatchItemResult as CoreBatchItemResult, QueryResult as CoreQueryResult,
+    ActionFilter, BatchItemResult as CoreBatchItemResult, QueryResult as CoreQueryResult,
     RangeStoreFacade,
 };
 use serde::Serialize;
@@ -119,7 +119,7 @@ impl QueryService {
     ) -> Result<Vec<BatchItemResult>, AppError> {
         Ok(self
             .facade
-            .query_batch_detailed(dimension, requests)?
+            .query_batch(dimension, requests)?
             .into_iter()
             .map(batch_item_from_core)
             .collect())

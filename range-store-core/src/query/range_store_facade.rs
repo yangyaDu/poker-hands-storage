@@ -7,7 +7,7 @@ use crate::query::hands_by_actions::{
     format_action_filters, parse_action_filters, ActionFilter, ActionFilterParseError,
 };
 use crate::query::store_query_service::{
-    BatchItemResult, DetailedBatchItemResult, QueryResult, StoreQueryError, StoreQueryService,
+    BatchItemResult, QueryResult, StoreQueryError, StoreQueryService,
 };
 
 pub struct RangeStoreFacade {
@@ -116,16 +116,6 @@ impl RangeStoreFacade {
         requests: &[(u32, String)],
     ) -> Result<Vec<BatchItemResult>, RangeStoreError> {
         Ok(self.query_service.query_batch(dimension, requests)?)
-    }
-
-    pub fn query_batch_detailed(
-        &self,
-        dimension: &DimensionRef,
-        requests: &[(u32, String)],
-    ) -> Result<Vec<DetailedBatchItemResult>, RangeStoreError> {
-        Ok(self
-            .query_service
-            .query_batch_detailed(dimension, requests)?)
     }
 
     pub fn hands_by_actions(
