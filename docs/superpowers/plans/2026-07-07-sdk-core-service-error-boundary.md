@@ -551,6 +551,8 @@ git commit -m "refactor: align service batch error semantics"
 
 ### Task 3: Native N-API Rust Contract
 
+**Status:** Implementation verified in worktree `C:\tmp\poker-hands-storage-task1` on branch `codex/task1-core-query-contract`; commit step pending explicit approval.
+
 **Files:**
 - Modify: `range-store-native/src/lib.rs`
 
@@ -562,7 +564,7 @@ git commit -m "refactor: align service batch error semantics"
   - `QueryBatchItemResponse { concrete_line_id, hole_cards, actions }`
   - N-API errors encoded as `RANGE_STORE_ERROR:{code}:{message}`.
 
-- [ ] **Step 1: Update Rust N-API response structs**
+- [x] **Step 1: Update Rust N-API response structs**
 
 In `range-store-native/src/lib.rs`, change:
 
@@ -587,7 +589,7 @@ pub struct QueryBatchItemResponse {
 
 Remove `QueryBatchItemError` and the `input_hole_cards` / `hand_code` fields from native response structs.
 
-- [ ] **Step 2: Update native query methods**
+- [x] **Step 2: Update native query methods**
 
 Use:
 
@@ -619,7 +621,7 @@ let results = self
 Ok(QueryBatchResponse { results })
 ```
 
-- [ ] **Step 3: Encode stable error code in N-API error message**
+- [x] **Step 3: Encode stable error code in N-API error message**
 
 Change `to_napi_error` to:
 
@@ -632,7 +634,7 @@ fn to_napi_error(error: RangeStoreError) -> Error {
 }
 ```
 
-- [ ] **Step 4: Run Rust compile checks for native**
+- [x] **Step 4: Run Rust compile checks for native**
 
 Run:
 
@@ -653,6 +655,8 @@ git commit -m "refactor: slim native napi query payloads"
 
 ### Task 4: JavaScript SDK Payloads And RangeStoreError
 
+**Status:** Implementation verified in worktree `C:\tmp\poker-hands-storage-task1` on branch `codex/task1-core-query-contract`; commit step pending explicit approval.
+
 **Files:**
 - Modify: `range-store-native/index.js`
 - Modify: `range-store-native/index.d.ts`
@@ -665,7 +669,7 @@ git commit -m "refactor: slim native napi query payloads"
   - Direct SDK payloads
   - SDK tests for throw behavior.
 
-- [ ] **Step 1: Write failing SDK tests**
+- [x] **Step 1: Write failing SDK tests**
 
 In `range-store-native/tests/sdk-contract.test.js`, update success assertions:
 
@@ -733,7 +737,7 @@ test("throws RangeStoreError for invalid batch item", () => {
 });
 ```
 
-- [ ] **Step 2: Run SDK test and verify failure**
+- [x] **Step 2: Run SDK test and verify failure**
 
 Run:
 
@@ -744,7 +748,7 @@ bun test tests/sdk-contract.test.js
 
 Expected: FAIL because SDK still returns envelopes and `RangeStoreError` is not exported.
 
-- [ ] **Step 3: Implement `RangeStoreError`**
+- [x] **Step 3: Implement `RangeStoreError`**
 
 In `range-store-native/index.js`, add:
 
@@ -779,7 +783,7 @@ function callNative(fn) {
 }
 ```
 
-- [ ] **Step 4: Remove envelope helpers**
+- [x] **Step 4: Remove envelope helpers**
 
 Delete `apiErrorResult` and `normalizeApiResult`. Update SDK methods to use `callNative` and return direct payloads:
 
@@ -850,7 +854,7 @@ stats() {
 }
 ```
 
-- [ ] **Step 5: Update TypeScript declarations**
+- [x] **Step 5: Update TypeScript declarations**
 
 In `range-store-native/index.d.ts`, delete `ApiResponse<T>`. Add:
 
@@ -905,7 +909,7 @@ export interface QueryBatchResponse {
 }
 ```
 
-- [ ] **Step 6: Build native and run SDK tests**
+- [x] **Step 6: Build native and run SDK tests**
 
 Run:
 
