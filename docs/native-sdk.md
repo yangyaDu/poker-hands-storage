@@ -1,6 +1,6 @@
 # Bun/Node Native SDK
 
-更新日期：2026-07-05
+更新日期：2026-07-07
 
 ## 文档职责
 
@@ -11,7 +11,7 @@
 `range-store-native` 是 Bun/Node 进程内只读 SDK：
 
 - Rust 侧通过 `napi-rs` 暴露 `PokerHandsRange`。
-- JavaScript 侧通过 `index.js` 加载 `index.node`，并把异常转换为 `{ code, data, message }` 业务 envelope。
+- JavaScript 侧通过 `index.js` 加载 `index.node`，返回直接 payload，失败时抛出 `RangeStoreError`。
 - 查询语义复用 `range-store-core::query::RangeStoreFacade`，与 HTTP service 保持一致。
 
 它不负责：
@@ -47,15 +47,49 @@ interface PokerHandsRangeOptions {
 
 | 方法 | 返回 | 说明 |
 | --- | --- | --- |
-| `getConcreteLines(request)` | `{ code, data: { lines }, message }` | 按 `abstractLine` 列 concrete lines，或按 `concreteLine` 精确查 id |
-| `getAbstractLines(request)` | `{ code, data: { abstractLines }, message }` | 查询 drill 场景下的 abstract lines |
-| `handsByActions(request)` | `{ code, data: { holeCards }, message }` | 按 concrete line id、actions、frequency 过滤手牌 |
-| `queryHandStrategy(request)` | `{ code, data: { inputHoleCards, handCode, actions }, message }` | 查询单手牌策略 |
-| `queryBatch(request)` | `{ code, data: { results: [{ concreteLineId, holeCards, handCode?, actions?, error? }] }, message }` | 批量查询单手牌策略，成功项返回 `handCode/actions`，失败项写入 item-level `{ code, message }` |
-| `prewarm(request)` | `{ code, data: { openHandleCount }, message }` | 打开指定维度并加载必要 metadata |
-| `stats()` | `{ code, data: { schemaCount, openHandleCount, knownDimensions }, message }` | 查询 SDK 内部缓存和 handle 状态 |
+| `getConcreteLines(request)` | `{ lines }` | 按 `abstractLine` 列 concrete lines，或按 `concreteLine` 精确查 id |
+| `getAbstractLines(request)` | `{ abstractLines }` | 查询 drill 场景下的 abstract lines |
+| `handsByActions(request)` | `{ holeCards }` | 按 concrete line id、actions、frequency 过滤手牌 |
+| `queryHandStrategy(request)` | `{ actions }` | 查询单手牌策略 |
+| `queryBatch(request)` | `{ results: [{ concreteLineId, holeCards, actions }] }` | 批量查询单手牌策略；任一 item 非法或找不到时整个调用抛错 |
+| `prewarm(request)` | `{ openHandleCount }` | 打开指定维度并加载必要 metadata |
+| `stats()` | `{ schemaCount, openHandleCount, knownDimensions }` | 查询 SDK 内部缓存和 handle 状态 |
 
 `RangeStore` 是 `PokerHandsRange` 的别名。`getPokerHandsRangeSingleton(options)` 会复用同一组选项下的单例；如果重复初始化时选项不同，会抛出错误。
+
+## 错误契约
+
+Native SDK 不返回 `{ code, data, message }` envelope。调用成功时返回直接 payload；调用失败时抛出 `RangeStoreError`：
+
+```ts
+class RangeStoreError extends Error {
+  name: "RangeStoreError";
+  code: RangeStoreErrorCode;
+}
+```
+
+`message` 是完整可展示错误信息。batch 失败时，message 会带上失败 item 的下标和业务上下文，例如：
+
+```text
+Batch item requests[1] failed: Invalid card format: AsXx from concrete_line_id=1, dimension=default:6:100
+```
+
+当前公开的 `RangeStoreErrorCode`：
+
+| code | 语义 |
+| --- | --- |
+| `INVALID_ARGUMENT` | 参数语义非法，包括手牌字符串无法解析、action filter 或 frequency 非法 |
+| `DIMENSION_NOT_FOUND` | 查询维度不存在 |
+| `DATA_FILE_NOT_FOUND` | 数据目录或运行文件不存在 |
+| `INVALID_FORMAT` | manifest、idx、bin 或 metadata 格式损坏 |
+| `META_DB_ERROR` | `meta.db` 读取异常 |
+| `ACTION_SCHEMA_NOT_FOUND` | action schema 不存在 |
+| `ABSTRACT_LINE_NOT_FOUND` | abstract line 没有匹配结果 |
+| `CONCRETE_LINE_NOT_FOUND` | concrete line 不存在 |
+| `HAND_STRATEGY_NOT_FOUND` | 指定手牌在该 concrete line 下没有策略 |
+| `DRILL_SCENARIO_NOT_FOUND` | drill scenario 没有匹配结果 |
+| `HANDS_NOT_FOUND` | 没有手牌满足 actions/frequency 筛选 |
+| `INTERNAL` | 未归类内部错误或无法识别的 native 异常 |
 
 ## 构建和测试
 

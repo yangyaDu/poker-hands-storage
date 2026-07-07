@@ -90,8 +90,6 @@ function normalizeAction(action) {
 
 function normalizeHandStrategy(data) {
   return {
-    inputHoleCards: data.inputHoleCards ?? data.input_hole_cards,
-    handCode: data.handCode ?? data.hand_code,
     actions: data.actions.map(normalizeAction),
   };
 }
@@ -99,12 +97,8 @@ function normalizeHandStrategy(data) {
 function normalizeBatch(data) {
   return data.results.map((item) => ({
     concreteLineId: item.concreteLineId ?? item.concrete_line_id,
-    inputHoleCards: item.holeCards ?? item.input_hole_cards,
-    actionNames: (item.actions ?? item.strategy?.actions ?? []).map(
-      (action) => normalizeAction(action).actionName,
-    ),
-    errorCode: item.error?.code ?? null,
-    errorMessage: item.error?.message ?? null,
+    holeCards: item.holeCards ?? item.hole_cards,
+    actionNames: (item.actions ?? []).map((action) => normalizeAction(action).actionName),
   }));
 }
 
@@ -116,12 +110,10 @@ describe("Native SDK and HTTP service consistency", () => {
   testWithHttp("matches sampled business endpoints", async () => {
     const store = openStore();
 
-    const sdkConcrete = requireOk(
-      store.getConcreteLines({
-        ...sdkDimension(),
-        concreteLine: "F-F-F",
-      }),
-    );
+    const sdkConcrete = store.getConcreteLines({
+      ...sdkDimension(),
+      concreteLine: "F-F-F",
+    });
     const httpConcrete = requireOk(
       await postJson("/range/concrete-lines", {
         ...httpDimension(),
@@ -132,14 +124,12 @@ describe("Native SDK and HTTP service consistency", () => {
       normalizeConcreteLines(httpConcrete.lines),
     );
 
-    const sdkDrill = requireOk(
-      store.getAbstractLines({
-        strategy: "default",
-        drillName: "rfi",
-        playerCount: 6,
-        drillDepth: 100,
-      }),
-    );
+    const sdkDrill = store.getAbstractLines({
+      strategy: "default",
+      drillName: "rfi",
+      playerCount: 6,
+      drillDepth: 100,
+    });
     const httpDrill = requireOk(
       await postJson("/range/drill-scenarios", {
         strategy: "default",
@@ -150,13 +140,11 @@ describe("Native SDK and HTTP service consistency", () => {
     );
     expect(sdkDrill.abstractLines).toEqual(httpDrill.abstract_lines);
 
-    const sdkHand = requireOk(
-      store.queryHandStrategy({
-        ...sdkDimension(),
-        concreteLineId: 1,
-        holeCards: "AA",
-      }),
-    );
+    const sdkHand = store.queryHandStrategy({
+      ...sdkDimension(),
+      concreteLineId: 1,
+      holeCards: "AA",
+    });
     const httpHand = requireOk(
       await postJson("/range/hand-strategy", {
         ...httpDimension(),
@@ -166,33 +154,29 @@ describe("Native SDK and HTTP service consistency", () => {
     );
     expect(normalizeHandStrategy(sdkHand)).toEqual(normalizeHandStrategy(httpHand));
 
-    const sdkBatch = requireOk(
-      store.queryBatch({
-        ...sdkDimension(),
-        items: [
-          { concreteLineId: 1, holeCards: "AA" },
-          { concreteLineId: 1, holeCards: "AsXx" },
-        ],
-      }),
-    );
+    const sdkBatch = store.queryBatch({
+      ...sdkDimension(),
+      items: [
+        { concreteLineId: 1, holeCards: "AA" },
+        { concreteLineId: 1, holeCards: "KK" },
+      ],
+    });
     const httpBatch = requireOk(
       await postJson("/range/hand-strategy-batch", {
         ...httpDimension(),
         requests: [
           { concrete_line_id: 1, hole_cards: "AA" },
-          { concrete_line_id: 1, hole_cards: "AsXx" },
+          { concrete_line_id: 1, hole_cards: "KK" },
         ],
       }),
     );
     expect(normalizeBatch(sdkBatch)).toEqual(normalizeBatch(httpBatch));
 
-    const sdkHands = requireOk(
-      store.handsByActions({
-        ...sdkDimension(),
-        concreteLineId: 1,
-        actions: [],
-      }),
-    );
+    const sdkHands = store.handsByActions({
+      ...sdkDimension(),
+      concreteLineId: 1,
+      actions: [],
+    });
     const httpHands = requireOk(
       await postJson("/range/hands-by-actions", {
         ...httpDimension(),

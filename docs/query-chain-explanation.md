@@ -332,8 +332,6 @@ for cell in fragment.cells {
 
 ```rust
 Ok(QueryHandStrategyResponse {
-    input_hole_cards: result.input_hole_cards,
-    hand_code: result.hand_code,
     actions: result.actions.into_iter()
         .map(|a| ActionResult {
             action_name: a.action_name,
@@ -353,13 +351,7 @@ Ok(QueryHandStrategyResponse {
 queryHandStrategy(request) {
     const result = this.#native.queryHandStrategy({...});
     return {
-        code: 0,
-        data: {
-            inputHoleCards: result.inputHoleCards,
-            handCode: result.handCode,
-            actions: result.actions.map(fromNativeAction),
-        },
-        message: null,
+        actions: result.actions.map(fromNativeAction),
     };
 }
 ```
@@ -367,17 +359,11 @@ queryHandStrategy(request) {
 最终返回给调用方：
 ```json
 {
-  "code": 0,
-  "data": {
-    "inputHoleCards": "AKs",
-    "handCode": "AKs",
-    "actions": [
-      { "actionName": "fold", "frequency": 0.25, "handEv": null },
-      { "actionName": "call", "frequency": 0.60, "handEv": 1.234 },
-      { "actionName": "raise2.5", "frequency": 0.15, "handEv": 2.567 }
-    ]
-  },
-  "message": null
+  "actions": [
+    { "actionName": "fold", "frequency": 0.25, "handEv": null },
+    { "actionName": "call", "frequency": 0.60, "handEv": 1.234 },
+    { "actionName": "raise2.5", "frequency": 0.15, "handEv": 2.567 }
+  ]
 }
 ```
 

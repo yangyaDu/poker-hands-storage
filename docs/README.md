@@ -73,7 +73,7 @@
 | --- | --- | --- |
 | `range-store-core` | 存储格式、reader、校验、metadata、查询 facade | HTTP、N-API、CLI 编排 |
 | `service` | HTTP API、OpenAPI、错误映射、health/readiness、Docker 入口 | 离线构建、benchmark、native SDK 包装 |
-| `range-store-native` | Bun/Node native SDK、业务 envelope、singleton、SDK 测试 | 源 SQLite cross verify、报告生成 |
+| `range-store-native` | Bun/Node native SDK、直接 payload、`RangeStoreError`、singleton、SDK 测试 | 源 SQLite cross verify、报告生成 |
 | `storage-tools` | 构建、验证、benchmark、报告 | 线上服务运行时 |
 
 `service`、`range-store-native` 和 `storage-tools` 不互相依赖业务代码；三者只复用 `range-store-core`。

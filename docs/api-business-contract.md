@@ -1,6 +1,6 @@
 # API 业务逻辑和接口契约
 
-更新日期：2026-07-05
+更新日期：2026-07-07
 
 ## 总体说明
 
@@ -46,7 +46,7 @@ GET /api-docs/openapi.json
 | HTTP 状态 | 业务 `code` | 场景 |
 | ---: | ---: | --- |
 | 200 | 0 | 请求成功 |
-| 400 | 1000 | JSON 解析失败、参数校验失败、未知手牌、非法参数 |
+| 400 | 1000 | JSON 解析失败、参数校验失败、手牌格式无法解析、非法参数 |
 | 404 | 404 | 维度、文件、concrete line、drill scenario、手牌策略或筛选结果不存在 |
 | 503 | 503 | 服务未 ready |
 | 500 | 500 | 格式损坏、元数据库错误、内部异常等未归类错误 |
@@ -55,7 +55,6 @@ GET /api-docs/openapi.json
 
 | 内部错误 | 公开业务码 |
 | --- | ---: |
-| `UNKNOWN_HAND` | 1000 |
 | `INVALID_ARGUMENT` | 1000 |
 | `BIN_FILE_NOT_FOUND` | 404 |
 | `PACK_NOT_FOUND` | 404 |
@@ -308,8 +307,6 @@ F-F-F-R2-F-R7-R15
 {
   "code": 0,
   "data": {
-    "input_hole_cards": "AA",
-    "hand_code": "AA",
     "actions": [
       {
         "action_name": "raise",
@@ -328,7 +325,7 @@ F-F-F-R2-F-R7-R15
 
 | HTTP | 业务码 | 场景 |
 | ---: | ---: | --- |
-| 400 | 1000 | 未知手牌或参数非法 |
+| 400 | 1000 | 手牌格式无法解析或参数非法 |
 | 404 | 404 | 维度、concrete line 或该手牌策略不存在 |
 | 500 | 500 | 文件格式或元数据异常 |
 
@@ -356,8 +353,10 @@ F-F-F-R2-F-R7-R15
 
 - `requests` 必须至少 1 条。
 - `requests` 最多 500 条。
-- 维度打开失败会作为整个请求错误返回。
-- 单个 item 的未知手牌、concrete line 不存在、手牌不在该 line 范围内，会写入该 item 的 `error`，HTTP 仍为 200。
+- batch 是 all-or-nothing 语义；任一 item 的手牌格式非法、concrete line 不存在、手牌不在该 line 范围内，整个请求返回错误。
+- 错误 message 会带上失败 item 的下标和上下文，例如 `requests[1]`、`concrete_line_id` 和 `dimension`。
+- 成功响应的每个 item 只包含 `concrete_line_id`、`hole_cards` 和 `actions`。
+- 不返回 per-item `error`，也不返回嵌套 `strategy`。
 
 响应：
 
@@ -368,12 +367,8 @@ F-F-F-R2-F-R7-R15
     "results": [
       {
         "concrete_line_id": 1,
-        "input_hole_cards": "AA",
-        "hand_code": "AA",
-        "strategy": {
-          "actions": []
-        },
-        "error": null
+        "hole_cards": "AA",
+        "actions": []
       }
     ]
   },
@@ -381,18 +376,21 @@ F-F-F-R2-F-R7-R15
 }
 ```
 
-单项失败示例：
+失败示例：
 
 ```json
 {
-  "concrete_line_id": 999999,
-  "input_hole_cards": "AA",
-  "hand_code": "AA",
-  "strategy": null,
-  "error": {
-    "code": 404,
-    "message": "Concrete line not found: concrete_line_id=999999, dimension=default:6:100"
-  }
+  "code": 1000,
+  "data": null,
+  "message": "Batch item requests[1] failed: Invalid card format: AsXx from concrete_line_id=1, dimension=default:6:100"
+}
+```
+
+```json
+{
+  "code": 404,
+  "data": null,
+  "message": "Batch item requests[3] failed: Concrete line not found: concrete_line_id=999, dimension=default:6:100"
 }
 ```
 

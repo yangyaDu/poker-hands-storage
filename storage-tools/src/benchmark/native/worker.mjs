@@ -114,35 +114,6 @@ function dimensionRequest(item) {
 function countBatchActions(response) {
   let total = 0;
   for (const item of response.results) {
-    if (item.error) {
-      throw new Error(item.error);
-    }
-    total += item.actions?.length ?? 0;
-  }
-  return total;
-}
-
-function requireApiData(response) {
-  if (response.code !== 0) {
-    throw new Error(response.message ?? `Native API returned code ${response.code}`);
-  }
-  return response.data;
-}
-
-function readApiData(response) {
-  if (response && typeof response === "object" && "code" in response) {
-    return requireApiData(response);
-  }
-  return response;
-}
-
-function countBatchActionsEnvelope(response) {
-  const data = readApiData(response);
-  let total = 0;
-  for (const item of data.results) {
-    if (item.error) {
-      throw new Error(item.error.message);
-    }
     total += item.actions?.length ?? 0;
   }
   return total;
@@ -162,27 +133,23 @@ function handsByActionsRequest(item, concreteLineId) {
 
 function callHandsByActions(mode, store, item, concreteLineId) {
   const request = handsByActionsRequest(item, concreteLineId);
-  return readApiData(store.handsByActions(request)).holeCards.length;
+  return store.handsByActions(request).holeCards.length;
 }
 
 function callDrillScenario(store, item) {
-  return readApiData(
-    store.getAbstractLines({
-      strategy: item.strategy,
-      drillName: item.drillName,
-      playerCount: item.playerCount,
-      drillDepth: item.drillDepth,
-    }),
-  ).abstractLines.length;
+  return store.getAbstractLines({
+    strategy: item.strategy,
+    drillName: item.drillName,
+    playerCount: item.playerCount,
+    drillDepth: item.drillDepth,
+  }).abstractLines.length;
 }
 
 function resolveConcreteLineId(store, item) {
-  const data = readApiData(
-    store.getConcreteLines({
-      ...dimensionRequest(item),
-      concreteLine: item.concreteLine,
-    }),
-  );
+  const data = store.getConcreteLines({
+    ...dimensionRequest(item),
+    concreteLine: item.concreteLine,
+  });
   if (data.lines.length !== 1) {
     throw new Error(`expected one concrete line, got ${data.lines.length}`);
   }
@@ -211,17 +178,15 @@ function pushStoreCases(cases, mode, store) {
   cases.push(
     measureCase(
       `${prefix}:hand-strategy`,
-      `Single concrete_line_id + hand query through ${prefix} business envelope API.`,
+      `Single concrete_line_id + hand query through ${prefix} direct payload API.`,
       input.workload.handQueries,
       input.warmupIterations,
       (item) =>
-        readApiData(
-          store.queryHandStrategy({
-            ...dimensionRequest(item),
-            concreteLineId: item.concreteLineId,
-            holeCards: item.holeCards,
-          }),
-        ).actions.length,
+        store.queryHandStrategy({
+          ...dimensionRequest(item),
+          concreteLineId: item.concreteLineId,
+          holeCards: item.holeCards,
+        }).actions.length,
     ),
   );
   cases.push(
@@ -231,7 +196,7 @@ function pushStoreCases(cases, mode, store) {
       input.workload.batchQueries,
       input.warmupIterations,
       (item) =>
-        countBatchActionsEnvelope(
+        countBatchActions(
           store.queryBatch({
             ...dimensionRequest(item),
             items: item.requests,
@@ -244,11 +209,11 @@ function pushStoreCases(cases, mode, store) {
     cases.push(
       measureCase(
         `${prefix}:batch-size-${size}`,
-        `Run ${size} lookups per batch through ${prefix} business envelope API.`,
+        `Run ${size} lookups per batch through ${prefix} direct payload API.`,
         queries,
         input.warmupIterations,
         (item) =>
-          countBatchActionsEnvelope(
+          countBatchActions(
             store.queryBatch({
               ...dimensionRequest(item),
               items: item.requests,
@@ -308,16 +273,14 @@ function warmupStore(mode, store) {
     return 1;
   });
   runWarmupItems(input.workload.handQueries, input.warmupIterations, (item) =>
-    readApiData(
-      store.queryHandStrategy({
-        ...dimensionRequest(item),
-        concreteLineId: item.concreteLineId,
-        holeCards: item.holeCards,
-      }),
-    ).actions.length,
+    store.queryHandStrategy({
+      ...dimensionRequest(item),
+      concreteLineId: item.concreteLineId,
+      holeCards: item.holeCards,
+    }).actions.length,
   );
   runWarmupItems(input.workload.batchQueries, input.warmupIterations, (item) =>
-    countBatchActionsEnvelope(
+    countBatchActions(
       store.queryBatch({
         ...dimensionRequest(item),
         items: item.requests,
@@ -326,7 +289,7 @@ function warmupStore(mode, store) {
   );
   for (const [, queries] of input.workload.batchQueriesBySize) {
     runWarmupItems(queries, input.warmupIterations, (item) =>
-      countBatchActionsEnvelope(
+      countBatchActions(
         store.queryBatch({
           ...dimensionRequest(item),
           items: item.requests,
@@ -389,8 +352,8 @@ if (input.workload.handQueries.length > 0) {
     holeCards: firstQuery.holeCards,
   });
   firstQueryMs = performance.now() - firstQueryStart;
-  firstQueryResultCount = readApiData(result).actions.length;
-  statsAfterFirstQuery = readApiData(store.stats());
+  firstQueryResultCount = result.actions.length;
+  statsAfterFirstQuery = store.stats();
 }
 const memoryAfterFirstQuery = memorySnapshot(
   `Bun process memory after native ${mode} first query.`,
@@ -404,7 +367,7 @@ const cases = [];
 pushStoreCases(cases, mode, store);
 
 const memoryAfter = memorySnapshot(`Bun process memory after native ${mode} benchmark.`);
-const statsAfterBenchmark = readApiData(store.stats());
+const statsAfterBenchmark = store.stats();
 
 const output = {
   coldStart: {

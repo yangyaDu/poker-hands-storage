@@ -213,10 +213,10 @@ QueryService::open_with_meta(data_dir, meta_db_path)
    ├── pool.get_or_open(dimension)
    │     └── 整个 batch 只打开/复用一个 DimensionReader
    ├── 逐项 parse_hole_cards(hole_cards)
-   │     ├── 成功: 得到 hand_id + hand_code，进入后续分组
-   │     └── 失败: 直接写入该 item 的 error，不影响其他 item
+   │     ├── 成功: 得到 hand_id，进入后续分组
+   │     └── 失败: 包装成带 requests[index] 上下文的 batch error，整个 batch 返回错误
    └── 按 concrete_line_id 分组:
-         concrete_line_id -> [(原始 index, hand_id, hand_code)]
+         concrete_line_id -> [(原始 index, hole_cards, hand_id)]
 
 2. 每个 concrete_line_id 分组调用一次 DimensionReader::query_many_hands()
    ├── IdxReader.find(concrete_line_id)
@@ -228,24 +228,24 @@ QueryService::open_with_meta(data_dir, meta_db_path)
    └── 对该组中的多个 hand_id 逐个 decode_pack_for_hand()
          └── 返回 Vec<Option<PackDecodeResult>>
 
-3. item-level 结果回填
+3. 结果组装与错误传播
    ├── concrete_line_id 不存在:
-   │     该组所有 item 写入 404 error
+   │     包装成带 requests[index] 上下文的 batch error，整个 batch 返回错误
    ├── 某个 hand_id 不在该 pack 的 hand_ids 段:
-   │     只给该 item 写入 not found error
+   │     包装成对应 item 的 batch error，整个 batch 返回错误
    ├── action_schema_id 存在:
    │     对该组只查一次 ActionSchemaCache
    └── 成功 item:
          cell.action_id -> action_schema[action_id]
-         输出 action_name/action_size/amount_bb/frequency/hand_ev
+         输出 concrete_line_id/hole_cards/actions
 
 4. 保持原始请求顺序
-   └── 分组只是内部优化；最终 results 仍按输入 items 的顺序返回。
+   └── 分组只是内部优化；成功时 results 仍按输入 items 的顺序返回。
 
 关键边界:
 - `query_batch` 不是删除项：HTTP service、native SDK 和 benchmark 都有外部入口在使用。
 - 当前实现已经走 `query_many_hands()`；同一 concrete_line_id 的多手牌共享一次 idx lookup、一次 bin pack read、一次 pack 校验。
-- 错误语义仍是 item-level：单个 item 失败不会把整个 batch 变成失败响应。
+- 错误语义是 all-or-nothing：单个 item 失败会让整个 batch 返回错误，不返回 item-level `error`。
 ```
 
 ### 2.5 按动作过滤手牌：`hands-by-actions`

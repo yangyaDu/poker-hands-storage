@@ -795,13 +795,8 @@ fn core_batch_action_count(
         .query_batch(&item.dimension(), &requests)
         .map_err(|error| error.to_string())?;
     let mut total = 0usize;
-    for result in results {
-        if let Some(error) = result.error {
-            return Err(error.message);
-        }
-        if let Some(actions) = result.actions {
-            total += actions.len();
-        }
+    for result in results.results {
+        total += result.actions.len();
     }
     Ok(total)
 }
@@ -961,18 +956,10 @@ fn http_batch_action_count(
         .ok_or_else(|| "HTTP batch response missing data.results".to_owned())?;
     let mut total = 0usize;
     for result in results {
-        if let Some(error) = result.get("error").filter(|value| !value.is_null()) {
-            return Err(error
-                .get("message")
-                .and_then(|value| value.as_str())
-                .unwrap_or("HTTP batch item failed")
-                .to_owned());
-        }
         let actions = result
-            .get("strategy")
-            .and_then(|strategy| strategy.get("actions"))
+            .get("actions")
             .and_then(|value| value.as_array())
-            .ok_or_else(|| "HTTP batch item missing strategy.actions".to_owned())?;
+            .ok_or_else(|| "HTTP batch item missing actions".to_owned())?;
         total += actions.len();
     }
     Ok(total)

@@ -21,8 +21,8 @@
 | 源数据一致性 | 二进制解码结果与源 SQLite `range_data_*` rows 对齐 | `storage-tools verify --mode cross` |
 | Float32 精度 | `frequency`、`hand_ev` 按 IEEE754 Float32 bit-exact 比对 | cross verify |
 | 查询结果抽样 | benchmark workload 下 Binary 和 SQLite result count / case 兼容性 | `benchmark --verify-results`、`benchmark-compare` |
-| API 边界 | HTTP 路由、OpenAPI、请求校验、错误码、batch 单项错误 | `service/tests/http/*` |
-| Native 边界 | Bun SDK envelope、lazy schema cache、native 与 HTTP 抽样一致性 | `range-store-native/tests/*` |
+| API 边界 | HTTP 路由、OpenAPI、请求校验、错误码、batch all-or-nothing 语义 | `service/tests/http/*` |
+| Native 边界 | Bun SDK 直接 payload、`RangeStoreError`、lazy schema cache、native 与 HTTP 抽样一致性 | `range-store-native/tests/*` |
 
 验证口径说明：
 
@@ -218,7 +218,7 @@ Cross 验证以源 SQLite 为基准，检查二进制解码结果是否一致。
 - `PACK_READ_ERROR`
 - `CHECKSUM_MISMATCH`
 - `PACK_DECODE_ERROR`
-- `UNKNOWN_HAND`
+- `INVALID_ARGUMENT`
 - `HAND_NOT_FOUND_IN_PACK`
 - action 字段不一致
 - Float32 bit-exact 不一致

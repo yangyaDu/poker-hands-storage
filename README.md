@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | `range-store-core` | Rust 只读查询核心 | 负责 manifest、metadata、`.idx/.bin` reader、pack decode、CRC32C、LRU handle pool 和 `RangeStoreFacade` |
 | `service` | HTTP API 服务 | 提供 OpenAPI、请求校验、错误码映射、health/readiness、Docker 运行入口 |
-| `range-store-native` | Bun/Node 进程内 SDK | 通过 napi-rs 加载同一套 core 查询能力，返回业务 envelope |
+| `range-store-native` | Bun/Node 进程内 SDK | 通过 napi-rs 加载同一套 core 查询能力，返回直接 payload 并用 `RangeStoreError` 表达失败 |
 | `storage-tools` | 离线工具 | 提供构建、standalone/cross verify、SQLite/Binary/native benchmark 和报告生成 |
 | `.docker` | HTTP service 容器化 | Dockerfile 只构建 `range-store-core` + `service`，不包含 benchmark 或 native SDK |
 | `docs` | 项目文档 | 入口见 [docs/README.md](docs/README.md) |
@@ -99,7 +99,7 @@ poker-hands-storage/
 |   |-- Cargo.toml                     # napi-rs native crate 配置
 |   |-- build.rs                       # napi-rs 构建初始化
 |   |-- package.json                   # Bun 构建和 SDK 测试脚本
-|   |-- index.js                       # JS SDK 包装层，加载 index.node 并返回业务 envelope
+|   |-- index.js                       # JS SDK 包装层，加载 index.node，返回直接 payload，失败时抛 RangeStoreError
 |   |-- index.d.ts                     # TypeScript API 类型声明
 |   |-- src/lib.rs                     # N-API 绑定，复用 RangeStoreFacade
 |   `-- tests/
