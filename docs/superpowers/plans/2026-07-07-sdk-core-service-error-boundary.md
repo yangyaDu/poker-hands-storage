@@ -320,6 +320,8 @@ git commit -m "refactor: tighten core query error contract"
 
 ### Task 2: Service Query Contract And HTTP Error Semantics
 
+**Status:** Implementation verified in worktree `C:\tmp\poker-hands-storage-task1` on branch `codex/task1-core-query-contract`; commit step pending explicit approval.
+
 **Files:**
 - Modify: `service/src/query/hand_query_service.rs`
 - Modify: `service/src/query/mod.rs`
@@ -335,7 +337,7 @@ git commit -m "refactor: tighten core query error contract"
   - HTTP batch data: `{ "results": [{ "concrete_line_id", "hole_cards", "actions" }] }`
   - HTTP batch failure: non-200 error envelope.
 
-- [ ] **Step 1: Write failing service tests**
+- [x] **Step 1: Write failing service tests**
 
 In `service/tests/http/router.test.rs`, update `hand_strategy_query_returns_expected_frequency`:
 
@@ -408,7 +410,7 @@ async fn hand_strategy_batch_query_is_all_or_nothing() {
 }
 ```
 
-- [ ] **Step 2: Run service tests and verify failure**
+- [x] **Step 2: Run service tests and verify failure**
 
 Run:
 
@@ -418,7 +420,7 @@ cargo test -p poker-hands-storage-service --test http_router_test
 
 Expected: FAIL because service still returns per-item batch errors and `hand_code`.
 
-- [ ] **Step 3: Update service query structs**
+- [x] **Step 3: Update service query structs**
 
 In `service/src/query/hand_query_service.rs`, use:
 
@@ -438,7 +440,7 @@ pub struct BatchItemResult {
 
 Remove `BatchStrategyResult` and `ErrorInfo` from the service query module.
 
-- [ ] **Step 4: Update service mapping functions**
+- [x] **Step 4: Update service mapping functions**
 
 Use:
 
@@ -476,7 +478,7 @@ pub fn query_batch(
 }
 ```
 
-- [ ] **Step 5: Update service error mapping**
+- [x] **Step 5: Update service error mapping**
 
 In `service/src/errors/app_error.rs`:
 
@@ -511,7 +513,7 @@ impl From<HandDictError> for AppError {
 }
 ```
 
-- [ ] **Step 6: Update route and OpenAPI wording**
+- [x] **Step 6: Update route and OpenAPI wording**
 
 In `service/src/routes/hand_query_routes.rs`, change `BatchPayload` doc to:
 
@@ -528,7 +530,7 @@ In the `#[utoipa::path]` for `/range/hand-strategy-batch`, change the 200 descri
 
 In `service/src/http/openapi.rs`, remove imports and schema registrations for `BatchStrategyResult` and `ErrorInfo`. Ensure `BatchItemResult` schema contains only `concrete_line_id`, `hole_cards`, and `actions`.
 
-- [ ] **Step 7: Run service tests**
+- [x] **Step 7: Run service tests**
 
 Run:
 
