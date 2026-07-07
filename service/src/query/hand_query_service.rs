@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use range_store_core::dimension::DimensionRef;
 use range_store_core::metadata::{ConcreteLineFilter, ConcreteLineRow};
 use range_store_core::query::{
-    ActionFilter, BatchItemResult as CoreBatchItemResult, QueryResult as CoreQueryResult,
+    ActionFilter, QueryBatchItemResult as CoreBatchItemResult, QueryResult as CoreQueryResult,
     RangeStoreFacade,
 };
 use serde::Serialize;
@@ -31,10 +31,6 @@ pub struct ActionResult {
 
 #[derive(Debug, Clone, Serialize, ToSchema, PartialEq)]
 pub struct QueryResult {
-    /// Original hole-card input from the request.
-    pub input_hole_cards: String,
-    /// Normalized 169-hand code.
-    pub hand_code: String,
     /// Ordered action strategy entries.
     pub actions: Vec<ActionResult>,
 }
@@ -44,27 +40,9 @@ pub struct BatchItemResult {
     /// Concrete line id for this batch item.
     pub concrete_line_id: u32,
     /// Original hole-card input for this batch item.
-    pub input_hole_cards: String,
-    /// Normalized 169-hand code when the hand input is valid.
-    pub hand_code: Option<String>,
-    /// Strategy result when the item was resolved successfully.
-    pub strategy: Option<BatchStrategyResult>,
-    /// Per-item error for invalid hand input or lookup failures.
-    pub error: Option<ErrorInfo>,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct BatchStrategyResult {
+    pub hole_cards: String,
     /// Ordered action strategy entries.
     pub actions: Vec<ActionResult>,
-}
-
-#[derive(Debug, Clone, Serialize, ToSchema)]
-pub struct ErrorInfo {
-    /// Public API error code: 1000, 404, or 500.
-    pub code: i32,
-    /// Human-readable error message.
-    pub message: String,
 }
 
 #[derive(Debug, Clone, Serialize, ToSchema)]
@@ -120,6 +98,7 @@ impl QueryService {
         Ok(self
             .facade
             .query_batch(dimension, requests)?
+            .results
             .into_iter()
             .map(batch_item_from_core)
             .collect())
@@ -180,8 +159,6 @@ impl QueryService {
 
 fn query_result_from_core(result: CoreQueryResult) -> QueryResult {
     QueryResult {
-        input_hole_cards: result.input_hole_cards,
-        hand_code: result.hand_code,
         actions: result.actions.into_iter().map(action_from_core).collect(),
     }
 }
@@ -189,15 +166,8 @@ fn query_result_from_core(result: CoreQueryResult) -> QueryResult {
 fn batch_item_from_core(item: CoreBatchItemResult) -> BatchItemResult {
     BatchItemResult {
         concrete_line_id: item.concrete_line_id,
-        input_hole_cards: item.hole_cards,
-        hand_code: item.hand_code,
-        strategy: item.actions.map(|actions| BatchStrategyResult {
-            actions: actions.into_iter().map(action_from_core).collect(),
-        }),
-        error: item.error.map(|error| ErrorInfo {
-            code: error.code,
-            message: error.message,
-        }),
+        hole_cards: item.hole_cards,
+        actions: item.actions.into_iter().map(action_from_core).collect(),
     }
 }
 

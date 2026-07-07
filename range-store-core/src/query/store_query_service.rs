@@ -31,11 +31,21 @@ pub struct StoreQueryService {
 /// Result of a single hand query.
 #[derive(Debug, Clone)]
 pub struct QueryResult {
-    /// Original hole-card input.
-    pub input_hole_cards: String,
-    /// Normalized 169-hand code.
-    pub hand_code: String,
     /// Ordered action strategy entries.
+    pub actions: Vec<ActionResult>,
+}
+
+/// Result of a strict batch hand query.
+#[derive(Debug, Clone)]
+pub struct QueryBatchResult {
+    pub results: Vec<QueryBatchItemResult>,
+}
+
+/// A successful item in a strict batch hand query.
+#[derive(Debug, Clone)]
+pub struct QueryBatchItemResult {
+    pub concrete_line_id: u32,
+    pub hole_cards: String,
     pub actions: Vec<ActionResult>,
 }
 
@@ -61,18 +71,37 @@ pub enum StoreQueryError {
     ActionSchema(ActionSchemaLoadError),
     ActionFilter(ActionFilterParseError),
     HandlePool(HandlePoolError),
-    HandParse(HandDictError),
+    InvalidArgument(String),
     ActionSchemaNotFound(u32),
     Io(String),
-    NotFound(String),
+    ConcreteLineNotFound {
+        dimension: DimensionRef,
+        concrete_line_id: u32,
+    },
+    HandStrategyNotFound {
+        dimension: DimensionRef,
+        concrete_line_id: u32,
+        hole_cards: String,
+    },
+    BatchItem {
+        index: usize,
+        concrete_line_id: u32,
+        hole_cards: String,
+        dimension: DimensionRef,
+        source: Box<StoreQueryError>,
+    },
     Internal(String),
 }
 
 impl StoreQueryError {
     pub fn public_code(&self) -> i32 {
         match self {
-            Self::HandParse(_) | Self::ActionFilter(_) => 1000,
-            Self::HandlePool(_) | Self::NotFound(_) | Self::ActionSchemaNotFound(_) => 404,
+            Self::InvalidArgument(_) | Self::ActionFilter(_) => 1000,
+            Self::HandlePool(_)
+            | Self::ConcreteLineNotFound { .. }
+            | Self::HandStrategyNotFound { .. }
+            | Self::ActionSchemaNotFound(_) => 404,
+            Self::BatchItem { source, .. } => source.public_code(),
             Self::Manifest(_) | Self::ActionSchema(_) | Self::Io(_) | Self::Internal(_) => 500,
         }
     }
@@ -85,12 +114,39 @@ impl std::fmt::Display for StoreQueryError {
             Self::ActionSchema(e) => write!(f, "Action schema error: {e}"),
             Self::ActionFilter(e) => write!(f, "{e}"),
             Self::HandlePool(e) => write!(f, "{e}"),
-            Self::HandParse(e) => write!(f, "{e}"),
+            Self::InvalidArgument(message) => write!(f, "{message}"),
             Self::ActionSchemaNotFound(action_schema_id) => {
                 write!(f, "Action schema {action_schema_id} not found")
             }
             Self::Io(msg) => write!(f, "IO error: {msg}"),
-            Self::NotFound(msg) => write!(f, "Not found: {msg}"),
+            Self::ConcreteLineNotFound {
+                dimension,
+                concrete_line_id,
+            } => write!(
+                f,
+                "Concrete line not found: concrete_line_id={concrete_line_id}, dimension={}:{}:{}",
+                dimension.strategy, dimension.player_count, dimension.depth_bb
+            ),
+            Self::HandStrategyNotFound {
+                dimension,
+                concrete_line_id,
+                hole_cards,
+            } => write!(
+                f,
+                "Hand {hole_cards} is outside the range for action line concrete_line_id={concrete_line_id} in dimension {}:{}:{}",
+                dimension.strategy, dimension.player_count, dimension.depth_bb
+            ),
+            Self::BatchItem {
+                index,
+                concrete_line_id,
+                dimension,
+                source,
+                ..
+            } => write!(
+                f,
+                "Batch item requests[{index}] failed: {source} from concrete_line_id={concrete_line_id}, dimension={}:{}:{}",
+                dimension.strategy, dimension.player_count, dimension.depth_bb
+            ),
             Self::Internal(msg) => write!(f, "Internal error: {msg}"),
         }
     }
@@ -124,7 +180,7 @@ impl From<HandlePoolError> for StoreQueryError {
 
 impl From<HandDictError> for StoreQueryError {
     fn from(error: HandDictError) -> Self {
-        Self::HandParse(error)
+        Self::InvalidArgument(error.to_string())
     }
 }
 
@@ -199,11 +255,7 @@ impl StoreQueryService {
             });
         }
 
-        Ok(QueryResult {
-            input_hole_cards: parsed.input,
-            hand_code: parsed.hand_code,
-            actions,
-        })
+        Ok(QueryResult { actions })
     }
 
     /// Query a batch of (concrete_line_id, hole_cards) pairs.
@@ -211,144 +263,25 @@ impl StoreQueryService {
         &self,
         dimension: &DimensionRef,
         requests: &[(u32, String)],
-    ) -> Result<Vec<BatchItemResult>, StoreQueryError> {
-        let reader = self.pool.get_or_open(dimension)?;
-        let mut results: Vec<Option<BatchItemResult>> = vec![None; requests.len()];
-        let mut groups: HashMap<u32, Vec<ParsedBatchRequest>> = HashMap::new();
-
+    ) -> Result<QueryBatchResult, StoreQueryError> {
+        let mut results = Vec::with_capacity(requests.len());
         for (index, (concrete_line_id, hole_cards)) in requests.iter().enumerate() {
-            match parse_hole_cards(hole_cards) {
-                Ok(parsed) => {
-                    groups
-                        .entry(*concrete_line_id)
-                        .or_default()
-                        .push(ParsedBatchRequest {
-                            index,
-                            hand_id: parsed.hand_id,
-                            parsed_input: parsed.input,
-                            hand_code: parsed.hand_code,
-                        });
-                }
-                Err(error) => {
-                    results[index] = Some(detailed_batch_error(
-                        *concrete_line_id,
-                        hole_cards.clone(),
-                        StoreQueryError::HandParse(error),
-                    ));
-                }
-            }
+            let item = self
+                .query(dimension, *concrete_line_id, hole_cards)
+                .map_err(|source| StoreQueryError::BatchItem {
+                    index,
+                    concrete_line_id: *concrete_line_id,
+                    hole_cards: hole_cards.clone(),
+                    dimension: dimension.clone(),
+                    source: Box::new(source),
+                })?;
+            results.push(QueryBatchItemResult {
+                concrete_line_id: *concrete_line_id,
+                hole_cards: hole_cards.clone(),
+                actions: item.actions,
+            });
         }
-
-        for (concrete_line_id, group) in groups {
-            let hand_ids = group.iter().map(|item| item.hand_id).collect::<Vec<_>>();
-            let decoded = match reader.query_many_hands(
-                concrete_line_id,
-                &hand_ids,
-                self.verify_checksums,
-            ) {
-                Ok(Some((_action_schema_id, decoded))) if decoded.len() == group.len() => decoded,
-                Ok(Some((_action_schema_id, decoded))) => {
-                    let error = StoreQueryError::Internal(format!(
-                        "Batch decode result length {} does not match request length {} for concrete_line_id {}",
-                        decoded.len(),
-                        group.len(),
-                        concrete_line_id
-                    ));
-                    fill_group_error(&mut results, requests, &group, concrete_line_id, error);
-                    continue;
-                }
-                Ok(None) => {
-                    fill_group_error(
-                        &mut results,
-                        requests,
-                        &group,
-                        concrete_line_id,
-                        concrete_line_not_found_error(dimension, concrete_line_id),
-                    );
-                    continue;
-                }
-                Err(error) => {
-                    fill_group_error(
-                        &mut results,
-                        requests,
-                        &group,
-                        concrete_line_id,
-                        StoreQueryError::Io(error.to_string()),
-                    );
-                    continue;
-                }
-            };
-
-            let action_schema_id = decoded
-                .iter()
-                .flatten()
-                .map(|fragment| fragment.action_schema_id)
-                .next();
-            let action_schema = match action_schema_id {
-                Some(action_schema_id) => match self.action_schemas.get(action_schema_id) {
-                    Ok(action_schema) => Some(action_schema),
-                    Err(error) => {
-                        fill_group_error(&mut results, requests, &group, concrete_line_id, error);
-                        continue;
-                    }
-                },
-                None => None,
-            };
-
-            for (item, fragment) in group.into_iter().zip(decoded) {
-                let hole_cards = requests[item.index].1.clone();
-                let Some(fragment) = fragment else {
-                    results[item.index] = Some(detailed_batch_error(
-                        concrete_line_id,
-                        hole_cards,
-                        missing_hand_or_line_error(
-                            &reader,
-                            dimension,
-                            concrete_line_id,
-                            &item.parsed_input,
-                        ),
-                    ));
-                    continue;
-                };
-
-                let action_schema = match &action_schema {
-                    Some(action_schema) => action_schema,
-                    None => {
-                        results[item.index] = Some(detailed_batch_error(
-                            concrete_line_id,
-                            hole_cards,
-                            StoreQueryError::ActionSchemaNotFound(fragment.action_schema_id),
-                        ));
-                        continue;
-                    }
-                };
-
-                results[item.index] = Some(BatchItemResult {
-                    concrete_line_id,
-                    hole_cards,
-                    hand_code: Some(item.hand_code),
-                    actions: Some(action_results_from_cells(
-                        action_schema.as_ref(),
-                        fragment.cells,
-                    )),
-                    error: None,
-                });
-            }
-        }
-
-        Ok(results
-            .into_iter()
-            .enumerate()
-            .map(|(index, result)| {
-                result.unwrap_or_else(|| {
-                    detailed_batch_error(
-                        requests[index].0,
-                        requests[index].1.clone(),
-                        StoreQueryError::Internal("Batch item was not processed".to_owned()),
-                    )
-                })
-            })
-            .collect())
+        Ok(QueryBatchResult { results })
     }
 
     /// Query all hands in a concrete line that match the requested action filters.
@@ -494,29 +427,6 @@ fn action_schema_sqlite_error(error: SqliteError) -> StoreQueryError {
     StoreQueryError::ActionSchema(ActionSchemaLoadError::Sqlite(error))
 }
 
-#[derive(Debug, Clone)]
-pub struct BatchItemResult {
-    pub concrete_line_id: u32,
-    pub hole_cards: String,
-    pub hand_code: Option<String>,
-    pub actions: Option<Vec<ActionResult>>,
-    pub error: Option<BatchItemError>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BatchItemError {
-    pub code: i32,
-    pub message: String,
-}
-
-#[derive(Debug)]
-struct ParsedBatchRequest {
-    index: usize,
-    hand_id: u8,
-    parsed_input: String,
-    hand_code: String,
-}
-
 fn require_file(path: &Path) -> Result<(), StoreQueryError> {
     if path.is_file() {
         Ok(())
@@ -528,65 +438,6 @@ fn require_file(path: &Path) -> Result<(), StoreQueryError> {
     }
 }
 
-fn detailed_batch_error(
-    concrete_line_id: u32,
-    hole_cards: String,
-    error: StoreQueryError,
-) -> BatchItemResult {
-    BatchItemResult {
-        concrete_line_id,
-        hole_cards,
-        hand_code: None,
-        actions: None,
-        error: Some(BatchItemError {
-            code: error.public_code(),
-            message: error.to_string(),
-        }),
-    }
-}
-
-fn fill_group_error(
-    results: &mut [Option<BatchItemResult>],
-    requests: &[(u32, String)],
-    group: &[ParsedBatchRequest],
-    concrete_line_id: u32,
-    error: StoreQueryError,
-) {
-    let code = error.public_code();
-    let message = error.to_string();
-    for item in group {
-        results[item.index] = Some(BatchItemResult {
-            concrete_line_id,
-            hole_cards: requests[item.index].1.clone(),
-            hand_code: None,
-            actions: None,
-            error: Some(BatchItemError {
-                code,
-                message: message.clone(),
-            }),
-        });
-    }
-}
-
-fn action_results_from_cells(
-    action_schema: &[ActionDef],
-    cells: arrayvec::ArrayVec<crate::types::DecodedCellResult, 32>,
-) -> Vec<ActionResult> {
-    let mut actions = Vec::with_capacity(cells.len());
-    for cell in cells {
-        if let Some(action) = action_schema.get(cell.action_id as usize) {
-            actions.push(ActionResult {
-                action_name: action.action_name.as_str().to_owned(),
-                action_size: action.action_size,
-                amount_bb: action.amount_bb,
-                frequency: cell.frequency,
-                hand_ev: cell.hand_ev,
-            });
-        }
-    }
-    actions
-}
-
 fn missing_hand_or_line_error(
     reader: &DimensionReader,
     dimension: &DimensionRef,
@@ -594,10 +445,11 @@ fn missing_hand_or_line_error(
     hole_cards: &str,
 ) -> StoreQueryError {
     if reader.contains_concrete_line(concrete_line_id) {
-        StoreQueryError::NotFound(format!(
-            "Hand {hole_cards} is outside the range for action line concrete_line_id={concrete_line_id} in dimension {}:{}:{}",
-            dimension.strategy, dimension.player_count, dimension.depth_bb
-        ))
+        StoreQueryError::HandStrategyNotFound {
+            dimension: dimension.clone(),
+            concrete_line_id,
+            hole_cards: hole_cards.to_owned(),
+        }
     } else {
         concrete_line_not_found_error(dimension, concrete_line_id)
     }
@@ -607,8 +459,8 @@ fn concrete_line_not_found_error(
     dimension: &DimensionRef,
     concrete_line_id: u32,
 ) -> StoreQueryError {
-    StoreQueryError::NotFound(format!(
-        "Concrete line not found: concrete_line_id={concrete_line_id}, dimension={}:{}:{}",
-        dimension.strategy, dimension.player_count, dimension.depth_bb
-    ))
+    StoreQueryError::ConcreteLineNotFound {
+        dimension: dimension.clone(),
+        concrete_line_id,
+    }
 }

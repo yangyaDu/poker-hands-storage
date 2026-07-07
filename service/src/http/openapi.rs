@@ -1,6 +1,6 @@
 use utoipa::OpenApi;
 
-use crate::query::{BatchItemResult, BatchStrategyResult, HandsByActionsResult, QueryResult};
+use crate::query::{BatchItemResult, HandsByActionsResult, QueryResult};
 use crate::routes::hand_query_routes::{
     BatchQueryItem, BatchRequest, HandsByActionsRequest, PrewarmRequest, QueryRequest,
 };
@@ -137,7 +137,6 @@ pub struct ErrorResponse {
         BatchRequest,
         BatchData,
         BatchResponseEnvelope,
-        BatchStrategyResult,
         ConcreteLineRow,
         ConcreteLinesPayload,
         ConcreteLinesRequest,

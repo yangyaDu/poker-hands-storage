@@ -44,3 +44,7 @@ path = "tests/storage/manifest/manifest_reader.test.rs"
 [[test]]
 name = "storage_sqlite_connection_test"
 path = "tests/storage/sqlite/sqlite_connection.test.rs"
+
+[[test]]
+name = "query_contract_test"
+path = "tests/query_contract.test.rs"
