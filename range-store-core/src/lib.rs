@@ -12,7 +12,7 @@ pub mod query;
 pub mod sqlite;
 pub mod types;
 
-pub use dimension_reader::{validate_hand_id, DimensionReader};
+pub use dimension_reader::{validate_hand_id, DimensionReader, QueryManyHandsOutcome};
 pub use types::{
     BatchQueryRequest, DecodedCellResult, DecodedPack, DecodedPackCell, FullRangeDecodeResult,
     IdxRecord, PackDecodeResult,

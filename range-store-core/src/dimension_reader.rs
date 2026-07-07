@@ -17,6 +17,22 @@ pub struct DimensionReader {
     bin: BinReader,
 }
 
+/// Outcome of [`DimensionReader::query_many_hands`].
+///
+/// `LineNotFound` is distinguished from per-hand `None` so batch callers do
+/// not need a second `contains_concrete_line` lookup to attribute failures.
+#[derive(Debug, Clone)]
+pub enum QueryManyHandsOutcome {
+    /// The `concrete_line_id` was not present in the index.
+    LineNotFound,
+    /// The pack was decoded; `hands` is aligned with the input `hand_ids`.
+    /// Each `None` entry means that hand_id was not set in the pack mask.
+    Found {
+        action_schema_id: u32,
+        hands: Vec<Option<PackDecodeResult>>,
+    },
+}
+
 impl DimensionReader {
     pub fn open(idx_path: &Path, bin_path: &Path) -> io::Result<Self> {
         let idx = IdxReader::open(idx_path)?;
@@ -67,23 +83,25 @@ impl DimensionReader {
     /// Query multiple hand_ids from the same concrete line in one pass.
     ///
     /// Performs a single idx lookup and a single bin read, then decodes
-    /// each hand_id from the cached pack bytes. Returns `None` for hand_ids
-    /// not present in the pack.
+    /// each hand_id from the cached pack bytes. Returns
+    /// [`QueryManyHandsOutcome::LineNotFound`] when the concrete line is
+    /// absent; otherwise [`QueryManyHandsOutcome::Found`] with one entry
+    /// per input `hand_id` (`None` for hand_ids not present in the pack).
     pub fn query_many_hands(
         &self,
         concrete_line_id: u32,
         hand_ids: &[u8],
         verify_checksum: bool,
-    ) -> io::Result<Option<(u32, Vec<Option<PackDecodeResult>>)>> {
+    ) -> io::Result<QueryManyHandsOutcome> {
         let record: IdxRecord = match self.idx.find(concrete_line_id) {
             Some(record) => record,
-            None => return Ok(None),
+            None => return Ok(QueryManyHandsOutcome::LineNotFound),
         };
 
         let pack = self.read_and_validate_pack(concrete_line_id, &record, verify_checksum)?;
         let action_count = action_count_from_pack(record.hand_count, record.byte_length);
 
-        let results: Vec<Option<PackDecodeResult>> = hand_ids
+        let hands: Vec<Option<PackDecodeResult>> = hand_ids
             .iter()
             .map(|&hand_id| {
                 let cells = decode_pack_for_hand(pack, record.hand_count, action_count, hand_id);
@@ -98,7 +116,10 @@ impl DimensionReader {
             })
             .collect();
 
-        Ok(Some((record.action_schema_id, results)))
+        Ok(QueryManyHandsOutcome::Found {
+            action_schema_id: record.action_schema_id,
+            hands,
+        })
     }
 
     /// Query all hands for a concrete line, fully decoding the pack.

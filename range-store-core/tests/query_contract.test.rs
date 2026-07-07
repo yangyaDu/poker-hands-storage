@@ -61,6 +61,162 @@ fn batch_query_fails_whole_request_for_missing_line() {
     assert!(error.to_string().contains("dimension=default:6:100"));
 }
 
+#[test]
+fn batch_query_preserves_input_order() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = build_query_test_store(temp.path());
+    let store = RangeStoreFacade::open(&data_dir, 2, true).unwrap();
+
+    let result = store
+        .query_batch(
+            &DimensionRef::new("default", 6, 100),
+            &[(1, "KK".to_owned()), (1, "AA".to_owned())],
+        )
+        .unwrap();
+
+    assert_eq!(result.results.len(), 2);
+    // KK (hand_id=14, mask=0b10) has 1 action; AA (hand_id=0, mask=0b11) has 2.
+    assert_eq!(result.results[0].hole_cards, "KK");
+    assert_eq!(result.results[0].actions.len(), 1);
+    assert_eq!(result.results[0].actions[0].action_name, "raise");
+    assert_eq!(result.results[1].hole_cards, "AA");
+    assert_eq!(result.results[1].actions.len(), 2);
+    assert_eq!(result.results[1].actions[0].action_name, "fold");
+}
+
+#[test]
+fn batch_query_dedupes_concrete_line_id_in_one_batch() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = build_query_test_store(temp.path());
+    let store = RangeStoreFacade::open(&data_dir, 2, true).unwrap();
+
+    let result = store
+        .query_batch(
+            &DimensionRef::new("default", 6, 100),
+            &[
+                (1, "AA".to_owned()),
+                (1, "KK".to_owned()),
+                (1, "AA".to_owned()),
+            ],
+        )
+        .unwrap();
+
+    assert_eq!(result.results.len(), 3);
+    // Duplicate (line, hand) AA decodes twice and yields identical results.
+    assert_eq!(result.results[0].actions.len(), 2);
+    assert_eq!(result.results[2].actions.len(), 2);
+    assert_eq!(
+        result.results[0].actions[0].action_name,
+        result.results[2].actions[0].action_name
+    );
+    assert_eq!(
+        result.results[0].actions[0].frequency,
+        result.results[2].actions[0].frequency
+    );
+    assert_eq!(result.results[1].actions.len(), 1);
+}
+
+#[test]
+fn batch_query_first_failure_by_min_index() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = build_query_test_store(temp.path());
+    let store = RangeStoreFacade::open(&data_dir, 2, true).unwrap();
+
+    // Index 0: line 999 missing (CONCRETE_LINE_NOT_FOUND).
+    // Index 1: "AsXx" fails to parse (INVALID_ARGUMENT).
+    // The line-not-found at index 0 wins over the parse failure at index 1.
+    let error = store
+        .query_batch(
+            &DimensionRef::new("default", 6, 100),
+            &[(999, "AA".to_owned()), (1, "AsXx".to_owned())],
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONCRETE_LINE_NOT_FOUND");
+    assert!(error.to_string().contains("requests[0]"));
+    assert!(error.to_string().contains("concrete_line_id=999"));
+}
+
+#[test]
+fn batch_query_hand_not_found_when_line_exists() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = build_query_test_store(temp.path());
+    let store = RangeStoreFacade::open(&data_dir, 2, true).unwrap();
+
+    // "AKs" parses to hand_id=1, which is outside the pack's {0, 14, 162}.
+    let error = store
+        .query_batch(
+            &DimensionRef::new("default", 6, 100),
+            &[(1, "AKs".to_owned())],
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), "HAND_STRATEGY_NOT_FOUND");
+    assert!(error.to_string().contains("requests[0]"));
+    assert!(error.to_string().contains("AKs"));
+}
+
+#[test]
+fn batch_query_group_with_partial_hand_missing() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = build_query_test_store(temp.path());
+    let store = RangeStoreFacade::open(&data_dir, 2, true).unwrap();
+
+    // All three share line 1 (one group). AA and KK would succeed, but
+    // "AKs" (index 1) is outside the pack → all-or-nothing aborts.
+    let error = store
+        .query_batch(
+            &DimensionRef::new("default", 6, 100),
+            &[
+                (1, "AA".to_owned()),
+                (1, "AKs".to_owned()),
+                (1, "KK".to_owned()),
+            ],
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), "HAND_STRATEGY_NOT_FOUND");
+    assert!(error.to_string().contains("requests[1]"));
+    assert!(error.to_string().contains("AKs"));
+}
+
+#[test]
+fn batch_query_mixed_success_and_failure_is_all_or_nothing() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = build_query_test_store(temp.path());
+    let store = RangeStoreFacade::open(&data_dir, 2, true).unwrap();
+
+    // Index 0: line 1 AA (would succeed). Index 1: line 999 KK (line missing).
+    // Index 2: line 1 KK (would succeed). No partial results are returned.
+    let error = store
+        .query_batch(
+            &DimensionRef::new("default", 6, 100),
+            &[
+                (1, "AA".to_owned()),
+                (999, "KK".to_owned()),
+                (1, "KK".to_owned()),
+            ],
+        )
+        .unwrap_err();
+
+    assert_eq!(error.code(), "CONCRETE_LINE_NOT_FOUND");
+    assert!(error.to_string().contains("requests[1]"));
+    assert!(error.to_string().contains("concrete_line_id=999"));
+}
+
+#[test]
+fn batch_query_empty_requests_returns_empty() {
+    let temp = tempfile::tempdir().unwrap();
+    let data_dir = build_query_test_store(temp.path());
+    let store = RangeStoreFacade::open(&data_dir, 2, true).unwrap();
+
+    let result = store
+        .query_batch(&DimensionRef::new("default", 6, 100), &[])
+        .unwrap();
+
+    assert!(result.results.is_empty());
+}
+
 fn build_query_test_store(root: &Path) -> PathBuf {
     let output_path = root.join("output");
     fs::create_dir_all(&output_path).unwrap();

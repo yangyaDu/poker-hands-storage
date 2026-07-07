@@ -795,13 +795,8 @@ fn core_batch_action_count(
         .query_batch(&item.dimension(), &requests)
         .map_err(|error| error.to_string())?;
     let mut total = 0usize;
-    for result in results {
-        if let Some(error) = result.error {
-            return Err(error.message);
-        }
-        if let Some(actions) = result.actions {
-            total += actions.len();
-        }
+    for result in &results.results {
+        total += result.actions.len();
     }
     Ok(total)
 }

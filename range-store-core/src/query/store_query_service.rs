@@ -2,12 +2,15 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, MutexGuard, RwLock};
 
+use arrayvec::ArrayVec;
+
 use crate::action_schema::{load_action_schema_from_connection, ActionDef, ActionSchemaLoadError};
 use crate::dimension::DimensionRef;
 use crate::hole_cards::{parse_hole_cards, HandDictError};
 use crate::manifest::{queryable_dimensions, ManifestError};
 use crate::sqlite::{Connection, SqliteError};
-use crate::DimensionReader;
+use crate::types::DecodedCellResult;
+use crate::{DimensionReader, QueryManyHandsOutcome};
 
 use super::handle_pool::{HandlePool, HandlePoolError};
 use super::hands_by_actions::{
@@ -238,49 +241,167 @@ impl StoreQueryService {
         };
 
         let action_schema = self.action_schemas.get(fragment.action_schema_id)?;
-        let mut actions = Vec::with_capacity(fragment.cells.len());
-        for cell in fragment.cells {
-            let action = action_schema.get(cell.action_id as usize).ok_or_else(|| {
-                StoreQueryError::Internal(format!(
-                    "Action id {} outside schema {}",
-                    cell.action_id, fragment.action_schema_id
-                ))
-            })?;
-            actions.push(ActionResult {
-                action_name: action.action_name.as_str().to_owned(),
-                action_size: action.action_size,
-                amount_bb: action.amount_bb,
-                frequency: cell.frequency,
-                hand_ev: cell.hand_ev,
-            });
-        }
+        let actions = cells_to_actions(&action_schema, fragment.cells, fragment.action_schema_id)?;
 
         Ok(QueryResult { actions })
     }
 
     /// Query a batch of (concrete_line_id, hole_cards) pairs.
+    ///
+    /// All-or-nothing: on any failure, returns [`StoreQueryError::BatchItem`]
+    /// for the request with the smallest index that failed. Requests sharing
+    /// the same `concrete_line_id` are grouped and decoded in a single pack
+    /// read via [`DimensionReader::query_many_hands`].
     pub fn query_batch(
         &self,
         dimension: &DimensionRef,
         requests: &[(u32, String)],
     ) -> Result<QueryBatchResult, StoreQueryError> {
-        let mut results = Vec::with_capacity(requests.len());
-        for (index, (concrete_line_id, hole_cards)) in requests.iter().enumerate() {
-            let item = self
-                .query(dimension, *concrete_line_id, hole_cards)
-                .map_err(|source| StoreQueryError::BatchItem {
-                    index,
-                    concrete_line_id: *concrete_line_id,
-                    hole_cards: hole_cards.clone(),
-                    dimension: dimension.clone(),
-                    source: Box::new(source),
-                })?;
-            results.push(QueryBatchItemResult {
+        if requests.is_empty() {
+            return Ok(QueryBatchResult { results: vec![] });
+        }
+
+        // Stage 1: parse every hole_cards. Failed parses are recorded in
+        // first_failure but do not short-circuit; successful parses are
+        // grouped in stage 2.
+        let mut first_failure: Option<(usize, StoreQueryError)> = None;
+        let mut parsed_hand_ids: Vec<Option<u8>> = Vec::with_capacity(requests.len());
+        for (index, (_concrete_line_id, hole_cards)) in requests.iter().enumerate() {
+            match parse_hole_cards(hole_cards) {
+                Ok(parsed) => parsed_hand_ids.push(Some(parsed.hand_id)),
+                Err(err) => {
+                    first_failure = min_failure(first_failure, (index, StoreQueryError::from(err)));
+                    parsed_hand_ids.push(None);
+                }
+            }
+        }
+
+        // Stage 2: group by concrete_line_id, preserving first-occurrence
+        // order so group[0].0 is the minimum index in that group.
+        let mut group_keys: Vec<u32> = Vec::new();
+        let mut group_index: HashMap<u32, usize> = HashMap::new();
+        let mut groups: Vec<Vec<(usize, u8)>> = Vec::new();
+        for (index, (concrete_line_id, _hole_cards)) in requests.iter().enumerate() {
+            if let Some(hand_id) = parsed_hand_ids[index] {
+                match group_index.get(concrete_line_id) {
+                    Some(&group_pos) => groups[group_pos].push((index, hand_id)),
+                    None => {
+                        group_index.insert(*concrete_line_id, group_keys.len());
+                        group_keys.push(*concrete_line_id);
+                        groups.push(vec![(index, hand_id)]);
+                    }
+                }
+            }
+        }
+
+        // Stage 3: a single get_or_open for all groups. On failure, attribute
+        // to index 0 (but a pre-existing parse failure at index 0 wins).
+        let mut results_vec: Vec<Option<Vec<ActionResult>>> = Vec::new();
+        match self.pool.get_or_open(dimension) {
+            Ok(reader) => {
+                results_vec = vec![None; requests.len()];
+                // Stage 4: per-group query_many_hands.
+                for (group_pos, line_id) in group_keys.iter().enumerate() {
+                    let group = &groups[group_pos];
+                    let min_index = group[0].0;
+                    let hand_ids: Vec<u8> = group.iter().map(|(_, hand_id)| *hand_id).collect();
+                    match reader.query_many_hands(*line_id, &hand_ids, self.verify_checksums) {
+                        Err(io_err) => {
+                            first_failure = min_failure(
+                                first_failure,
+                                (min_index, StoreQueryError::Io(io_err.to_string())),
+                            );
+                        }
+                        Ok(QueryManyHandsOutcome::LineNotFound) => {
+                            first_failure = min_failure(
+                                first_failure,
+                                (
+                                    min_index,
+                                    concrete_line_not_found_error(dimension, *line_id),
+                                ),
+                            );
+                        }
+                        Ok(QueryManyHandsOutcome::Found {
+                            action_schema_id,
+                            hands,
+                        }) => match self.action_schemas.get(action_schema_id) {
+                            Err(err) => {
+                                first_failure = min_failure(first_failure, (min_index, err));
+                            }
+                            Ok(schema) => {
+                                for ((item_index, _hand_id), hand_result) in group.iter().zip(hands)
+                                {
+                                    match hand_result {
+                                        None => {
+                                            first_failure = min_failure(
+                                                first_failure,
+                                                (
+                                                    *item_index,
+                                                    StoreQueryError::HandStrategyNotFound {
+                                                        dimension: dimension.clone(),
+                                                        concrete_line_id: *line_id,
+                                                        hole_cards: requests[*item_index].1.clone(),
+                                                    },
+                                                ),
+                                            );
+                                        }
+                                        Some(fragment) => {
+                                            match cells_to_actions(
+                                                &schema,
+                                                fragment.cells,
+                                                action_schema_id,
+                                            ) {
+                                                Ok(actions) => {
+                                                    results_vec[*item_index] = Some(actions);
+                                                }
+                                                Err(err) => {
+                                                    first_failure = min_failure(
+                                                        first_failure,
+                                                        (*item_index, err),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                    }
+                }
+            }
+            Err(err) => {
+                first_failure = min_failure(first_failure, (0, StoreQueryError::from(err)));
+            }
+        }
+
+        // Stage 5: all-or-nothing. Report the global minimum failure index.
+        if let Some((index, source)) = first_failure {
+            let (concrete_line_id, hole_cards) = &requests[index];
+            return Err(StoreQueryError::BatchItem {
+                index,
                 concrete_line_id: *concrete_line_id,
                 hole_cards: hole_cards.clone(),
-                actions: item.actions,
+                dimension: dimension.clone(),
+                source: Box::new(source),
             });
         }
+
+        // Stage 6: every item succeeded; assemble in input order.
+        let results = results_vec
+            .into_iter()
+            .enumerate()
+            .map(|(index, actions)| {
+                let actions = actions.expect(
+                    "query_batch reached assembly stage with no failure; every slot must be filled",
+                );
+                let (concrete_line_id, hole_cards) = &requests[index];
+                QueryBatchItemResult {
+                    concrete_line_id: *concrete_line_id,
+                    hole_cards: hole_cards.clone(),
+                    actions,
+                }
+            })
+            .collect();
         Ok(QueryBatchResult { results })
     }
 
@@ -462,5 +583,47 @@ fn concrete_line_not_found_error(
     StoreQueryError::ConcreteLineNotFound {
         dimension: dimension.clone(),
         concrete_line_id,
+    }
+}
+
+/// Translate decoded pack cells into [`ActionResult`]s using the given schema.
+///
+/// Shared by [`StoreQueryService::query`] and [`StoreQueryService::query_batch`].
+/// `action_schema` is looked up by the caller (once per single query / once
+/// per group in batch) via [`ActionSchemaCache::get`].
+fn cells_to_actions(
+    action_schema: &[ActionDef],
+    cells: ArrayVec<DecodedCellResult, 32>,
+    action_schema_id: u32,
+) -> Result<Vec<ActionResult>, StoreQueryError> {
+    let mut actions = Vec::with_capacity(cells.len());
+    for cell in cells {
+        let action = action_schema.get(cell.action_id as usize).ok_or_else(|| {
+            StoreQueryError::Internal(format!(
+                "Action id {} outside schema {}",
+                cell.action_id, action_schema_id
+            ))
+        })?;
+        actions.push(ActionResult {
+            action_name: action.action_name.as_str().to_owned(),
+            action_size: action.action_size,
+            amount_bb: action.amount_bb,
+            frequency: cell.frequency,
+            hand_ev: cell.hand_ev,
+        });
+    }
+    Ok(actions)
+}
+
+/// Merge a candidate failure into the current tracked failure, keeping the
+/// entry with the smallest index. Used by [`StoreQueryService::query_batch`]
+/// to implement first-failure-by-min-index without short-circuiting.
+fn min_failure(
+    current: Option<(usize, StoreQueryError)>,
+    candidate: (usize, StoreQueryError),
+) -> Option<(usize, StoreQueryError)> {
+    match &current {
+        Some((index, _)) if candidate.0 >= *index => current,
+        _ => Some(candidate),
     }
 }
