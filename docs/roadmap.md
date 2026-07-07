@@ -10,7 +10,7 @@
 - verification 结论：`data-verification-and-format-validation.md`
 - API 契约：`api-business-contract.md`
 - Docker 发布：`docker-deployment-guide.md`
-- native SDK：`native-sdk.md`
+- native SDK：`sdk-and-query-chain-explanation.md`
 
 ## 当前判断
 

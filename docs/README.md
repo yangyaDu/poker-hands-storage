@@ -13,7 +13,7 @@
 | 当前剩余工作和验收标准 | `docs/roadmap.md` |
 | 文件格式、pack 编码、查询流程 | `docs/range-db-binary-storage-design.md` |
 | HTTP API 请求/响应、错误码、业务语义 | `docs/api-business-contract.md` |
-| Bun/Node native SDK API、构建测试、生产接入边界 | `docs/native-sdk.md` |
+| Bun/Node native SDK API、构建测试、生产接入边界和查询链路 | `docs/sdk-and-query-chain-explanation.md` |
 | standalone/cross verify、Float32、checksum、发布前验证 | `docs/data-verification-and-format-validation.md` |
 | 性能、体积、内存、benchmark 方法和结论 | `docs/binary-vs-sqlite-benchmark-and-verification-report.md` |
 | Docker/Compose/Kubernetes、发布、回滚、prewarm | `docs/docker-deployment-guide.md` |
@@ -46,7 +46,7 @@
 业务接口接入：
 
 1. `api-business-contract.md`
-2. `native-sdk.md`
+2. `sdk-and-query-chain-explanation.md`
 3. `docker-deployment-guide.md`
 
 存储格式和数据流：
@@ -73,7 +73,7 @@
 | --- | --- | --- |
 | `range-store-core` | 存储格式、reader、校验、metadata、查询 facade | HTTP、N-API、CLI 编排 |
 | `service` | HTTP API、OpenAPI、错误映射、health/readiness、Docker 入口 | 离线构建、benchmark、native SDK 包装 |
-| `range-store-native` | Bun/Node native SDK、业务 envelope、singleton、SDK 测试 | 源 SQLite cross verify、报告生成 |
+| `range-store-native` | Bun/Node native SDK、直接 payload、`RangeStoreError`、singleton、SDK 测试 | 源 SQLite cross verify、报告生成 |
 | `storage-tools` | 构建、验证、benchmark、报告 | 线上服务运行时 |
 
 `service`、`range-store-native` 和 `storage-tools` 不互相依赖业务代码；三者只复用 `range-store-core`。

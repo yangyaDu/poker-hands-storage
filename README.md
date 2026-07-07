@@ -21,7 +21,7 @@
 | --- | --- | --- |
 | `range-store-core` | Rust 只读查询核心 | 负责 manifest、metadata、`.idx/.bin` reader、pack decode、CRC32C、LRU handle pool 和 `RangeStoreFacade` |
 | `service` | HTTP API 服务 | 提供 OpenAPI、请求校验、错误码映射、health/readiness、Docker 运行入口 |
-| `range-store-native` | Bun/Node 进程内 SDK | 通过 napi-rs 加载同一套 core 查询能力，返回业务 envelope |
+| `range-store-native` | Bun/Node 进程内 SDK | 通过 napi-rs 加载同一套 core 查询能力，成功返回直接 payload，失败抛出 `RangeStoreError` |
 | `storage-tools` | 离线工具 | 提供构建、standalone/cross verify、SQLite/Binary/native benchmark 和报告生成 |
 | `.docker` | HTTP service 容器化 | Dockerfile 只构建 `range-store-core` + `service`，不包含 benchmark 或 native SDK |
 | `docs` | 项目文档 | 入口见 [docs/README.md](docs/README.md) |
@@ -99,7 +99,7 @@ poker-hands-storage/
 |   |-- Cargo.toml                     # napi-rs native crate 配置
 |   |-- build.rs                       # napi-rs 构建初始化
 |   |-- package.json                   # Bun 构建和 SDK 测试脚本
-|   |-- index.js                       # JS SDK 包装层，加载 index.node 并返回业务 envelope
+|   |-- index.js                       # JS SDK 包装层，加载 index.node 并转换 RangeStoreError
 |   |-- index.d.ts                     # TypeScript API 类型声明
 |   |-- src/lib.rs                     # N-API 绑定，复用 RangeStoreFacade
 |   `-- tests/
@@ -121,7 +121,7 @@ poker-hands-storage/
 |-- docs/
 |   |-- README.md                      # 文档地图和阅读路径
 |   |-- roadmap.md                     # 剩余工作、验收条件和暂不做事项
-|   |-- native-sdk.md                  # Bun/Node native SDK API 和接入边界
+|   |-- sdk-and-query-chain-explanation.md # Bun/Node native SDK API、接入边界和查询链路
 |   |-- api-business-contract.md       # HTTP API 契约、错误码和业务语义
 |   |-- range-db-binary-storage-design.md # 二进制格式、pack 编码和查询流程
 |   |-- data-flow-overview.md          # 从构建到查询的代码级数据流
@@ -240,7 +240,7 @@ bun run test:sdk
 | [docs/roadmap.md](docs/roadmap.md) | 当前剩余工作、验收条件和优先级 |
 | [docs/range-db-binary-storage-design.md](docs/range-db-binary-storage-design.md) | 文件格式、pack 编码、查询流程和运行时约束 |
 | [docs/api-business-contract.md](docs/api-business-contract.md) | HTTP API 请求/响应、错误码和业务语义 |
-| [docs/native-sdk.md](docs/native-sdk.md) | Bun/Node native SDK API、构建测试和生产接入边界 |
+| [docs/sdk-and-query-chain-explanation.md](docs/sdk-and-query-chain-explanation.md) | Bun/Node native SDK API、构建测试、生产接入边界和查询链路 |
 | [docs/data-verification-and-format-validation.md](docs/data-verification-and-format-validation.md) | standalone/cross verify、Float32 策略和发布前验证 |
 | [docs/binary-vs-sqlite-benchmark-and-verification-report.md](docs/binary-vs-sqlite-benchmark-and-verification-report.md) | 性能、体积、内存和 benchmark 结论 |
 | [docs/docker-deployment-guide.md](docs/docker-deployment-guide.md) | Docker/Compose/Kubernetes、发布和回滚 |
