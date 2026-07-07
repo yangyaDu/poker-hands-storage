@@ -4,6 +4,5 @@ pub mod hand_query_service;
 pub use range_store_core::query::ActionFilter;
 
 pub use hand_query_service::{
-    ActionResult, BatchItemResult, BatchStrategyResult, ErrorInfo, HandsByActionsResult,
-    QueryResult, QueryService,
+    ActionResult, BatchItemResult, HandsByActionsResult, QueryResult, QueryService,
 };

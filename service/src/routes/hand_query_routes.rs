@@ -72,7 +72,7 @@ pub struct BatchQueryItem {
 
 #[derive(Serialize, ToSchema)]
 pub struct BatchPayload {
-    /// Per-item query result. Invalid hand inputs are reported on their individual item.
+    /// All-or-nothing batch query result. Any invalid item fails the entire request.
     results: Vec<BatchItemResult>,
 }
 
@@ -291,7 +291,7 @@ fn validate_batch_item(errors: &mut ValidationErrorDetails, index: usize, item: 
     request_body(content = QueryRequest, content_type = "application/json"),
     responses(
         (status = 200, description = "Single hand query result.", body = crate::http::openapi::QueryResponse),
-        (status = 400, description = "Invalid JSON, validation failure, or unknown hand.", body = crate::http::openapi::ErrorResponse),
+        (status = 400, description = "Invalid JSON, validation failure, or invalid argument.", body = crate::http::openapi::ErrorResponse),
         (status = 404, description = "Dimension or pack not found.", body = crate::http::openapi::ErrorResponse),
         (status = 500, description = "Internal service error.", body = crate::http::openapi::ErrorResponse)
     )
@@ -325,7 +325,7 @@ async fn query_impl(
     tag = "range",
     request_body(content = BatchRequest, content_type = "application/json"),
     responses(
-        (status = 200, description = "Per-item batch query results.", body = crate::http::openapi::BatchResponseEnvelope),
+        (status = 200, description = "All-or-nothing batch query result.", body = crate::http::openapi::BatchResponseEnvelope),
         (status = 400, description = "Invalid JSON or validation failure.", body = crate::http::openapi::ErrorResponse),
         (status = 404, description = "Dimension not found.", body = crate::http::openapi::ErrorResponse),
         (status = 500, description = "Internal service error.", body = crate::http::openapi::ErrorResponse)

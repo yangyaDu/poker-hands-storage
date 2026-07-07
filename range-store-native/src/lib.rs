@@ -76,8 +76,6 @@ pub struct QueryHandStrategyRequest {
 
 #[napi(object)]
 pub struct QueryHandStrategyResponse {
-    pub input_hole_cards: String,
-    pub hand_code: String,
     pub actions: Vec<ActionResult>,
 }
 
@@ -103,16 +101,8 @@ pub struct QueryBatchResponse {
 #[napi(object)]
 pub struct QueryBatchItemResponse {
     pub concrete_line_id: u32,
-    pub input_hole_cards: String,
-    pub hand_code: Option<String>,
-    pub actions: Option<Vec<ActionResult>>,
-    pub error: Option<QueryBatchItemError>,
-}
-
-#[napi(object)]
-pub struct QueryBatchItemError {
-    pub code: i32,
-    pub message: String,
+    pub hole_cards: String,
+    pub actions: Vec<ActionResult>,
 }
 
 #[napi(object)]
@@ -215,8 +205,6 @@ impl PokerHandsRange {
             .query_hand_strategy(&dimension, request.concrete_line_id, &request.hole_cards)
             .map_err(to_napi_error)?;
         Ok(QueryHandStrategyResponse {
-            input_hole_cards: result.input_hole_cards,
-            hand_code: result.hand_code,
             actions: result
                 .actions
                 .into_iter()
@@ -238,18 +226,16 @@ impl PokerHandsRange {
             .inner
             .query_batch(&dimension, &requests)
             .map_err(to_napi_error)?
+            .results
             .into_iter()
             .map(|item| QueryBatchItemResponse {
                 concrete_line_id: item.concrete_line_id,
-                input_hole_cards: item.hole_cards,
-                hand_code: item.hand_code,
+                hole_cards: item.hole_cards,
                 actions: item
                     .actions
-                    .map(|actions| actions.into_iter().map(action_result_from_core).collect()),
-                error: item.error.map(|e| QueryBatchItemError {
-                    code: e.code,
-                    message: e.message,
-                }),
+                    .into_iter()
+                    .map(action_result_from_core)
+                    .collect(),
             })
             .collect();
         Ok(QueryBatchResponse { results })
@@ -348,6 +334,6 @@ fn concrete_line_filter_from_request(
 fn to_napi_error(error: RangeStoreError) -> Error {
     Error::new(
         Status::GenericFailure,
-        format!("{}:{}: {}", error.code(), error.public_code(), error),
+        format!("RANGE_STORE_ERROR:{}:{}", error.code(), error),
     )
 }

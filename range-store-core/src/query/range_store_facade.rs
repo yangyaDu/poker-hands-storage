@@ -7,7 +7,7 @@ use crate::query::hands_by_actions::{
     format_action_filters, parse_action_filters, ActionFilter, ActionFilterParseError,
 };
 use crate::query::store_query_service::{
-    BatchItemResult, QueryResult, StoreQueryError, StoreQueryService,
+    QueryBatchResult, QueryResult, StoreQueryError, StoreQueryService,
 };
 
 pub struct RangeStoreFacade {
@@ -114,7 +114,7 @@ impl RangeStoreFacade {
         &self,
         dimension: &DimensionRef,
         requests: &[(u32, String)],
-    ) -> Result<Vec<BatchItemResult>, RangeStoreError> {
+    ) -> Result<QueryBatchResult, RangeStoreError> {
         Ok(self.query_service.query_batch(dimension, requests)?)
     }
 
@@ -176,33 +176,18 @@ impl RangeStoreError {
     pub fn code(&self) -> &'static str {
         match self {
             Self::Metadata(error) => error.code(),
-            Self::Query(error) => match error {
-                StoreQueryError::Manifest(_) => "INVALID_FORMAT",
-                StoreQueryError::ActionSchema(_) => "INVALID_FORMAT",
-                StoreQueryError::ActionFilter(_) => "INVALID_ARGUMENT",
-                StoreQueryError::HandlePool(pool_error) => {
-                    if pool_error.to_string().starts_with("Dimension not found:") {
-                        "DIMENSION_NOT_FOUND"
-                    } else {
-                        "DATA_FILE_NOT_FOUND"
-                    }
-                }
-                StoreQueryError::HandParse(_) => "UNKNOWN_HAND",
-                StoreQueryError::ActionSchemaNotFound(_) => "ACTION_SCHEMA_NOT_FOUND",
-                StoreQueryError::Io(_) => "INVALID_FORMAT",
-                StoreQueryError::NotFound(_) => "CONCRETE_LINE_NOT_FOUND",
-                StoreQueryError::Internal(_) => "INTERNAL",
-            },
+            Self::Query(error) => store_query_error_code(error),
             Self::NoHandsFound { .. } => "HANDS_NOT_FOUND",
         }
     }
 
     pub fn public_code(&self) -> i32 {
         match self.code() {
-            "UNKNOWN_HAND" | "INVALID_ARGUMENT" => 1000,
+            "INVALID_ARGUMENT" => 1000,
             "DIMENSION_NOT_FOUND"
             | "DATA_FILE_NOT_FOUND"
             | "CONCRETE_LINE_NOT_FOUND"
+            | "HAND_STRATEGY_NOT_FOUND"
             | "HANDS_NOT_FOUND"
             | "ACTION_SCHEMA_NOT_FOUND"
             | "ABSTRACT_LINE_NOT_FOUND"
@@ -257,5 +242,27 @@ fn format_frequency(frequency: Option<f64>) -> String {
         Some(0.0) => ">0".to_owned(),
         Some(value) => format!(">{value}"),
         None => ">0.005".to_owned(),
+    }
+}
+
+fn store_query_error_code(error: &StoreQueryError) -> &'static str {
+    match error {
+        StoreQueryError::Manifest(_) => "INVALID_FORMAT",
+        StoreQueryError::ActionSchema(_) => "INVALID_FORMAT",
+        StoreQueryError::ActionFilter(_) => "INVALID_ARGUMENT",
+        StoreQueryError::HandlePool(pool_error) => {
+            if pool_error.to_string().starts_with("Dimension not found:") {
+                "DIMENSION_NOT_FOUND"
+            } else {
+                "DATA_FILE_NOT_FOUND"
+            }
+        }
+        StoreQueryError::InvalidArgument(_) => "INVALID_ARGUMENT",
+        StoreQueryError::ActionSchemaNotFound(_) => "ACTION_SCHEMA_NOT_FOUND",
+        StoreQueryError::Io(_) => "INVALID_FORMAT",
+        StoreQueryError::ConcreteLineNotFound { .. } => "CONCRETE_LINE_NOT_FOUND",
+        StoreQueryError::HandStrategyNotFound { .. } => "HAND_STRATEGY_NOT_FOUND",
+        StoreQueryError::BatchItem { source, .. } => store_query_error_code(source),
+        StoreQueryError::Internal(_) => "INTERNAL",
     }
 }

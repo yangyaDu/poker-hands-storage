@@ -32,7 +32,7 @@ impl AppError {
 
     pub fn public_code(&self) -> i32 {
         match self.code {
-            "UNKNOWN_HAND" | "INVALID_ARGUMENT" => 1000,
+            "INVALID_ARGUMENT" => 1000,
             "BIN_FILE_NOT_FOUND"
             | "PACK_NOT_FOUND"
             | "DATA_FILE_NOT_FOUND"
@@ -236,7 +236,7 @@ impl From<ActionSchemaLoadError> for AppError {
 
 impl From<HandDictError> for AppError {
     fn from(error: HandDictError) -> Self {
-        Self::new("UNKNOWN_HAND", error.to_string())
+        Self::invalid_argument(error.to_string())
     }
 }
 

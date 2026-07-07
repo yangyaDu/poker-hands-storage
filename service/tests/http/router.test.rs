@@ -104,7 +104,8 @@ async fn hand_strategy_query_returns_expected_frequency() {
     let (status, result) = call_json(&app, Method::POST, "/range/hand-strategy", Some(query)).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(result["code"], 0);
-    assert_eq!(result["data"]["hand_code"], "AA");
+    assert!(result["data"].get("input_hole_cards").is_none());
+    assert!(result["data"].get("hand_code").is_none());
     assert!(result["data"].get("exists").is_none());
     assert_eq!(result["data"]["actions"].as_array().unwrap().len(), 2);
     assert!(result["message"].is_null());
@@ -217,10 +218,34 @@ async fn hand_strategy_query_rejects_invalid_requests() {
 }
 
 #[tokio::test]
-async fn hand_strategy_batch_query_returns_per_item_results() {
+async fn hand_strategy_batch_query_is_all_or_nothing() {
     let (_directory, app) = build_test_app();
 
-    let batch = json!({
+    let valid_batch = json!({
+        "strategy": "default",
+        "player_count": 6,
+        "depth_bb": 100,
+        "requests": [
+            { "concrete_line_id": 1, "hole_cards": "AA" },
+            { "concrete_line_id": 1, "hole_cards": "KK" }
+        ]
+    });
+    let (status, result) = call_json(
+        &app,
+        Method::POST,
+        "/range/hand-strategy-batch",
+        Some(valid_batch),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(result["code"], 0);
+    assert_eq!(result["data"]["results"][0]["concrete_line_id"], 1);
+    assert_eq!(result["data"]["results"][0]["hole_cards"], "AA");
+    assert!(result["data"]["results"][0].get("hand_code").is_none());
+    assert!(result["data"]["results"][0].get("strategy").is_none());
+    assert!(result["data"]["results"][0]["actions"].is_array());
+
+    let invalid_batch = json!({
         "strategy": "default",
         "player_count": 6,
         "depth_bb": 100,
@@ -229,24 +254,24 @@ async fn hand_strategy_batch_query_returns_per_item_results() {
             { "concrete_line_id": 1, "hole_cards": "AsXx" }
         ]
     });
-    let (status, result) = call_json(
+    let (status, error) = call_json(
         &app,
         Method::POST,
         "/range/hand-strategy-batch",
-        Some(batch),
+        Some(invalid_batch),
     )
     .await;
-    assert_eq!(status, StatusCode::OK);
-    assert_eq!(result["code"], 0);
-    assert!(result["data"]["results"][0]["strategy"]
-        .get("exists")
-        .is_none());
-    assert!(result["data"]["results"][0]["strategy"]
-        .get("hand_code")
-        .is_none());
-    assert_eq!(
-        result["data"]["results"][1]["error"]["code"],
-        error_code::BAD_REQUEST
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(error["code"], error_code::BAD_REQUEST);
+    assert!(error["data"].is_null());
+    assert_error_message_contains(
+        &error,
+        &[
+            "Batch item requests[1] failed",
+            "Invalid card format: AsXx",
+            "from concrete_line_id=1",
+            "dimension=default:6:100",
+        ],
     );
 }
 

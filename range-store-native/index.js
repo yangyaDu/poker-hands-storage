@@ -21,174 +21,129 @@ function fromNativeAction(action) {
   };
 }
 
-function apiErrorResult(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  const match = /^([^:]+):(\d+):\s*(.*)$/.exec(message);
-  if (match) {
-    return {
-      code: Number.parseInt(match[2], 10),
-      data: null,
-      message: match[3] || message,
-    };
+export class RangeStoreError extends Error {
+  constructor(code, message, options = undefined) {
+    super(message, options);
+    this.name = "RangeStoreError";
+    this.code = code;
   }
-  return {
-    code: 500,
-    data: null,
-    message,
-  };
 }
 
-function normalizeApiResult(result) {
-  return {
-    code: result.code,
-    data: result.data ?? null,
-    message: result.message ?? null,
-  };
+function toRangeStoreError(error) {
+  const message = error instanceof Error ? error.message : String(error);
+  const match = /^RANGE_STORE_ERROR:([A-Z_]+):(.*)$/s.exec(message);
+  if (match) {
+    return new RangeStoreError(match[1], match[2], { cause: error });
+  }
+  return new RangeStoreError("INTERNAL", message, { cause: error });
+}
+
+function callNative(fn) {
+  try {
+    return fn();
+  } catch (error) {
+    throw toRangeStoreError(error);
+  }
 }
 
 export class PokerHandsRange {
   #native;
 
   constructor(options) {
-    this.#native = new native.PokerHandsRange({
-      dataDir: options.dataDir,
-      maxOpenHandles: options.maxOpenHandles,
-      verifyChecksums: options.verifyChecksums,
-    });
+    this.#native = callNative(
+      () =>
+        new native.PokerHandsRange({
+          dataDir: options.dataDir,
+          maxOpenHandles: options.maxOpenHandles,
+          verifyChecksums: options.verifyChecksums,
+        }),
+    );
   }
 
   getConcreteLines(request) {
-    try {
-      const result = this.#native.getConcreteLines({
+    const result = callNative(() =>
+      this.#native.getConcreteLines({
         ...toNativeDimension(request),
         abstractLine: request.abstractLine,
         concreteLine: request.concreteLine,
-      });
-      return normalizeApiResult({
-        code: 0,
-        data: {
-          lines: result.lines.map((line) => ({
-            concreteLineId: line.concreteLineId,
-            abstractLine: line.abstractLine,
-            concreteLine: line.concreteLine,
-          })),
-        },
-        message: null,
-      });
-    } catch (error) {
-      return apiErrorResult(error);
-    }
+      }),
+    );
+    return {
+      lines: result.lines.map((line) => ({
+        concreteLineId: line.concreteLineId,
+        abstractLine: line.abstractLine,
+        concreteLine: line.concreteLine,
+      })),
+    };
   }
 
   getAbstractLines(request) {
-    try {
-      const result = this.#native.getAbstractLines({
+    const result = callNative(() =>
+      this.#native.getAbstractLines({
         strategy: request.strategy,
         drillName: request.drillName,
         playerCount: request.playerCount,
         drillDepth: request.drillDepth,
-      });
-      return normalizeApiResult({
-        code: 0,
-        data: {
-          abstractLines: result.abstractLines,
-        },
-        message: null,
-      });
-    } catch (error) {
-      return apiErrorResult(error);
-    }
+      }),
+    );
+    return { abstractLines: result.abstractLines };
   }
 
   handsByActions(request) {
-    try {
-      const result = this.#native.handsByActions({
+    const result = callNative(() =>
+      this.#native.handsByActions({
         ...toNativeDimension(request),
         concreteLineId: request.concreteLineId,
         actions: request.actions,
         frequency: request.frequency,
-      });
-      return normalizeApiResult({
-        code: 0,
-        data: {
-          holeCards: result.holeCards,
-        },
-        message: null,
-      });
-    } catch (error) {
-      return apiErrorResult(error);
-    }
+      }),
+    );
+    return { holeCards: result.holeCards };
   }
 
   queryHandStrategy(request) {
-    try {
-      const result = this.#native.queryHandStrategy({
+    const result = callNative(() =>
+      this.#native.queryHandStrategy({
         ...toNativeDimension(request),
         concreteLineId: request.concreteLineId,
         holeCards: request.holeCards,
-      });
-      return normalizeApiResult({
-        code: 0,
-        data: {
-          inputHoleCards: result.inputHoleCards,
-          handCode: result.handCode,
-          actions: result.actions.map(fromNativeAction),
-        },
-        message: null,
-      });
-    } catch (error) {
-      return apiErrorResult(error);
-    }
+      }),
+    );
+    return {
+      actions: result.actions.map(fromNativeAction),
+    };
   }
 
   queryBatch(request) {
-    try {
-      const result = this.#native.queryBatch({
+    const result = callNative(() =>
+      this.#native.queryBatch({
         ...toNativeDimension(request),
         items: request.items.map((item) => ({
           concreteLineId: item.concreteLineId,
           holeCards: item.holeCards,
         })),
-      });
-      return normalizeApiResult({
-        code: 0,
-        data: {
-          results: result.results.map((item) => ({
-            concreteLineId: item.concreteLineId,
-            holeCards: item.inputHoleCards,
-            handCode: item.handCode,
-            actions: item.actions?.map(fromNativeAction),
-            error: item.error
-              ? { code: item.error.code, message: item.error.message }
-              : undefined,
-          })),
-        },
-        message: null,
-      });
-    } catch (error) {
-      return apiErrorResult(error);
-    }
+      }),
+    );
+    return {
+      results: result.results.map((item) => ({
+        concreteLineId: item.concreteLineId,
+        holeCards: item.holeCards,
+        actions: item.actions.map(fromNativeAction),
+      })),
+    };
   }
 
   prewarm(request) {
-    const result = this.#native.prewarm(toNativeDimension(request));
-    return {
-      code: 0,
-      data: { openHandleCount: result.openHandleCount },
-      message: null,
-    };
+    const result = callNative(() => this.#native.prewarm(toNativeDimension(request)));
+    return { openHandleCount: result.openHandleCount };
   }
 
   stats() {
     const result = this.#native.stats();
     return {
-      code: 0,
-      data: {
-        schemaCount: result.schemaCount,
-        openHandleCount: result.openHandleCount,
-        knownDimensions: result.knownDimensions,
-      },
-      message: null,
+      schemaCount: result.schemaCount,
+      openHandleCount: result.openHandleCount,
+      knownDimensions: result.knownDimensions,
     };
   }
 }
