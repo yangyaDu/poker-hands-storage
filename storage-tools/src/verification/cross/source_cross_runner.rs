@@ -355,7 +355,7 @@ fn verify_source_row(
                 options,
                 result,
                 key,
-                "UNKNOWN_HAND",
+                "INVALID_ARGUMENT",
                 "Unknown hand",
                 context,
             );

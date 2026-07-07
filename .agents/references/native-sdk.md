@@ -50,7 +50,7 @@ bun run test:http-consistency
 - `prewarm`
 - `stats`
 
-所有默认业务方法返回 `{ code, data, message }` envelope。
+所有默认业务方法返回直接 payload（如 `{ actions }`、`{ results }`），失败时抛出 `RangeStoreError`。
 
 ## 边界
 

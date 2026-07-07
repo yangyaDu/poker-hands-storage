@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Performance
 
 - Reduced cold-start metadata load time via lazy loading
-- Improved batch query resilience with per-item error handling
+- Improved batch query resilience with all-or-nothing error handling
 
 ## [1.0.0] - 2026-07-04
 

@@ -67,7 +67,7 @@ impl From<SqliteError> for ToolError {
 
 impl From<HandDictError> for ToolError {
     fn from(error: HandDictError) -> Self {
-        Self::new("UNKNOWN_HAND", error.to_string())
+        Self::new("INVALID_ARGUMENT", error.to_string())
     }
 }
 
