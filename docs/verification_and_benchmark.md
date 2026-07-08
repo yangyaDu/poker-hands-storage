@@ -510,13 +510,14 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 ### 报告生成代码边界
 
-benchmark 报告代码只抽取低层公共 helper，不合并各类报告的数据结构和渲染入口：
+benchmark 报告代码统一收敛到外层 `benchmark/report.rs`，低层写文件和格式化 helper 仍单独放在 `benchmark/report_support.rs`：
 
 - `benchmark/report_support.rs` 放跨报告复用的写文件、UTC 时间、通用耗时格式、binary bytes 格式和 Markdown 表格 helper。
-- `benchmark/report.rs` 保留 hot Binary、SQLite baseline、metadata 和 native benchmark 的主报告结构和渲染。
-- `benchmark/compare/runner.rs` 读取 `benchmark/report.rs` 的 `BenchmarkRunReport` 作为 Binary/SQLite 输入；最终对比报告由 `benchmark/compare/report.rs` 渲染。
-- `benchmark/compare/report.rs` 保留 Binary vs SQLite hot 对比报告。
-- `benchmark/cold/report.rs` 和 `benchmark/cold/compare.rs` 保留冷启动报告及冷启动对比报告；cold-start 的时间和字节展示语义独立维护，不强行套用 hot 报告格式。
+- `benchmark/report.rs` 放 hot Binary、SQLite baseline、metadata、native、Binary vs SQLite compare、cold-start、cold-start compare 的报告写入和 Markdown 渲染入口。
+- `benchmark/hot/runner.rs`、`benchmark/hot/sqlite_runner.rs` 和 `benchmark/hot/compare.rs` 分别保留 Binary hot、SQLite hot baseline 和 Binary-vs-SQLite hot compare 的执行/比较逻辑。
+- `benchmark/hot/compare.rs` 读取 `BenchmarkRunReport` 作为 Binary/SQLite 输入，报告输出调用外层 `benchmark/report.rs`。
+- `benchmark/cold/runner.rs`、`benchmark/cold/sqlite_runner.rs` 和 `benchmark/cold/compare.rs` 保留冷启动执行/比较逻辑，报告输出调用外层 `benchmark/report.rs`。
+- cold-start 的时间和字节展示语义在 `benchmark/report.rs` 内单独保留，不强行套用 hot 报告格式。
 
 ### 控制参数总览
 

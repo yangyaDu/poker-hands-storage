@@ -1,7 +1,7 @@
 use std::fs;
 
-use poker_hands_storage_tools::benchmark::compare::run_benchmark_compare;
-use poker_hands_storage_tools::benchmark::compare::types::BenchmarkCompareCommand;
+use poker_hands_storage_tools::benchmark::hot::run_benchmark_compare;
+use poker_hands_storage_tools::benchmark::hot::types::BenchmarkCompareCommand;
 use poker_hands_storage_tools::benchmark::memory_snapshot::{
     BenchmarkMemoryReport, MemorySnapshot,
 };

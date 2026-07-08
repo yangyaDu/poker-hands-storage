@@ -4,8 +4,9 @@ use poker_hands_storage_tools::benchmark::cold::types::ColdStartMode;
 use poker_hands_storage_tools::benchmark::cold::{
     parse_benchmark_cold_compare_args, parse_benchmark_sqlite_cold_args,
 };
-use poker_hands_storage_tools::benchmark::compare::parse_benchmark_compare_args;
-use poker_hands_storage_tools::benchmark::sqlite::parse_benchmark_sqlite_args;
+use poker_hands_storage_tools::benchmark::hot::{
+    parse_benchmark_compare_args, parse_benchmark_sqlite_args,
+};
 use poker_hands_storage_tools::benchmark::types::WorkloadMode;
 
 fn args(values: &[&str]) -> Vec<String> {

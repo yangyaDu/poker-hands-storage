@@ -63,7 +63,7 @@ fn run_inner(
 
     let dimension = DimensionRef::new(params.strategy, params.player_count, params.depth_bb);
     let query_start = Instant::now();
-    let result_count = crate::benchmark::sqlite::runner::sqlite_action_count(
+    let result_count = crate::benchmark::hot::sqlite_runner::sqlite_action_count(
         &connection,
         &dimension,
         params.concrete_line_id,

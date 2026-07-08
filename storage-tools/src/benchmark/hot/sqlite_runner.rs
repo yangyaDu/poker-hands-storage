@@ -1,11 +1,11 @@
 use crate::benchmark::hot::runner::drill_scenario_line_count;
+use crate::benchmark::hot::types::BenchmarkSqliteCommand;
 use crate::benchmark::memory_snapshot::{get_memory_snapshot, BenchmarkMemoryReport};
 use crate::benchmark::metrics::{build_totals, measure_benchmark_case, BenchmarkCaseResult};
 use crate::benchmark::report::{
     build_benchmark_report_for_engine, write_benchmark_json, write_benchmark_markdown,
     BenchmarkOptionsSummary, BenchmarkRunReport, ReportInput,
 };
-use crate::benchmark::sqlite::types::BenchmarkSqliteCommand;
 use crate::benchmark::types::{
     concrete_lines_table_name, range_table_name, BatchBenchmarkItem, BenchmarkWorkload,
     ConcreteLineBenchmarkItem, DrillScenarioBenchmarkItem, HandBenchmarkItem,

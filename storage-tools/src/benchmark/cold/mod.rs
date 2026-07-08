@@ -1,7 +1,6 @@
 pub mod cache_eviction;
 pub mod cli;
 pub mod compare;
-pub mod report;
 pub mod runner;
 pub mod sqlite_runner;
 pub mod sqlite_worker;

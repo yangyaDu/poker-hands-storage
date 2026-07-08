@@ -1,8 +1,8 @@
 #[path = "../support/verify_store_fixture.rs"]
 mod verify_store_fixture;
 
-use poker_hands_storage_tools::benchmark::sqlite::run_sqlite_benchmark;
-use poker_hands_storage_tools::benchmark::sqlite::types::BenchmarkSqliteCommand;
+use poker_hands_storage_tools::benchmark::hot::run_sqlite_benchmark;
+use poker_hands_storage_tools::benchmark::hot::types::BenchmarkSqliteCommand;
 use poker_hands_storage_tools::benchmark::types::{WorkloadMode, WorkloadOptions};
 use poker_hands_storage_tools::benchmark::workload::{
     create_benchmark_workload, write_workload_json,

@@ -1,12 +1,13 @@
 use std::collections::HashMap;
 use std::fs;
 
-use crate::benchmark::compare::report::{write_compare_json, write_compare_markdown};
-use crate::benchmark::compare::types::{
+use crate::benchmark::hot::types::{
     BenchmarkCompareCommand, BenchmarkCompareReport, CaseComparison, CaseSide,
 };
 use crate::benchmark::metrics::safe_ratio;
-use crate::benchmark::report::{generated_at_utc, BenchmarkRunReport};
+use crate::benchmark::report::{
+    generated_at_utc, write_compare_json, write_compare_markdown, BenchmarkRunReport,
+};
 use crate::errors::ToolError;
 
 pub fn run_benchmark_compare(

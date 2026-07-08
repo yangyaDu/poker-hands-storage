@@ -1,19 +1,22 @@
-//! Main benchmark report model and renderer.
+//! Benchmark report models and renderers.
 //!
-//! Used by hot Binary, SQLite baseline, metadata, and native benchmark runners.
-//! The hot compare runner reads this shape as input, but renders its own compare
-//! report through `benchmark::compare::report`. Cold-start reports use
-//! `benchmark::cold::report` and `benchmark::cold::compare`.
+//! This is the single report module for hot Binary, SQLite baseline, metadata,
+//! native, hot compare, cold-start, and cold-start compare benchmark reports.
 
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::benchmark::cold::types::{
+    ColdStartBenchmarkReport, ColdStartCompareReport, ColdStartComparison, ColdStartPhaseSummaries,
+    LatencySummary,
+};
 use crate::benchmark::hot::result_verifier::ResultVerificationSummary;
+use crate::benchmark::hot::types::BenchmarkCompareReport;
 use crate::benchmark::memory_snapshot::BenchmarkMemoryReport;
 use crate::benchmark::metrics::{BenchmarkCaseResult, BenchmarkTotals};
 use crate::benchmark::report_support::{
-    format_binary_bytes, format_ms, write_json_report, write_markdown_report,
+    format_binary_bytes, format_ms, markdown_table, write_json_report, write_markdown_report,
 };
 use crate::benchmark::types::{BenchmarkWorkload, WorkloadMode, WorkloadSource};
 use crate::errors::ToolError;
@@ -304,5 +307,461 @@ fn format_optional_signed_bytes(value: Option<i64>) -> String {
         Some(value) if value < 0 => format!("-{}", format_binary_bytes(value.unsigned_abs())),
         Some(value) => format_binary_bytes(value as u64),
         None => "unknown".to_owned(),
+    }
+}
+
+pub fn write_compare_json(path: &Path, report: &BenchmarkCompareReport) -> Result<(), ToolError> {
+    write_json_report(path, report)
+}
+
+pub fn write_compare_markdown(
+    path: &Path,
+    report: &BenchmarkCompareReport,
+) -> Result<(), ToolError> {
+    write_markdown_report(path, render_compare_markdown(report))
+}
+
+pub fn render_compare_markdown(report: &BenchmarkCompareReport) -> String {
+    let mut markdown = String::new();
+    markdown.push_str("# Range Strata Binary vs SQLite Benchmark Compare\n\n");
+    markdown.push_str(&format!("Generated at: {}\n\n", report.generated_at));
+    markdown.push_str("## Summary\n\n");
+    markdown.push_str(&format!(
+        "- Binary report: `{}`\n",
+        report.binary_report_path
+    ));
+    markdown.push_str(&format!(
+        "- SQLite report: `{}`\n",
+        report.sqlite_report_path
+    ));
+    markdown.push_str(&format!(
+        "- Compatible workload: {}\n\n",
+        report.compatible_workload
+    ));
+
+    if !report.compatibility_notes.is_empty() {
+        markdown.push_str("## Compatibility Notes\n\n");
+        for note in &report.compatibility_notes {
+            markdown.push_str(&format!("- {note}\n"));
+        }
+        markdown.push('\n');
+    }
+
+    markdown.push_str("## Case Comparison\n\n");
+    markdown.push_str("| case | binary avg | sqlite avg | latency ratio | binary p95 | sqlite p95 | p95 ratio | binary qps | sqlite qps | qps ratio | errors | result match |\n");
+    markdown.push_str(
+        "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |\n",
+    );
+    for case in &report.cases {
+        markdown.push_str(&format!(
+            "| {} | {} | {} | {:.3} | {} | {} | {:.3} | {:.2} | {:.2} | {:.3} | {}/{} | {} |\n",
+            case.name,
+            format_ms(case.binary.avg_ms),
+            format_ms(case.sqlite.avg_ms),
+            case.binary_to_sqlite_avg_latency_ratio,
+            format_ms(case.binary.p95_ms),
+            format_ms(case.sqlite.p95_ms),
+            case.binary_to_sqlite_p95_latency_ratio,
+            case.binary.qps,
+            case.sqlite.qps,
+            case.binary_to_sqlite_qps_ratio,
+            case.binary.error_count,
+            case.sqlite.error_count,
+            case.result_count_match
+        ));
+    }
+    markdown.push('\n');
+
+    markdown.push_str("## Notes\n\n");
+    for note in &report.notes {
+        markdown.push_str(&format!("- {note}\n"));
+    }
+    markdown
+}
+
+pub fn write_cold_start_json(
+    path: &Path,
+    report: &ColdStartBenchmarkReport,
+) -> Result<(), ToolError> {
+    write_json_report(path, report)
+}
+
+pub fn write_cold_start_markdown(
+    path: &Path,
+    report: &ColdStartBenchmarkReport,
+) -> Result<(), ToolError> {
+    write_markdown_report(path, render_cold_start_markdown(report))
+}
+
+pub fn render_cold_start_markdown(report: &ColdStartBenchmarkReport) -> String {
+    let mut out = String::new();
+
+    out.push_str(&format!(
+        "# {} Cold-Start Benchmark\n\n",
+        engine_title(&report.engine)
+    ));
+    out.push_str(&format!("Generated: {}\n\n", report.generated_at));
+
+    out.push_str("## Summary\n\n");
+    out.push_str(&format!("- Engine: {}\n", report.engine));
+    out.push_str(&format!("- Mode: {}\n", report.mode));
+    out.push_str(&format!("- Platform: {}\n", report.platform));
+    out.push_str(&format!("- Source DB: `{}`\n", report.source_db_path));
+    if report.engine == "binary" {
+        out.push_str(&format!("- Binary dir: `{}`\n", report.binary_dir));
+        out.push_str(&format!("- meta.db: `{}`\n", report.meta_db_path));
+    }
+    out.push_str(&format!("- Dimensions: {}\n", report.aggregate.dimensions));
+    out.push_str(&format!(
+        "- Runs per dimension: {}\n",
+        report.runs_per_dimension
+    ));
+    out.push_str(&format!("- Total runs: {}\n", report.aggregate.runs));
+    out.push_str(&format!("- Errors: {}\n", report.aggregate.error_count));
+    out.push_str(&format!(
+        "- Cache filler size: {:.1} MB\n",
+        report.cache_filler_size_bytes as f64 / (1024.0 * 1024.0)
+    ));
+    out.push_str(&format!(
+        "- Successful runs: {}\n",
+        report.aggregate.successful_runs
+    ));
+    out.push_str(&format!(
+        "- Aggregate store open + first query p50 / p95: {} / {}\n",
+        format_cold_ms(report.aggregate.store_open_and_first_query_ms.p50_ms),
+        format_cold_ms(report.aggregate.store_open_and_first_query_ms.p95_ms)
+    ));
+    out.push_str(&format!(
+        "- Aggregate process elapsed p50 / p95: {} / {}\n",
+        format_cold_ms(report.aggregate.process_elapsed_ms.p50_ms),
+        format_cold_ms(report.aggregate.process_elapsed_ms.p95_ms)
+    ));
+    out.push_str(&format!(
+        "- Phase accounting (worst): unaccounted {} ({:.2}%)\n\n",
+        format_cold_ms(report.aggregate.phase_accounting.unaccounted_ms),
+        report.aggregate.phase_accounting.unaccounted_ratio * 100.0
+    ));
+
+    out.push_str("## Aggregate Phase Breakdown\n\n");
+    let phase_rows = phase_summary_rows(&report.aggregate.phase_timings);
+    out.push_str(&markdown_table(
+        &["Phase", "P50", "P95", "Avg", "Max"],
+        &phase_rows,
+    ));
+    out.push('\n');
+
+    out.push_str("## Dimensions\n\n");
+    let dim_headers = [
+        "Dimension",
+        "Runs",
+        "Errors",
+        "Store+Query P50",
+        "Store+Query P95",
+        "Process P50",
+        "Process P95",
+        "RSS Delta P95",
+        "Query",
+    ];
+    let dim_rows: Vec<Vec<String>> = report
+        .dimensions
+        .iter()
+        .map(|dimension| {
+            vec![
+                dimension.dimension.clone(),
+                dimension.runs.to_string(),
+                dimension.error_count.to_string(),
+                format_cold_ms(dimension.store_open_and_first_query_ms.p50_ms),
+                format_cold_ms(dimension.store_open_and_first_query_ms.p95_ms),
+                format_cold_ms(dimension.process_elapsed_ms.p50_ms),
+                format_cold_ms(dimension.process_elapsed_ms.p95_ms),
+                format_cold_bytes(dimension.memory_delta_rss_bytes.p95_ms),
+                format!(
+                    "{} / {}",
+                    dimension.query.concrete_line_id, dimension.query.hand
+                ),
+            ]
+        })
+        .collect();
+    out.push_str(&markdown_table(&dim_headers, &dim_rows));
+    out.push('\n');
+
+    out.push_str("## Failures\n\n");
+    if report.aggregate.failures.is_empty() {
+        out.push_str("None\n\n");
+    } else {
+        let fail_rows: Vec<Vec<String>> = report
+            .aggregate
+            .failures
+            .iter()
+            .map(|failure| {
+                vec![
+                    failure.dimension.clone(),
+                    failure.run_index.to_string(),
+                    failure.exit_code.to_string(),
+                    failure.valid_json.to_string(),
+                    failure.error.clone(),
+                ]
+            })
+            .collect();
+        out.push_str(&markdown_table(
+            &["Dimension", "Run", "Exit Code", "Valid JSON", "Error"],
+            &fail_rows,
+        ));
+        out.push('\n');
+    }
+
+    out.push_str("## Dimension Phase Breakdown\n\n");
+    let dim_phase_headers = [
+        "Dimension",
+        "Service Open P95",
+        "Prewarm P95",
+        "Query P95",
+        "Worker Total P95",
+        "Process Overhead P95",
+    ];
+    let dim_phase_rows: Vec<Vec<String>> = report
+        .dimensions
+        .iter()
+        .map(|dimension| {
+            vec![
+                dimension.dimension.clone(),
+                format_cold_ms(dimension.phase_timings.service_open_ms.p95_ms),
+                format_cold_ms(dimension.phase_timings.dimension_prewarm_ms.p95_ms),
+                format_cold_ms(dimension.phase_timings.first_query_ms.p95_ms),
+                format_cold_ms(dimension.phase_timings.worker_total_ms.p95_ms),
+                format_cold_ms(dimension.phase_timings.process_overhead_ms.p95_ms),
+            ]
+        })
+        .collect();
+    out.push_str(&markdown_table(&dim_phase_headers, &dim_phase_rows));
+    out.push('\n');
+
+    out.push_str("## Notes\n\n");
+    for note in &report.notes {
+        out.push_str(&format!("- {note}\n"));
+    }
+    out.push('\n');
+
+    out
+}
+
+fn phase_summary_rows(summary: &ColdStartPhaseSummaries) -> Vec<Vec<String>> {
+    let rows: Vec<(&str, &LatencySummary)> = vec![
+        ("Service open (meta.db + schemas)", &summary.service_open_ms),
+        (
+            "Dimension prewarm (idx/bin mmap)",
+            &summary.dimension_prewarm_ms,
+        ),
+        ("First query sync decode", &summary.first_query_ms),
+        ("Service close", &summary.close_ms),
+        ("Worker measured total", &summary.worker_total_ms),
+        ("Parent process overhead", &summary.process_overhead_ms),
+    ];
+
+    rows.into_iter()
+        .map(|(name, summary)| {
+            vec![
+                name.to_owned(),
+                format_cold_ms(summary.p50_ms),
+                format_cold_ms(summary.p95_ms),
+                format_cold_ms(summary.avg_ms),
+                format_cold_ms(summary.max_ms),
+            ]
+        })
+        .collect()
+}
+
+fn engine_title(engine: &str) -> &str {
+    match engine {
+        "binary" => "Range Strata Binary",
+        "sqlite" => "SQLite",
+        _ => engine,
+    }
+}
+
+fn format_cold_ms(value: f64) -> String {
+    if !value.is_finite() {
+        return "unknown".to_owned();
+    }
+    if value >= 10.0 {
+        format!("{value:.2} ms")
+    } else {
+        format!("{value:.3} ms")
+    }
+}
+
+fn format_cold_bytes(value: f64) -> String {
+    if !value.is_finite() || value == 0.0 {
+        return "0 B".to_owned();
+    }
+    let abs = value.abs();
+    let sign = if value < 0.0 { "-" } else { "" };
+    if abs >= 1024.0 * 1024.0 * 1024.0 {
+        format!("{sign}{:.2} GB", abs / (1024.0 * 1024.0 * 1024.0))
+    } else if abs >= 1024.0 * 1024.0 {
+        format!("{sign}{:.2} MB", abs / (1024.0 * 1024.0))
+    } else if abs >= 1024.0 {
+        format!("{sign}{:.2} KB", abs / 1024.0)
+    } else {
+        format!("{sign}{:.0} B", abs)
+    }
+}
+
+pub fn write_cold_compare_json(
+    path: &Path,
+    report: &ColdStartCompareReport,
+) -> Result<(), ToolError> {
+    write_json_report(path, report)
+}
+
+pub fn write_cold_compare_markdown(
+    path: &Path,
+    report: &ColdStartCompareReport,
+) -> Result<(), ToolError> {
+    write_markdown_report(path, render_cold_compare_markdown(report))
+}
+
+pub fn render_cold_compare_markdown(report: &ColdStartCompareReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Range Strata Binary vs SQLite Cold-Start Compare\n\n");
+    out.push_str(&format!("Generated at: {}\n\n", report.generated_at));
+    out.push_str("## Summary\n\n");
+    out.push_str(&format!(
+        "- Binary report: `{}`\n",
+        report.binary_report_path
+    ));
+    out.push_str(&format!(
+        "- SQLite report: `{}`\n",
+        report.sqlite_report_path
+    ));
+    out.push_str(&format!("- Compatible: {}\n\n", report.compatible));
+
+    if !report.compatibility_notes.is_empty() {
+        out.push_str("## Compatibility Notes\n\n");
+        for note in &report.compatibility_notes {
+            out.push_str(&format!("- {note}\n"));
+        }
+        out.push('\n');
+    }
+
+    out.push_str("## Aggregate Comparison\n\n");
+    out.push_str(&cold_comparison_table(std::slice::from_ref(
+        &report.aggregate,
+    )));
+    out.push('\n');
+
+    out.push_str("## Dimension Comparison\n\n");
+    out.push_str(&cold_comparison_table(&report.dimensions));
+    out.push('\n');
+
+    out.push_str("## Notes\n\n");
+    for note in &report.notes {
+        out.push_str(&format!("- {note}\n"));
+    }
+    out
+}
+
+fn cold_comparison_table(rows: &[ColdStartComparison]) -> String {
+    let mut out = String::new();
+    out.push_str("| name | binary process p50 | sqlite process p50 | process p50 ratio | binary process p95 | sqlite process p95 | process p95 ratio | binary store+query p95 | sqlite store+query p95 | store+query p95 ratio | binary first-query p95 | sqlite first-query p95 | first-query p95 ratio | errors |\n");
+    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
+    for row in rows {
+        out.push_str(&format!(
+            "| {} | {} | {} | {:.3} | {} | {} | {:.3} | {} | {} | {:.3} | {} | {} | {:.3} | {}/{} |\n",
+            row.name,
+            format_ms(row.binary.process_elapsed_p50_ms),
+            format_ms(row.sqlite.process_elapsed_p50_ms),
+            row.process_elapsed_p50_ratio,
+            format_ms(row.binary.process_elapsed_p95_ms),
+            format_ms(row.sqlite.process_elapsed_p95_ms),
+            row.process_elapsed_p95_ratio,
+            format_ms(row.binary.store_open_and_first_query_p95_ms),
+            format_ms(row.sqlite.store_open_and_first_query_p95_ms),
+            row.store_open_and_first_query_p95_ratio,
+            format_ms(row.binary.first_query_p95_ms),
+            format_ms(row.sqlite.first_query_p95_ms),
+            row.first_query_p95_ratio,
+            row.binary.error_count,
+            row.sqlite.error_count,
+        ));
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::benchmark::cold::types::{AggregateReport, PhaseAccounting};
+
+    fn empty_latency() -> LatencySummary {
+        LatencySummary::from_values(&[])
+    }
+
+    fn empty_phase() -> ColdStartPhaseSummaries {
+        ColdStartPhaseSummaries {
+            service_open_ms: empty_latency(),
+            dimension_prewarm_ms: empty_latency(),
+            first_query_ms: empty_latency(),
+            close_ms: empty_latency(),
+            worker_total_ms: empty_latency(),
+            process_overhead_ms: empty_latency(),
+        }
+    }
+
+    #[test]
+    fn cold_start_markdown_contains_sections() {
+        let report = ColdStartBenchmarkReport {
+            generated_at: "2026-01-01T00:00:00Z".to_owned(),
+            engine: "binary".to_owned(),
+            mode: "process-cold".to_owned(),
+            platform: "windows".to_owned(),
+            runs_per_dimension: 3,
+            source_db_path: "test.db".to_owned(),
+            binary_dir: "data/".to_owned(),
+            meta_db_path: "data/meta.db".to_owned(),
+            verify_checksums: false,
+            cache_filler_size_bytes: 0,
+            dimensions: vec![],
+            aggregate: AggregateReport {
+                dimensions: 0,
+                runs: 0,
+                successful_runs: 0,
+                error_count: 0,
+                store_open_and_first_query_ms: empty_latency(),
+                process_elapsed_ms: empty_latency(),
+                phase_timings: empty_phase(),
+                phase_accounting: PhaseAccounting {
+                    phase_sum_ms: 0.0,
+                    worker_total_ms: 0.0,
+                    unaccounted_ms: 0.0,
+                    unaccounted_ratio: 0.0,
+                },
+                failures: vec![],
+            },
+            notes: vec!["test note".to_owned()],
+        };
+        let markdown = render_cold_start_markdown(&report);
+        assert!(markdown.contains("## Summary"));
+        assert!(markdown.contains("## Aggregate Phase Breakdown"));
+        assert!(markdown.contains("## Dimensions"));
+        assert!(markdown.contains("## Failures"));
+        assert!(markdown.contains("None"));
+        assert!(markdown.contains("## Notes"));
+        assert!(markdown.contains("test note"));
+    }
+
+    #[test]
+    fn format_cold_ms_large() {
+        assert_eq!(format_cold_ms(12.345), "12.35 ms");
+    }
+
+    #[test]
+    fn format_cold_ms_small() {
+        assert_eq!(format_cold_ms(1.2345), "1.234 ms");
+    }
+
+    #[test]
+    fn format_cold_bytes_mb() {
+        assert_eq!(format_cold_bytes(2.5 * 1024.0 * 1024.0), "2.50 MB");
     }
 }

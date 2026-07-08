@@ -7,6 +7,7 @@ use range_store_core::dimension::{dimension_key, DimensionRef};
 use range_store_core::manifest::load_manifest;
 
 use crate::benchmark::memory_snapshot::MemorySnapshot;
+use crate::benchmark::report::{write_cold_start_json, write_cold_start_markdown};
 
 use super::cache_eviction::{compute_dataset_size, evict_cache};
 use super::types::{
@@ -551,7 +552,7 @@ fn write_report(
     command: &BenchmarkColdCommand,
     report: &ColdStartBenchmarkReport,
 ) -> Result<(), ToolError> {
-    super::report::write_cold_start_json(&command.out_path, report)?;
-    super::report::write_cold_start_markdown(&command.md_path, report)?;
+    write_cold_start_json(&command.out_path, report)?;
+    write_cold_start_markdown(&command.md_path, report)?;
     Ok(())
 }

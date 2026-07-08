@@ -3,6 +3,7 @@ use std::process::{Command, Stdio};
 use std::time::Instant;
 
 use crate::benchmark::memory_snapshot::MemorySnapshot;
+use crate::benchmark::report::{write_cold_start_json, write_cold_start_markdown};
 use crate::errors::ToolError;
 
 use super::cache_eviction::evict_cache;
@@ -324,8 +325,8 @@ fn write_report(
     command: &BenchmarkSqliteColdCommand,
     report: &ColdStartBenchmarkReport,
 ) -> Result<(), ToolError> {
-    super::report::write_cold_start_json(&command.out_path, report)?;
-    super::report::write_cold_start_markdown(&command.md_path, report)?;
+    write_cold_start_json(&command.out_path, report)?;
+    write_cold_start_markdown(&command.md_path, report)?;
     Ok(())
 }
 

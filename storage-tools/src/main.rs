@@ -5,19 +5,16 @@ use poker_hands_storage_tools::benchmark::cold::{
     parse_benchmark_cold_args, parse_benchmark_cold_compare_args, parse_benchmark_sqlite_cold_args,
     run_cold_start_compare, run_sqlite_cold_benchmark,
 };
-use poker_hands_storage_tools::benchmark::compare::{
-    parse_benchmark_compare_args, run_benchmark_compare,
+use poker_hands_storage_tools::benchmark::hot::{
+    parse_benchmark_args, parse_benchmark_compare_args, parse_benchmark_sqlite_args,
+    run_benchmark_compare, run_sqlite_benchmark,
 };
-use poker_hands_storage_tools::benchmark::hot::parse_benchmark_args;
 use poker_hands_storage_tools::benchmark::native::parse_benchmark_native_args;
 use poker_hands_storage_tools::benchmark::native::run_core_worker_from_input_path;
 use poker_hands_storage_tools::benchmark::run_cold_benchmark;
 use poker_hands_storage_tools::benchmark::run_drill_metadata_benchmark;
 use poker_hands_storage_tools::benchmark::run_hot_benchmark;
 use poker_hands_storage_tools::benchmark::run_native_benchmark;
-use poker_hands_storage_tools::benchmark::sqlite::{
-    parse_benchmark_sqlite_args, run_sqlite_benchmark,
-};
 use poker_hands_storage_tools::errors::ToolError;
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_tools::verification::cli::parse_verify_args;

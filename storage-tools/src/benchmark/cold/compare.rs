@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::benchmark::metrics::safe_ratio;
-use crate::benchmark::report_support::{format_ms, write_json_report, write_markdown_report};
+use crate::benchmark::report::{write_cold_compare_json, write_cold_compare_markdown};
 use crate::errors::ToolError;
 
 use super::types::{
@@ -206,82 +206,6 @@ fn dimension_side(report: &DimensionColdStartReport) -> ColdStartComparisonSide 
         first_query_p50_ms: report.phase_timings.first_query_ms.p50_ms,
         first_query_p95_ms: report.phase_timings.first_query_ms.p95_ms,
     }
-}
-
-fn write_cold_compare_json(path: &Path, report: &ColdStartCompareReport) -> Result<(), ToolError> {
-    write_json_report(path, report)
-}
-
-fn write_cold_compare_markdown(
-    path: &Path,
-    report: &ColdStartCompareReport,
-) -> Result<(), ToolError> {
-    write_markdown_report(path, render_cold_compare_markdown(report))
-}
-
-fn render_cold_compare_markdown(report: &ColdStartCompareReport) -> String {
-    let mut out = String::new();
-    out.push_str("# Range Strata Binary vs SQLite Cold-Start Compare\n\n");
-    out.push_str(&format!("Generated at: {}\n\n", report.generated_at));
-    out.push_str("## Summary\n\n");
-    out.push_str(&format!(
-        "- Binary report: `{}`\n",
-        report.binary_report_path
-    ));
-    out.push_str(&format!(
-        "- SQLite report: `{}`\n",
-        report.sqlite_report_path
-    ));
-    out.push_str(&format!("- Compatible: {}\n\n", report.compatible));
-
-    if !report.compatibility_notes.is_empty() {
-        out.push_str("## Compatibility Notes\n\n");
-        for note in &report.compatibility_notes {
-            out.push_str(&format!("- {note}\n"));
-        }
-        out.push('\n');
-    }
-
-    out.push_str("## Aggregate Comparison\n\n");
-    out.push_str(&comparison_table(std::slice::from_ref(&report.aggregate)));
-    out.push('\n');
-
-    out.push_str("## Dimension Comparison\n\n");
-    out.push_str(&comparison_table(&report.dimensions));
-    out.push('\n');
-
-    out.push_str("## Notes\n\n");
-    for note in &report.notes {
-        out.push_str(&format!("- {note}\n"));
-    }
-    out
-}
-
-fn comparison_table(rows: &[ColdStartComparison]) -> String {
-    let mut out = String::new();
-    out.push_str("| name | binary process p50 | sqlite process p50 | process p50 ratio | binary process p95 | sqlite process p95 | process p95 ratio | binary store+query p95 | sqlite store+query p95 | store+query p95 ratio | binary first-query p95 | sqlite first-query p95 | first-query p95 ratio | errors |\n");
-    out.push_str("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n");
-    for row in rows {
-        out.push_str(&format!(
-            "| {} | {} | {} | {:.3} | {} | {} | {:.3} | {} | {} | {:.3} | {} | {} | {:.3} | {}/{} |\n",
-            row.name,
-            format_ms(row.binary.process_elapsed_p50_ms),
-            format_ms(row.sqlite.process_elapsed_p50_ms),
-            row.process_elapsed_p50_ratio,
-            format_ms(row.binary.process_elapsed_p95_ms),
-            format_ms(row.sqlite.process_elapsed_p95_ms),
-            row.process_elapsed_p95_ratio,
-            format_ms(row.binary.store_open_and_first_query_p95_ms),
-            format_ms(row.sqlite.store_open_and_first_query_p95_ms),
-            row.store_open_and_first_query_p95_ratio,
-            format_ms(row.binary.first_query_p95_ms),
-            format_ms(row.sqlite.first_query_p95_ms),
-            row.first_query_p95_ratio,
-            row.binary.error_count,
-            row.sqlite.error_count,
-        ));
-    }
-    out
 }
 
 #[cfg(test)]

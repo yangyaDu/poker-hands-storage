@@ -126,33 +126,27 @@ poker-hands-storage/
 |   |   |   |-- catalog_checks.rs      # meta.db 表结构、action_schemas、concrete_lines 表检查
 |   |   |   |-- float32_precision.rs   # IEEE754 Float32 bit-exact 精度校验
 |   |   |   |-- report/mod.rs          # 验证报告 JSON/Markdown 生成
-|   |   |-- benchmark/                 # hot/cold/sqlite/compare/native benchmark
+|   |   |-- benchmark/                 # hot/cold/native benchmark
 |   |   |   |-- mod.rs                 # benchmark 子模块导出
 |   |   |   |-- cli.rs                 # benchmark 参数解析
 |   |   |   |-- types.rs               # BenchmarkWorkload 和查询项类型
 |   |   |   |-- workload.rs            # workload 生成与 JSON 序列化（跨 benchmark 复用）
 |   |   |   |-- metrics.rs             # QPS/latency/percentile 计算
 |   |   |   |-- memory_snapshot.rs     # RSS 内存快照
-|   |   |   |-- report.rs              # hot/sqlite/metadata/native 主 benchmark 报告 JSON/Markdown 生成
+|   |   |   |-- report.rs              # hot/native/cold 等 benchmark 报告 JSON/Markdown 生成
 |   |   |   |-- report_support.rs      # benchmark 报告写文件、时间、单位和表格等公共 helper
-|   |   |   |-- hot/                   # 热路径 benchmark（mmap 缓存命中）
-|   |   |   |   |-- runner.rs          # concrete-lines-exact/hand-strategy/batch/hands-by-actions/drill 测量
+|   |   |   |-- hot/                   # 热路径 benchmark，包含 Binary、SQLite baseline 和 hot compare
+|   |   |   |   |-- runner.rs          # Binary concrete-lines-exact/hand-strategy/batch/hands-by-actions/drill 测量
+|   |   |   |   |-- sqlite_runner.rs   # 同 workload 直接查源 range_data/concrete_lines/drill 表
+|   |   |   |   |-- compare.rs         # Binary hot vs SQLite hot 对比
 |   |   |   |   |-- result_verifier.rs # --verify-results 结果一致性校验
-|   |   |   |   |-- types.rs           # BenchmarkCommand 和 HotCommand 参数
-|   |   |   |-- sqlite/                # SQLite baseline benchmark
-|   |   |   |   |-- runner.rs          # 同 workload 直接查源 range_data/concrete_lines/drill 表
-|   |   |   |   |-- types.rs           # BenchmarkSqliteCommand 参数
-|   |   |   |-- compare/               # Binary vs SQLite 对比
-|   |   |   |   |-- runner.rs          # 按 case 名匹配报告，计算延迟比/QPS 比
-|   |   |   |   |-- report.rs          # 对比报告 JSON/Markdown 生成
-|   |   |   |   |-- types.rs           # BenchmarkCompareCommand 参数
+|   |   |   |   |-- types.rs           # Hot/SQLite/Compare 命令和报告类型
 |   |   |   |-- cold/                  # 冷启动 benchmark
 |   |   |   |   |-- runner.rs          # 多 run 冷启动测量，cache eviction，worker 编排
 |   |   |   |   |-- worker.rs          # core worker 进程：打开 store + 查询 + 计时
 |   |   |   |   |-- sqlite_worker.rs   # SQLite worker 进程
 |   |   |   |   |-- cache_eviction.rs  # OS page cache 驱逐策略
 |   |   |   |   |-- compare.rs         # cold Binary vs SQLite 对比
-|   |   |   |   |-- report.rs          # cold 报告生成
 |   |   |   |   |-- types.rs           # ColdWorkerParams/ColdStartBenchmarkReport
 |   |   |   |-- native/                # core / SDK / HTTP 三路公平对比
 |   |   |   |   |-- runner.rs          # 同 workload 在三个子进程中并行测试
