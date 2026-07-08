@@ -114,9 +114,50 @@ poker-hands-storage/
 |   |   |-- errors.rs                  # ToolError 错误类型
 |   |   |-- metadata.rs                # 构建阶段写入 meta.db
 |   |   |-- range_store_builder/       # SQLite -> manifest/meta/idx/bin 构建流程
+|   |   |   |-- mod.rs                 # 构建入口 build_store()
+|   |   |   |-- build_orchestrator.rs  # 维度发现、meta.db 建表、pack 编码、文件写入
 |   |   |-- verification/              # standalone/cross verify 和验证报告
-|   |   `-- benchmark/                 # hot/cold/sqlite/compare/native benchmark
-|   `-- tests/                         # 构建、验证、benchmark CLI 和报告测试
+|   |   |   |-- mod.rs                 # verify 子模块导出
+|   |   |   |-- cli.rs                 # verify --mode standalone|cross 参数解析
+|   |   |   |-- standalone/mod.rs      # standalone 验证入口
+|   |   |   |-- standalone/standalone_runner.rs  # manifest/header/idx/bin/catalog 自洽检查
+|   |   |   |-- cross/mod.rs           # cross 验证入口
+|   |   |   |-- cross/source_cross_runner.rs     # 源 SQLite 与二进制 pack 逐项比对
+|   |   |   |-- catalog_checks.rs      # meta.db 表结构、action_schemas、concrete_lines 表检查
+|   |   |   |-- float32_precision.rs   # IEEE754 Float32 bit-exact 精度校验
+|   |   |   |-- report/mod.rs          # 验证报告 JSON/Markdown 生成
+|   |   |-- benchmark/                 # hot/cold/sqlite/compare/native benchmark
+|   |   |   |-- mod.rs                 # benchmark 子模块导出
+|   |   |   |-- cli.rs                 # benchmark 参数解析
+|   |   |   |-- types.rs               # BenchmarkWorkload 和查询项类型
+|   |   |   |-- workload.rs            # workload 生成与 JSON 序列化（跨 benchmark 复用）
+|   |   |   |-- metrics.rs             # QPS/latency/percentile 计算
+|   |   |   |-- memory_snapshot.rs     # RSS 内存快照
+|   |   |   |-- report.rs              # benchmark 报告 JSON/Markdown 生成
+|   |   |   |-- hot/                   # 热路径 benchmark（mmap 缓存命中）
+|   |   |   |   |-- runner.rs          # hand-strategy/batch/hands-by-actions/drill 测量
+|   |   |   |   |-- result_verifier.rs # --verify-results 结果一致性校验
+|   |   |   |   |-- types.rs           # BenchmarkCommand 和 HotCommand 参数
+|   |   |   |-- sqlite/                # SQLite baseline benchmark
+|   |   |   |   |-- runner.rs          # 同 workload 直接查源 range_data 表
+|   |   |   |   |-- types.rs           # BenchmarkSqliteCommand 参数
+|   |   |   |-- compare/               # Binary vs SQLite 对比
+|   |   |   |   |-- runner.rs          # 按 case 名匹配报告，计算延迟比/QPS 比
+|   |   |   |   |-- report.rs          # 对比报告 JSON/Markdown 生成
+|   |   |   |   |-- types.rs           # BenchmarkCompareCommand 参数
+|   |   |   |-- cold/                  # 冷启动 benchmark
+|   |   |   |   |-- runner.rs          # 多 run 冷启动测量，cache eviction，worker 编排
+|   |   |   |   |-- worker.rs          # core worker 进程：打开 store + 查询 + 计时
+|   |   |   |   |-- sqlite_worker.rs   # SQLite worker 进程
+|   |   |   |   |-- cache_eviction.rs  # OS page cache 驱逐策略
+|   |   |   |   |-- compare.rs         # cold Binary vs SQLite 对比
+|   |   |   |   |-- report.rs          # cold 报告生成
+|   |   |   |   |-- types.rs           # ColdWorkerParams/ColdStartBenchmarkReport
+|   |   |   |-- native/                # core / SDK / HTTP 三路公平对比
+|   |   |   |   |-- runner.rs          # 同 workload 在三个子进程中并行测试
+|   |   |   |   |-- types.rs           # BenchmarkNativeCommand 参数
+|   |   |   |-- metadata.rs            # drill metadata microbenchmark
+|   |   |-- tests/                     # 构建、验证、benchmark CLI 和报告测试
 |
 |-- docs/
 |   |-- README.md                      # 文档地图和阅读路径
