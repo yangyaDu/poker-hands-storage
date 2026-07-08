@@ -7,8 +7,8 @@ use serde::Deserialize;
 use crate::benchmark::types::{
     concrete_lines_table_name, dimension_matches_requested, drill_scenario_table_name,
     normalize_batch_sizes, range_table_name, BatchBenchmarkItem, BatchBenchmarkRequest,
-    BatchQueriesBySize, BenchmarkWorkload, DrillScenarioBenchmarkItem, HandBenchmarkItem,
-    HandsByActionsBenchmarkItem, WorkloadMode, WorkloadOptions,
+    BatchQueriesBySize, BenchmarkWorkload, ConcreteLineBenchmarkItem, DrillScenarioBenchmarkItem,
+    HandBenchmarkItem, HandsByActionsBenchmarkItem, WorkloadMode, WorkloadOptions,
 };
 use crate::errors::ToolError;
 use range_store_core::dimension::{quote_identifier, DimensionRef};
@@ -153,6 +153,84 @@ pub fn write_workload_json(path: &Path, workload: &BenchmarkWorkload) -> Result<
         .map_err(|error| ToolError::invalid_format(error.to_string()))?;
     fs::write(path, format!("{json}\n"))?;
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConcreteLineIdColumn {
+    SourceId,
+    RuntimeConcreteLineId,
+}
+
+impl ConcreteLineIdColumn {
+    fn identifier(self) -> &'static str {
+        match self {
+            Self::SourceId => "id",
+            Self::RuntimeConcreteLineId => "concrete_line_id",
+        }
+    }
+}
+
+pub fn build_concrete_line_lookup_queries(
+    connection: &Connection,
+    hand_queries: &[HandBenchmarkItem],
+    id_column: ConcreteLineIdColumn,
+) -> Result<Vec<ConcreteLineBenchmarkItem>, ToolError> {
+    let mut cache: HashMap<(String, u32, u32, u32), String> = HashMap::new();
+    let mut queries = Vec::with_capacity(hand_queries.len());
+
+    for item in hand_queries {
+        let key = (
+            item.strategy.clone(),
+            item.player_count,
+            item.depth_bb,
+            item.concrete_line_id,
+        );
+        let concrete_line = if let Some(value) = cache.get(&key) {
+            value.clone()
+        } else {
+            let value = load_concrete_line_for_id(
+                connection,
+                &item.dimension(),
+                id_column,
+                item.concrete_line_id,
+            )?;
+            cache.insert(key, value.clone());
+            value
+        };
+        if concrete_line.trim().is_empty() {
+            continue;
+        }
+        queries.push(ConcreteLineBenchmarkItem {
+            strategy: item.strategy.clone(),
+            player_count: item.player_count,
+            depth_bb: item.depth_bb,
+            concrete_line_id: item.concrete_line_id,
+            concrete_line,
+        });
+    }
+
+    Ok(queries)
+}
+
+fn load_concrete_line_for_id(
+    connection: &Connection,
+    dimension: &DimensionRef,
+    id_column: ConcreteLineIdColumn,
+    concrete_line_id: u32,
+) -> Result<String, ToolError> {
+    let table = quote_identifier(&concrete_lines_table_name(dimension))?;
+    let id_column = quote_identifier(id_column.identifier())?;
+    let sql = format!("SELECT concrete_line FROM {table} WHERE {id_column} = ?1");
+    let mut statement = connection.prepare(&sql)?;
+    statement.start(&[Value::from(concrete_line_id)])?;
+    if statement.step_row()? {
+        Ok(statement.column_text(0)?)
+    } else {
+        Err(ToolError::invalid_argument(format!(
+            "concrete_line_id={} not found in metadata dimension {}:{}:{}",
+            concrete_line_id, dimension.strategy, dimension.player_count, dimension.depth_bb
+        )))
+    }
 }
 
 pub fn parse_range_table_dimension(table_name: &str) -> Option<DimensionRef> {

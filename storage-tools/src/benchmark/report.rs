@@ -1,14 +1,24 @@
-use std::fs;
+//! Main benchmark report model and renderer.
+//!
+//! Used by hot Binary, SQLite baseline, metadata, and native benchmark runners.
+//! The hot compare runner reads this shape as input, but renders its own compare
+//! report through `benchmark::compare::report`. Cold-start reports use
+//! `benchmark::cold::report` and `benchmark::cold::compare`.
+
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 
 use crate::benchmark::hot::result_verifier::ResultVerificationSummary;
 use crate::benchmark::memory_snapshot::BenchmarkMemoryReport;
 use crate::benchmark::metrics::{BenchmarkCaseResult, BenchmarkTotals};
+use crate::benchmark::report_support::{
+    format_binary_bytes, format_ms, write_json_report, write_markdown_report,
+};
 use crate::benchmark::types::{BenchmarkWorkload, WorkloadMode, WorkloadSource};
 use crate::errors::ToolError;
+
+pub use crate::benchmark::report_support::generated_at_utc;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -113,21 +123,11 @@ pub fn build_benchmark_report_for_engine(input: ReportInput, engine: &str) -> Be
 }
 
 pub fn write_benchmark_json(path: &Path, report: &BenchmarkRunReport) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(report)
-        .map_err(|error| ToolError::invalid_format(error.to_string()))?;
-    fs::write(path, format!("{json}\n"))?;
-    Ok(())
+    write_json_report(path, report)
 }
 
 pub fn write_benchmark_markdown(path: &Path, report: &BenchmarkRunReport) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, render_benchmark_markdown(report))?;
-    Ok(())
+    write_markdown_report(path, render_benchmark_markdown(report))
 }
 
 pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
@@ -293,78 +293,16 @@ pub fn render_benchmark_markdown(report: &BenchmarkRunReport) -> String {
     markdown
 }
 
-fn format_ms(value: f64) -> String {
-    if !value.is_finite() {
-        return "unknown".to_owned();
-    }
-    if value >= 1000.0 {
-        format!("{:.2} s", value / 1000.0)
-    } else if value >= 10.0 {
-        format!("{value:.2} ms")
-    } else {
-        format!("{value:.3} ms")
-    }
-}
-
 fn format_optional_bytes(value: Option<u64>) -> String {
     value
-        .map(format_bytes)
+        .map(format_binary_bytes)
         .unwrap_or_else(|| "unknown".to_owned())
 }
 
 fn format_optional_signed_bytes(value: Option<i64>) -> String {
     match value {
-        Some(value) if value < 0 => format!("-{}", format_bytes(value.unsigned_abs())),
-        Some(value) => format_bytes(value as u64),
+        Some(value) if value < 0 => format!("-{}", format_binary_bytes(value.unsigned_abs())),
+        Some(value) => format_binary_bytes(value as u64),
         None => "unknown".to_owned(),
     }
-}
-
-fn format_bytes(value: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KiB", "MiB", "GiB", "TiB"];
-    let mut unit_index = 0;
-    let mut size = value as f64;
-    while size >= 1024.0 && unit_index + 1 < UNITS.len() {
-        size /= 1024.0;
-        unit_index += 1;
-    }
-    if unit_index == 0 {
-        format!("{value} {}", UNITS[unit_index])
-    } else {
-        format!("{size:.2} {}", UNITS[unit_index])
-    }
-}
-
-pub fn generated_at_utc() -> String {
-    let duration = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
-    let seconds = duration.as_secs() as i64;
-    let millis = duration.subsec_millis();
-    let (year, month, day, hour, minute, second) = unix_seconds_to_utc(seconds);
-    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
-}
-
-fn unix_seconds_to_utc(seconds: i64) -> (i32, u32, u32, u32, u32, u32) {
-    let days = seconds.div_euclid(86_400);
-    let seconds_of_day = seconds.rem_euclid(86_400);
-    let hour = (seconds_of_day / 3_600) as u32;
-    let minute = ((seconds_of_day % 3_600) / 60) as u32;
-    let second = (seconds_of_day % 60) as u32;
-    let (year, month, day) = civil_from_days(days);
-    (year, month, day, hour, minute, second)
-}
-
-fn civil_from_days(days: i64) -> (i32, u32, u32) {
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = doy - (153 * mp + 2) / 5 + 1;
-    let month = mp + if mp < 10 { 3 } else { -9 };
-    let year = y + if month <= 2 { 1 } else { 0 };
-    (year as i32, month as u32, day as u32)
 }

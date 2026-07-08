@@ -2,6 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use crate::benchmark::metrics::safe_ratio;
+use crate::benchmark::report_support::{format_ms, write_json_report, write_markdown_report};
 use crate::errors::ToolError;
 
 use super::types::{
@@ -208,24 +209,14 @@ fn dimension_side(report: &DimensionColdStartReport) -> ColdStartComparisonSide 
 }
 
 fn write_cold_compare_json(path: &Path, report: &ColdStartCompareReport) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    let json = serde_json::to_string_pretty(report)
-        .map_err(|error| ToolError::invalid_format(error.to_string()))?;
-    fs::write(path, format!("{json}\n"))?;
-    Ok(())
+    write_json_report(path, report)
 }
 
 fn write_cold_compare_markdown(
     path: &Path,
     report: &ColdStartCompareReport,
 ) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    fs::write(path, render_cold_compare_markdown(report))?;
-    Ok(())
+    write_markdown_report(path, render_cold_compare_markdown(report))
 }
 
 fn render_cold_compare_markdown(report: &ColdStartCompareReport) -> String {
@@ -291,19 +282,6 @@ fn comparison_table(rows: &[ColdStartComparison]) -> String {
         ));
     }
     out
-}
-
-fn format_ms(value: f64) -> String {
-    if !value.is_finite() {
-        return "unknown".to_owned();
-    }
-    if value >= 1000.0 {
-        format!("{:.2} s", value / 1000.0)
-    } else if value >= 10.0 {
-        format!("{value:.2} ms")
-    } else {
-        format!("{value:.3} ms")
-    }
 }
 
 #[cfg(test)]

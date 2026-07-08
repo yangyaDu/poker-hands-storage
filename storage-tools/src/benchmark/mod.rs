@@ -7,6 +7,7 @@ pub mod metadata;
 pub mod metrics;
 pub mod native;
 pub mod report;
+pub mod report_support;
 pub mod sqlite;
 pub mod types;
 pub mod workload;

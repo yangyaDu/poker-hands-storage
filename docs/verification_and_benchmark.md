@@ -1,6 +1,6 @@
 # 数据验证与 Benchmark 脚本介绍
 
-更新日期：2026-07-05
+更新日期：2026-07-08
 
 ## 目标
 
@@ -13,14 +13,14 @@
 
 ## 验证覆盖面总览
 
-当前验证分为六层：
+当前验证分为七层：
 
 | 层级 | 覆盖内容 | 主要入口 |
 | --- | --- | --- |
 | 格式自洽 | `manifest.json`、`meta.db`、`.idx`、`.bin`、header、record 边界、CRC32C | `storage-tools verify --mode standalone` |
 | 源数据一致性 | 二进制解码结果与源 SQLite `range_data_*` rows 对齐 | `storage-tools verify --mode cross` |
 | Float32 精度 | `frequency`、`hand_ev` 按 IEEE754 Float32 bit-exact 比对 | cross verify |
-| Benchmark 结果一致性 | Binary vs SQLite 查询结果 count 兼容 | `benchmark --verify-results`、`benchmark-compare` |
+| Benchmark 结果一致性 | Binary vs SQLite 查询结果 count 兼容，metadata exact lookup id 自检 | `benchmark --verify-results`、`benchmark-compare` |
 | Native 运行时一致性 | core / SDK / HTTP 三路公平对比 | `benchmark-native` |
 | API 边界 | HTTP 路由、OpenAPI、请求校验、错误码、batch 单项错误 | `service/tests/http/*` |
 | Native 边界 | Bun SDK envelope、lazy schema cache、native 与 HTTP 抽样一致性 | `range-store-native/tests/*` |
@@ -85,7 +85,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
 | `reports/range-strata-verify-cross.md` | 2026-06-26T15:11:32Z | 通过 |
 | `reports/range-strata-verify-cross-full.md` | 2026-07-01T14:52:14Z | 通过 |
 
-2026-07-05 的新增工作主要是 native/HTTP benchmark、drill metadata microbenchmark、metadata lazy cache 与 indexed meta 复测；full cross verify 结果仍以 2026-07-01 的全量报告为当前数据正确性快照。若重新生成发布目录，应对新目录重新执行 full cross verify。
+2026-07-08 的新增工作主要是 Binary/SQLite hot benchmark 补齐 `concrete-lines-exact`、benchmark 报告公共 helper 收敛，以及相关测试复测；full cross verify 结果仍以 2026-07-01 的全量报告为当前数据正确性快照。若重新生成发布目录，应对新目录重新执行 full cross verify。
 
 Standalone 摘要：
 
@@ -261,6 +261,8 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 它不是完整一致性验证，但可以在性能测试同时确认生成 workload 的查询结果和 SQLite baseline 的 action count 一致。
 
+`concrete-lines-exact` 的结果校验在 hot/SQLite runner 的 case 内完成：每个样本按 `concrete_line` 精确查询，必须只命中 1 行，并且命中的 id 必须等于样本里的 `concrete_line_id`。这类 metadata lookup 自检和 `--verify-results` 的 action-count 抽样校验一样，都是 benchmark 护栏，不替代 full cross verify。
+
 SQLite 对比 benchmark 的当前报告显示：
 
 - `reports/benchmark-compare.md`
@@ -312,7 +314,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
 
 ## Benchmark 脚本总览
 
-所有 benchmark 脚本位于 `storage-tools` crate，通过不同 subcommand 选择不同引擎和模式。它们共用同一 workload 生成逻辑（`storage-tools/src/benchmark/workload.rs`），从源 SQLite 的 `range_data_*` 表抽取 hand/batch/hands-by-actions 查询样本。
+所有 benchmark 脚本位于 `storage-tools` crate，通过不同 subcommand 选择不同引擎和模式。它们共用同一 workload 生成逻辑（`storage-tools/src/benchmark/workload.rs`），从源 SQLite 的 `range_data_*` 表抽取 hand/batch/hands-by-actions 查询样本，并从 metadata 表派生 `concrete_line` 精确 lookup 样本。
 
 ### 统一 workload 机制
 
@@ -326,6 +328,12 @@ workload 是每个 benchmark 的输入基础，包含：
 | `hands_by_actions_queries` | hands-by-actions 查询样本 |
 | `drill_scenario_queries` | drill scenario metadata 查询样本 |
 | `dimensions` | 涉及的维度列表 |
+
+`concrete-lines-exact` 不作为 workload JSON 的独立字段保存。runner 会基于 `hand_queries` 中的 `concrete_line_id` 回查 metadata 表得到 `concrete_line` 字符串，并跳过空字符串样本：
+
+- Binary hot benchmark 从运行目录 `meta.db` 的 `concrete_lines_*` 表读取，使用 `concrete_line_id` 列。
+- SQLite baseline benchmark 从源库 `concrete_lines_*` 表读取，使用源表 `id` 列。
+- 测量时要求精确查询只返回 1 行，并且返回 id 必须等于样本中的 `concrete_line_id`。
 
 workload 可以通过 `--write-workload` 导出为 JSON，供多个 benchmark 复用。也可以通过 `--workload` 加载已有 JSON，避免重新生成。
 
@@ -354,6 +362,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 | Case | 说明 |
 |---|---|
+| `concrete-lines-exact` | 按 `concrete_line` 精确 lookup `concrete_line_id`，通过 `CachedMetadataReader` 读取运行目录 `meta.db` |
 | `hand-strategy` | 单 concrete_line_id + hand 查询，通过 `StoreQueryService::query()` 解码 pack |
 | `batch-hand-strategy` | 默认批量大小（`--batch-size`）的 batch 查询，通过 `StoreQueryService::query_batch()` |
 | `batch-size-{N}` | 各批量大小的 sweep 用例 |
@@ -379,8 +388,9 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
   [--warmup-iterations 5]
 ```
 
-**测量内容：** 与 Binary benchmark 相同的 5 个 case，但直接查询源 SQLite `range_data_*` 表。
+**测量内容：** 与 Binary benchmark 相同的 case，但直接查询源 SQLite `range_data_*`、`concrete_lines_*` 和 `drill_scenario_lines_*` 表。
 
+- `concrete-lines-exact`: `SELECT id FROM concrete_lines_{strategy}_{N}max_{BB}BB WHERE concrete_line=?`
 - `hand-strategy`: `SELECT ... FROM range_data_{strategy}_{N}max_{BB}BB WHERE concrete_line_id=? AND hole_cards=?`
 - `batch-hand-strategy`: 批量 UNION ALL 查询
 - `hands-by-actions`: `SELECT DISTINCT hole_cards FROM ... WHERE concrete_line_id=? AND frequency > ?`
@@ -401,8 +411,8 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 **对比逻辑：**
 
-- 校验 workload 兼容性（dimensions、hand/batch/hands-by-actions 查询数量必须一致）
-- 按 case 名匹配 Binary 和 SQLite 报告
+- 校验 workload 兼容性（dimensions、hand/batch/hands-by-actions 查询数量必须一致；`concrete-lines-exact` 样本由 `hand_queries` 派生）
+- 按 case 名匹配 Binary 和 SQLite 报告，包括 `concrete-lines-exact`
 - 计算延迟比（Binary / SQLite，>1 表示 Binary 更慢）
 - 计算 QPS 比（Binary / SQLite，<1 表示 Binary 吞吐更低）
 - 报告每个 case 的 error count 差异
@@ -497,6 +507,16 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 `concrete-lines-exact` 和 `drill-scenarios-metadata` 都走 `meta.db` + `CachedMetadataReader`，只是业务入口和 SQL 表不同。当前 Native benchmark 单独输出的是 concrete-line exact lookup；`abstract_line`、`concrete_line`、`abstract_line + concrete_line` 三种筛选语义由接口一致性测试覆盖，不作为这里的三个独立性能 case。
 
 **随机化执行顺序：** 通过 `--seed` 随机化三个 worker 的执行顺序，避免 OS 调度偏差。
+
+### 报告生成代码边界
+
+benchmark 报告代码只抽取低层公共 helper，不合并各类报告的数据结构和渲染入口：
+
+- `benchmark/report_support.rs` 放跨报告复用的写文件、UTC 时间、通用耗时格式、binary bytes 格式和 Markdown 表格 helper。
+- `benchmark/report.rs` 保留 hot Binary、SQLite baseline、metadata 和 native benchmark 的主报告结构和渲染。
+- `benchmark/compare/runner.rs` 读取 `benchmark/report.rs` 的 `BenchmarkRunReport` 作为 Binary/SQLite 输入；最终对比报告由 `benchmark/compare/report.rs` 渲染。
+- `benchmark/compare/report.rs` 保留 Binary vs SQLite hot 对比报告。
+- `benchmark/cold/report.rs` 和 `benchmark/cold/compare.rs` 保留冷启动报告及冷启动对比报告；cold-start 的时间和字节展示语义独立维护，不强行套用 hot 报告格式。
 
 ### 控制参数总览
 

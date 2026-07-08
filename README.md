@@ -133,13 +133,14 @@ poker-hands-storage/
 |   |   |   |-- workload.rs            # workload 生成与 JSON 序列化（跨 benchmark 复用）
 |   |   |   |-- metrics.rs             # QPS/latency/percentile 计算
 |   |   |   |-- memory_snapshot.rs     # RSS 内存快照
-|   |   |   |-- report.rs              # benchmark 报告 JSON/Markdown 生成
+|   |   |   |-- report.rs              # hot/sqlite/metadata/native 主 benchmark 报告 JSON/Markdown 生成
+|   |   |   |-- report_support.rs      # benchmark 报告写文件、时间、单位和表格等公共 helper
 |   |   |   |-- hot/                   # 热路径 benchmark（mmap 缓存命中）
-|   |   |   |   |-- runner.rs          # hand-strategy/batch/hands-by-actions/drill 测量
+|   |   |   |   |-- runner.rs          # concrete-lines-exact/hand-strategy/batch/hands-by-actions/drill 测量
 |   |   |   |   |-- result_verifier.rs # --verify-results 结果一致性校验
 |   |   |   |   |-- types.rs           # BenchmarkCommand 和 HotCommand 参数
 |   |   |   |-- sqlite/                # SQLite baseline benchmark
-|   |   |   |   |-- runner.rs          # 同 workload 直接查源 range_data 表
+|   |   |   |   |-- runner.rs          # 同 workload 直接查源 range_data/concrete_lines/drill 表
 |   |   |   |   |-- types.rs           # BenchmarkSqliteCommand 参数
 |   |   |   |-- compare/               # Binary vs SQLite 对比
 |   |   |   |   |-- runner.rs          # 按 case 名匹配报告，计算延迟比/QPS 比
@@ -187,7 +188,7 @@ poker-hands-storage/
 - HTTP API、OpenAPI、Docker/Compose/Kubernetes 模板。
 - Bun/Node native SDK 的 Windows 本地构建、SDK contract 和 HTTP consistency 测试入口。
 - full cross verify 覆盖 9 个维度、23,806,716 条源记录，失败数为 0。
-- benchmark 覆盖 SQLite vs Binary hot/cold、drill metadata、Rust core、Bun native SDK、HTTP service 和 `concrete_line -> handsByActions` 单链路。
+- benchmark 覆盖 SQLite vs Binary hot/cold、`concrete_line` 精确 metadata lookup、drill metadata、Rust core、Bun native SDK、HTTP service 和 `concrete_line -> handsByActions` 单链路。
 
 剩余工作只在 [docs/roadmap.md](docs/roadmap.md) 维护，当前主要是完整 `line-transition` benchmark、Linux native SDK 生产接入验证和最终验收边界清单。
 

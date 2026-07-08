@@ -53,6 +53,22 @@ impl HandBenchmarkItem {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+pub struct ConcreteLineBenchmarkItem {
+    pub strategy: String,
+    pub player_count: u32,
+    pub depth_bb: u32,
+    pub concrete_line_id: u32,
+    pub concrete_line: String,
+}
+
+impl ConcreteLineBenchmarkItem {
+    pub fn dimension(&self) -> DimensionRef {
+        DimensionRef::new(self.strategy.clone(), self.player_count, self.depth_bb)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
 pub struct BatchBenchmarkRequest {
     pub concrete_line_id: u32,
     pub hole_cards: String,

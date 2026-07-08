@@ -39,7 +39,11 @@ fn hot_runner_writes_reports_for_clean_fixture() {
     let report = run_hot_benchmark(&command).unwrap();
 
     assert!(!report.has_errors());
-    assert_eq!(report.cases.len(), 5);
+    assert_eq!(report.cases.len(), 6);
+    assert!(report
+        .cases
+        .iter()
+        .any(|case| case.name == "concrete-lines-exact"));
     assert!(report.cases.iter().any(|case| case.name == "hand-strategy"));
     assert!(report
         .cases

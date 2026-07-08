@@ -7,15 +7,17 @@ use crate::benchmark::report::{
     BenchmarkOptionsSummary, BenchmarkRunReport, ReportInput,
 };
 use crate::benchmark::types::{
-    drill_scenario_table_name, BatchBenchmarkItem, BenchmarkWorkload, DrillScenarioBenchmarkItem,
-    HandBenchmarkItem, HandsByActionsBenchmarkItem, WorkloadOptions, WorkloadSource,
+    drill_scenario_table_name, BatchBenchmarkItem, BenchmarkWorkload, ConcreteLineBenchmarkItem,
+    DrillScenarioBenchmarkItem, HandBenchmarkItem, HandsByActionsBenchmarkItem, WorkloadOptions,
+    WorkloadSource,
 };
 use crate::benchmark::workload::{
-    create_benchmark_workload, drill_depth_column, read_workload_json, table_exists,
-    write_workload_json,
+    build_concrete_line_lookup_queries, create_benchmark_workload, drill_depth_column,
+    read_workload_json, table_exists, write_workload_json, ConcreteLineIdColumn,
 };
 use crate::errors::ToolError;
 use range_store_core::dimension::{quote_identifier, DimensionRef};
+use range_store_core::metadata::CachedMetadataReader;
 use range_store_core::query::{parse_action_filters, StoreQueryService};
 use range_store_core::sqlite::{Connection, Value};
 
@@ -30,10 +32,22 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
         command.verify_checksums,
     )?;
     let meta_connection = Connection::open(&command.meta, true)?;
+    let concrete_line_queries = build_concrete_line_lookup_queries(
+        &meta_connection,
+        &workload.hand_queries,
+        ConcreteLineIdColumn::RuntimeConcreteLineId,
+    )?;
+    let cached_metadata =
+        CachedMetadataReader::load(&command.dir, &command.meta).map_err(metadata_error)?;
 
     prewarm_workload_dimensions(&service, &workload)?;
 
     let mut cases = Vec::new();
+    cases.push(measure_concrete_lines_case(
+        &cached_metadata,
+        &concrete_line_queries,
+        command.warmup_iterations,
+    ));
     cases.push(measure_hand_case(
         &service,
         &workload.hand_queries,
@@ -73,7 +87,9 @@ pub fn run_hot_benchmark(command: &BenchmarkCommand) -> Result<BenchmarkRunRepor
     let mut notes = vec![
         "Rust Range Strata Binary hot benchmark; cold-start phase accounting lives in benchmark-cold."
             .to_owned(),
-        "Result counts are case-specific: action entries for strategy lookups, matching hands for hands-by-actions, and abstract lines for drill metadata."
+        "Result counts are case-specific: concrete line lookups, action entries for strategy lookups, matching hands for hands-by-actions, and abstract lines for drill metadata."
+            .to_owned(),
+        "`concrete-lines-exact` resolves concrete_line through CachedMetadataReader using runtime meta.db; samples are derived from hand workload and skip empty concrete_line rows."
             .to_owned(),
         "`hands-by-actions` decodes binary packs through range-store-core and counts matching hands."
             .to_owned(),
@@ -167,6 +183,20 @@ fn prewarm_workload_dimensions(
     Ok(())
 }
 
+fn measure_concrete_lines_case(
+    cached_metadata: &CachedMetadataReader,
+    queries: &[ConcreteLineBenchmarkItem],
+    warmup_iterations: usize,
+) -> BenchmarkCaseResult {
+    measure_benchmark_case(
+        "concrete-lines-exact",
+        "Resolve concrete_line through CachedMetadataReader exact lookup.",
+        queries,
+        warmup_iterations,
+        |item, _| query_concrete_line_count(cached_metadata, item),
+    )
+}
+
 fn measure_hand_case(
     service: &StoreQueryService,
     hand_queries: &[HandBenchmarkItem],
@@ -223,6 +253,32 @@ fn measure_drill_scenarios_case(
         warmup_iterations,
         |item, _| drill_scenario_line_count(connection, item).map_err(|error| error.to_string()),
     )
+}
+
+fn query_concrete_line_count(
+    cached_metadata: &CachedMetadataReader,
+    item: &ConcreteLineBenchmarkItem,
+) -> Result<usize, String> {
+    let lines = cached_metadata
+        .get_concrete_lines(
+            &item.strategy,
+            item.player_count,
+            item.depth_bb,
+            None,
+            Some(item.concrete_line.as_str()),
+        )
+        .map_err(|error| error.to_string())?;
+    if lines.len() != 1 {
+        return Err(format!("expected one concrete line, got {}", lines.len()));
+    }
+    let concrete_line_id = lines[0].concrete_line_id;
+    if concrete_line_id != item.concrete_line_id {
+        return Err(format!(
+            "concrete line id mismatch: expected {}, got {}",
+            item.concrete_line_id, concrete_line_id
+        ));
+    }
+    Ok(lines.len())
 }
 
 fn query_hand_count(
@@ -303,6 +359,10 @@ pub(crate) fn drill_scenario_line_count(
     } else {
         Ok(0)
     }
+}
+
+fn metadata_error(error: range_store_core::metadata::MetadataError) -> ToolError {
+    ToolError::new(error.code(), error.to_string())
 }
 
 fn parse_workload_dimension(value: &str) -> Result<DimensionRef, ToolError> {

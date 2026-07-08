@@ -1,6 +1,6 @@
-use std::fs;
 use std::path::Path;
 
+use crate::benchmark::report_support::{markdown_table, write_json_report, write_markdown_report};
 use crate::errors::ToolError;
 
 use super::types::{ColdStartBenchmarkReport, ColdStartPhaseSummaries, LatencySummary};
@@ -9,29 +9,14 @@ pub fn write_cold_start_json(
     path: &Path,
     report: &ColdStartBenchmarkReport,
 ) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| ToolError::new("IO_ERROR", format!("Cannot create report dir: {e}")))?;
-    }
-    let json = serde_json::to_string_pretty(report)
-        .map_err(|e| ToolError::invalid_format(format!("JSON serialize error: {e}")))?;
-    fs::write(path, format!("{json}\n"))
-        .map_err(|e| ToolError::new("IO_ERROR", format!("Cannot write JSON report: {e}")))?;
-    Ok(())
+    write_json_report(path, report)
 }
 
 pub fn write_cold_start_markdown(
     path: &Path,
     report: &ColdStartBenchmarkReport,
 ) -> Result<(), ToolError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|e| ToolError::new("IO_ERROR", format!("Cannot create report dir: {e}")))?;
-    }
-    let md = render_cold_start_markdown(report);
-    fs::write(path, md)
-        .map_err(|e| ToolError::new("IO_ERROR", format!("Cannot write Markdown report: {e}")))?;
-    Ok(())
+    write_markdown_report(path, render_cold_start_markdown(report))
 }
 
 fn render_cold_start_markdown(report: &ColdStartBenchmarkReport) -> String {
@@ -250,28 +235,6 @@ fn format_bytes(value: f64) -> String {
     } else {
         format!("{sign}{:.0} B", abs)
     }
-}
-
-fn markdown_table(headers: &[&str], rows: &[Vec<String>]) -> String {
-    let mut out = String::new();
-    out.push_str("| ");
-    out.push_str(&headers.join(" | "));
-    out.push_str(" |\n");
-    out.push_str("| ");
-    out.push_str(
-        &headers
-            .iter()
-            .map(|_| "---")
-            .collect::<Vec<_>>()
-            .join(" | "),
-    );
-    out.push_str(" |\n");
-    for row in rows {
-        out.push_str("| ");
-        out.push_str(&row.join(" | "));
-        out.push_str(" |\n");
-    }
-    out
 }
 
 #[cfg(test)]

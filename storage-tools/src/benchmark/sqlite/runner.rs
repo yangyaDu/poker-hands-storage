@@ -7,10 +7,14 @@ use crate::benchmark::report::{
 };
 use crate::benchmark::sqlite::types::BenchmarkSqliteCommand;
 use crate::benchmark::types::{
-    range_table_name, BatchBenchmarkItem, BenchmarkWorkload, DrillScenarioBenchmarkItem,
-    HandBenchmarkItem, HandsByActionsBenchmarkItem, WorkloadOptions, WorkloadSource,
+    concrete_lines_table_name, range_table_name, BatchBenchmarkItem, BenchmarkWorkload,
+    ConcreteLineBenchmarkItem, DrillScenarioBenchmarkItem, HandBenchmarkItem,
+    HandsByActionsBenchmarkItem, WorkloadOptions, WorkloadSource,
 };
-use crate::benchmark::workload::{create_benchmark_workload, read_workload_json};
+use crate::benchmark::workload::{
+    build_concrete_line_lookup_queries, create_benchmark_workload, read_workload_json,
+    ConcreteLineIdColumn,
+};
 use crate::errors::ToolError;
 use range_store_core::dimension::quote_identifier;
 use range_store_core::query::{
@@ -26,9 +30,19 @@ pub fn run_sqlite_benchmark(
     let (workload, workload_source) = load_or_create_workload(command)?;
     let workload_mode = workload.mode;
     let connection = Connection::open(&command.source, true)?;
+    let concrete_line_queries = build_concrete_line_lookup_queries(
+        &connection,
+        &workload.hand_queries,
+        ConcreteLineIdColumn::SourceId,
+    )?;
 
     let memory_before = get_memory_snapshot();
     let mut cases = Vec::new();
+    cases.push(measure_concrete_lines_case(
+        &connection,
+        &concrete_line_queries,
+        command.warmup_iterations,
+    ));
     cases.push(measure_hand_case(
         &connection,
         &workload.hand_queries,
@@ -93,7 +107,8 @@ pub fn run_sqlite_benchmark(
             memory,
             result_verification: None,
             notes: vec![
-                "SQLite baseline benchmark; queries read and count action rows from source range_data tables.".to_owned(),
+                "SQLite baseline benchmark; queries read and count metadata rows and action rows from source SQLite tables.".to_owned(),
+                "`concrete-lines-exact` resolves concrete_line through source concrete_lines_* tables; samples are derived from hand workload and skip empty concrete_line rows.".to_owned(),
                 "`hands-by-actions` uses source SQLite DISTINCT hole_cards with OR action-filter semantics and strict frequency threshold.".to_owned(),
                 "`drill-scenarios-metadata` reads source SQLite drill_scenario_lines_* metadata tables; compare only against the runtime meta.db metadata path.".to_owned(),
                 "`batch-hand-strategy` is the default --batch-size case; `batch-size-*` entries are the sweep cases and should be summarized separately.".to_owned(),
@@ -128,6 +143,20 @@ fn load_or_create_workload(
             WorkloadSource::Generated,
         ))
     }
+}
+
+fn measure_concrete_lines_case(
+    connection: &Connection,
+    queries: &[ConcreteLineBenchmarkItem],
+    warmup_iterations: usize,
+) -> BenchmarkCaseResult {
+    measure_benchmark_case(
+        "concrete-lines-exact",
+        "Resolve concrete_line through source SQLite concrete_lines_* exact lookup.",
+        queries,
+        warmup_iterations,
+        |item, _| sqlite_concrete_line_count(connection, item).map_err(|error| error.to_string()),
+    )
 }
 
 fn measure_hand_case(
@@ -213,6 +242,39 @@ fn query_batch_count(connection: &Connection, item: &BatchBenchmarkItem) -> Resu
         .map_err(|error| error.to_string())?;
     }
     Ok(total)
+}
+
+fn sqlite_concrete_line_count(
+    connection: &Connection,
+    item: &ConcreteLineBenchmarkItem,
+) -> Result<usize, ToolError> {
+    let table = quote_identifier(&concrete_lines_table_name(&item.dimension()))?;
+    let sql = format!(
+        "SELECT id
+         FROM {table}
+         WHERE concrete_line = ?1
+         ORDER BY id"
+    );
+    let mut statement = connection.prepare(&sql)?;
+    statement.start(&[Value::from(item.concrete_line.as_str())])?;
+    let mut ids = Vec::new();
+    while statement.step_row()? {
+        ids.push(statement.column_u32(0)?);
+    }
+    if ids.len() != 1 {
+        return Err(ToolError::invalid_format(format!(
+            "expected one concrete line, got {}",
+            ids.len()
+        )));
+    }
+    let concrete_line_id = ids[0];
+    if concrete_line_id != item.concrete_line_id {
+        return Err(ToolError::invalid_format(format!(
+            "concrete line id mismatch: expected {}, got {}",
+            item.concrete_line_id, concrete_line_id
+        )));
+    }
+    Ok(ids.len())
 }
 
 fn sqlite_hands_by_actions_count(
