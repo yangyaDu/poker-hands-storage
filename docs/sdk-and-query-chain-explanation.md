@@ -4,19 +4,9 @@
 
 ## 文档职责
 
-本文合并原 `native-sdk.md` 和 `sdk-query-chain-explanation.md`，作为 `range-store-native` 的唯一 SDK 文档入口。
-
-本文维护：
-
 - Bun/Node native SDK 的公开 API、构建测试方式和生产接入边界。
 - 一次 SDK 查询如何经过 JS wrapper、N-API 绑定、`range-store-core` 查询核心，最终从 `.idx/.bin` 和 `meta.db` 返回结果。
 - SDK 与 HTTP service 的契约差异。
-
-本文不维护：
-
-- HTTP API 的请求/响应 envelope 和业务码细节；见 `api-business-contract.md`。
-- benchmark 数字、RSS、体积和性能结论；见 `binary-vs-sqlite-benchmark-and-verification-report.md`。
-- Range Strata Binary 文件格式完整定义；见 `range-db-binary-storage-design.md`。
 
 ## 模块定位
 
@@ -43,16 +33,16 @@ import {
   RangeStore,
   RangeStoreError,
   getPokerHandsRangeSingleton,
-} from "./index.js";
+} from "./index.js"
 ```
 
 构造参数：
 
 ```ts
 interface PokerHandsRangeOptions {
-  dataDir: string;
-  maxOpenHandles?: number;
-  verifyChecksums?: boolean;
+  dataDir: string
+  maxOpenHandles?: number
+  verifyChecksums?: boolean
 }
 ```
 
@@ -63,7 +53,7 @@ const store = new PokerHandsRange({
   dataDir: "./data/range-strata",
   maxOpenHandles: 2,
   verifyChecksums: false,
-});
+})
 ```
 
 `RangeStore` 是 `PokerHandsRange` 的别名。`getPokerHandsRangeSingleton(options)` 会在同一组选项下复用单例；重复初始化时选项不同会抛出普通 `Error`。
@@ -72,15 +62,15 @@ const store = new PokerHandsRange({
 
 当前 SDK 成功时返回直接 payload，不返回 HTTP service 的 `{ code, data, message }` envelope。
 
-| 方法 | 返回 | 说明 |
-| --- | --- | --- |
-| `getConcreteLines(request)` | `{ lines }` | 按 `abstractLine` 列 concrete lines，或按 `concreteLine` 精确查 id |
-| `getAbstractLines(request)` | `{ abstractLines }` | 查询 drill 场景下的 abstract lines |
-| `handsByActions(request)` | `{ holeCards }` | 按 concrete line id、actions、frequency 过滤手牌 |
-| `queryHandStrategy(request)` | `{ actions }` | 查询单手牌策略 |
-| `queryBatch(request)` | `{ results: [{ concreteLineId, holeCards, actions }] }` | 批量查询单手牌策略，当前为 all-or-nothing |
-| `prewarm(request)` | `{ openHandleCount }` | 打开指定维度的 `.idx/.bin` reader |
-| `stats()` | `{ schemaCount, openHandleCount, knownDimensions }` | 查询 SDK 内部缓存和 handle 状态 |
+| 方法                         | 返回                                                    | 说明                                                               |
+| ---------------------------- | ------------------------------------------------------- | ------------------------------------------------------------------ |
+| `getConcreteLines(request)`  | `{ lines }`                                             | 按 `abstractLine` 列 concrete lines，或按 `concreteLine` 精确查 id |
+| `getAbstractLines(request)`  | `{ abstractLines }`                                     | 查询 drill 场景下的 abstract lines                                 |
+| `handsByActions(request)`    | `{ holeCards }`                                         | 按 concrete line id、actions、frequency 过滤手牌                   |
+| `queryHandStrategy(request)` | `{ actions }`                                           | 查询单手牌策略                                                     |
+| `queryBatch(request)`        | `{ results: [{ concreteLineId, holeCards, actions }] }` | 批量查询单手牌策略，当前为 all-or-nothing                          |
+| `prewarm(request)`           | `{ openHandleCount }`                                   | 打开指定维度的 `.idx/.bin` reader                                  |
+| `stats()`                    | `{ schemaCount, openHandleCount, knownDimensions }`     | 查询 SDK 内部缓存和 handle 状态                                    |
 
 单手牌策略查询：
 
@@ -91,7 +81,7 @@ const result = store.queryHandStrategy({
   depthBb: 100,
   concreteLineId: 1,
   holeCards: "AA",
-});
+})
 
 // result:
 // {
@@ -111,11 +101,11 @@ const result = store.queryHandStrategy({
 
 ```js
 try {
-  store.queryHandStrategy({ ...request, holeCards: "AsXx" });
+  store.queryHandStrategy({ ...request, holeCards: "AsXx" })
 } catch (error) {
   if (error instanceof RangeStoreError) {
-    console.log(error.code); // INVALID_ARGUMENT 等
-    console.log(error.message);
+    console.log(error.code) // INVALID_ARGUMENT 等
+    console.log(error.message)
   }
 }
 ```
@@ -150,10 +140,10 @@ bun run test:http-consistency
 
 两者是平级运行入口，都复用 `range-store-core`：
 
-| 入口 | 使用场景 | 返回契约 | 边界成本 |
-| --- | --- | --- | --- |
-| HTTP service | 跨进程、跨语言、容器化服务 | `{ code, data, message }` envelope | HTTP/JSON 序列化和 loopback/网络成本 |
-| Bun native SDK | Bun/Node 业务进程内查询 | 直接 payload，失败抛 `RangeStoreError` | N-API 边界和 JS 包装成本 |
+| 入口           | 使用场景                   | 返回契约                               | 边界成本                             |
+| -------------- | -------------------------- | -------------------------------------- | ------------------------------------ |
+| HTTP service   | 跨进程、跨语言、容器化服务 | `{ code, data, message }` envelope     | HTTP/JSON 序列化和 loopback/网络成本 |
+| Bun native SDK | Bun/Node 业务进程内查询    | 直接 payload，失败抛 `RangeStoreError` | N-API 边界和 JS 包装成本             |
 
 当前正式 benchmark 只保留 `core`、`native-sdk`、`http-service` 三组对比。Native SDK 的策略查询最终仍落到 `RangeStoreFacade -> StoreQueryService`；如果某次报告显示 SDK 和 core 有明显速度差异，应优先从 page cache、运行时上下文、计时精度和样本局部性解释，不应假设 SDK 绕过了 core 算法。
 
@@ -215,7 +205,7 @@ new native.PokerHandsRange({
   dataDir: options.dataDir,
   maxOpenHandles: options.maxOpenHandles,
   verifyChecksums: options.verifyChecksums,
-});
+})
 ```
 
 Rust N-API constructor 当前语义：
@@ -228,15 +218,15 @@ let inner = RangeStoreFacade::open(options.data_dir, max_open_handles, verify_ch
 
 `RangeStoreFacade::open()` 会创建两个核心组件：
 
-| 组件 | 构造阶段做什么 | 构造阶段不做什么 |
-| --- | --- | --- |
-| `CachedMetadataReader` | 读取 `manifest.json`、打开只读 `meta.db` 连接、记录已知维度 | 不把 concrete line / drill line 全量加载进内存 |
-| `StoreQueryService` | 读取 `manifest.json`、校验 `meta.db` 存在、创建 `ActionSchemaCache` 和 `HandlePool` | 不 mmap `.idx/.bin`，不加载 `action_schemas` |
+| 组件                   | 构造阶段做什么                                                                      | 构造阶段不做什么                               |
+| ---------------------- | ----------------------------------------------------------------------------------- | ---------------------------------------------- |
+| `CachedMetadataReader` | 读取 `manifest.json`、打开只读 `meta.db` 连接、记录已知维度                         | 不把 concrete line / drill line 全量加载进内存 |
+| `StoreQueryService`    | 读取 `manifest.json`、校验 `meta.db` 存在、创建 `ActionSchemaCache` 和 `HandlePool` | 不 mmap `.idx/.bin`，不加载 `action_schemas`   |
 
 因此构造后通常可以看到：
 
 ```js
-store.stats(); // { schemaCount: 0, openHandleCount: 0, knownDimensions: [...] }
+store.stats() // { schemaCount: 0, openHandleCount: 0, knownDimensions: [...] }
 ```
 
 `prewarm(request)` 只提前打开指定维度的 `.idx/.bin` reader，并放入 LRU handle pool；action schema 仍会在第一次策略查询命中具体 `action_schema_id` 时懒加载。
@@ -301,15 +291,15 @@ self.query_service.query(dimension, concrete_line_id, hole_cards)
 
 常见错误码：
 
-| 错误码 | 场景 |
-| --- | --- |
-| `INVALID_ARGUMENT` | 手牌格式非法、action filter 非法等 |
-| `DIMENSION_NOT_FOUND` | `strategy/playerCount/depthBb` 不在 manifest 中 |
-| `DATA_FILE_NOT_FOUND` | 维度存在，但 `.idx/.bin` 打开失败 |
-| `CONCRETE_LINE_NOT_FOUND` | `.idx` 中没有该 `concrete_line_id` |
-| `HAND_STRATEGY_NOT_FOUND` | concrete line 存在，但该 hand 不在 pack 中 |
-| `ACTION_SCHEMA_NOT_FOUND` | `meta.db.action_schemas` 缺少引用的 schema |
-| `HANDS_NOT_FOUND` | `handsByActions` 没有任何匹配手牌 |
+| 错误码                    | 场景                                            |
+| ------------------------- | ----------------------------------------------- |
+| `INVALID_ARGUMENT`        | 手牌格式非法、action filter 非法等              |
+| `DIMENSION_NOT_FOUND`     | `strategy/playerCount/depthBb` 不在 manifest 中 |
+| `DATA_FILE_NOT_FOUND`     | 维度存在，但 `.idx/.bin` 打开失败               |
+| `CONCRETE_LINE_NOT_FOUND` | `.idx` 中没有该 `concrete_line_id`              |
+| `HAND_STRATEGY_NOT_FOUND` | concrete line 存在，但该 hand 不在 pack 中      |
+| `ACTION_SCHEMA_NOT_FOUND` | `meta.db.action_schemas` 缺少引用的 schema      |
+| `HANDS_NOT_FOUND`         | `handsByActions` 没有任何匹配手牌               |
 
 ### 4. StoreQueryService::query()
 
@@ -397,13 +387,13 @@ Ok(&self.mmap[start..end])
 
 `DimensionReader::read_and_validate_pack()` 会做运行时边界检查：
 
-| 检查 | 目的 |
-| --- | --- |
-| `hand_count > 0` | 防止无效 idx record |
-| `offset + byte_length` 不越界 | 防止读取 `.bin` 外部 |
-| `byte_length == hand_count * (5 + action_count * 8)` | 确认 pack 长度能反推出合法 `action_count` |
-| `action_count <= 32` | 因为 action mask 是 `u32` |
-| 可选 CRC32C | `verifyChecksums=true` 时校验 pack payload |
+| 检查                                                 | 目的                                       |
+| ---------------------------------------------------- | ------------------------------------------ |
+| `hand_count > 0`                                     | 防止无效 idx record                        |
+| `offset + byte_length` 不越界                        | 防止读取 `.bin` 外部                       |
+| `byte_length == hand_count * (5 + action_count * 8)` | 确认 pack 长度能反推出合法 `action_count`  |
+| `action_count <= 32`                                 | 因为 action mask 是 `u32`                  |
+| 可选 CRC32C                                          | `verifyChecksums=true` 时校验 pack payload |
 
 `action_count` 不来自 action schema，而是由 `.idx` 中的 `hand_count/byte_length` 推导：
 
@@ -497,7 +487,9 @@ JS wrapper 再转换成 camelCase：
 `queryHandStrategy()` 最终只返回：
 
 ```js
-{ actions }
+{
+  actions
+}
 ```
 
 不会返回 `inputHoleCards`、`handCode`、`code`、`data` 或 `message`。
@@ -515,7 +507,7 @@ store.queryBatch({
     { concreteLineId: 1, holeCards: "AA" },
     { concreteLineId: 1, holeCards: "KK" },
   ],
-});
+})
 ```
 
 返回：
@@ -550,13 +542,15 @@ store.handsByActions({
   concreteLineId: 1,
   actions: ["raise2.5", "call"],
   frequency: 0.005,
-});
+})
 ```
 
 返回：
 
 ```js
-{ holeCards: ["AA", "AKs"] }
+{
+  holeCards: ["AA", "AKs"]
+}
 ```
 
 链路：
@@ -570,15 +564,15 @@ store.handsByActions({
 
 关键业务语义：
 
-| 字段 | 当前语义 |
-| --- | --- |
+| 字段                   | 当前语义                                                       |
+| ---------------------- | -------------------------------------------------------------- |
 | `actions` 缺省或空数组 | 不限制 action name，但仍要求至少一个存在的 action 超过频率阈值 |
-| 多个 actions | OR 语义，任意一个 filter 命中即可返回 hand |
-| `fold/check/call` | 不允许数值后缀 |
-| `bet/raise/allin` | 可以带数值后缀，例如 `raise2.5`，按 `amountBb` 精确匹配 |
-| `frequency` 缺省 | 使用 `frequency > 0.005` |
-| `frequency: x` | 使用严格大于：`frequency > x` |
-| 无匹配手牌 | `RangeStoreFacade` 转成 `HANDS_NOT_FOUND` 错误 |
+| 多个 actions           | OR 语义，任意一个 filter 命中即可返回 hand                     |
+| `fold/check/call`      | 不允许数值后缀                                                 |
+| `bet/raise/allin`      | 可以带数值后缀，例如 `raise2.5`，按 `amountBb` 精确匹配        |
+| `frequency` 缺省       | 使用 `frequency > 0.005`                                       |
+| `frequency: x`         | 使用严格大于：`frequency > x`                                  |
+| 无匹配手牌             | `RangeStoreFacade` 转成 `HANDS_NOT_FOUND` 错误                 |
 
 注意：`handsByActions` 必须完整扫描一个 pack，因为它回答的是“哪些手牌满足 action/frequency 条件”，不是查询某一个 hand 的策略。
 
@@ -605,13 +599,13 @@ store.handsByActions({
 
 二进制策略查询的主要差异是：策略数据不再通过源 SQLite 的行式表和字符串字段读取，而是拆成三类专用结构：
 
-| 职责 | Binary runtime | SQLite baseline |
-| --- | --- | --- |
-| 定位 concrete line | `.idx` dense record 固定偏移 | SQL 条件 + B-tree / 表访问 |
-| 读取策略数值 | `.bin` mmap slice | SQLite 行读取和字段解析 |
-| 定位 hand | `hand_id` 二分查找 | `hole_cards` 字符串条件 |
-| 表示 action 是否存在 | `u32 action_mask` | 行存在性或过滤条件 |
-| 动作语义 | `action_schema_id -> action_blob` cache | action 字段 / join / 行字段 |
+| 职责                 | Binary runtime                          | SQLite baseline             |
+| -------------------- | --------------------------------------- | --------------------------- |
+| 定位 concrete line   | `.idx` dense record 固定偏移            | SQL 条件 + B-tree / 表访问  |
+| 读取策略数值         | `.bin` mmap slice                       | SQLite 行读取和字段解析     |
+| 定位 hand            | `hand_id` 二分查找                      | `hole_cards` 字符串条件     |
+| 表示 action 是否存在 | `u32 action_mask`                       | 行存在性或过滤条件          |
+| 动作语义             | `action_schema_id -> action_blob` cache | action 字段 / join / 行字段 |
 
 这条路径减少了 SQL 解析、通用行格式解析、字符串比较和重复字段存储等开销。但具体快多少取决于 workload、维度、page cache、进程边界和 benchmark 口径，不能只从链路结构推导。
 
@@ -632,11 +626,11 @@ store.handsByActions({
 
 字段含义：
 
-| 字段 | 含义 |
-| --- | --- |
-| `schemaCount` | 已懒加载到内存的 action schema 数量 |
+| 字段              | 含义                                          |
+| ----------------- | --------------------------------------------- |
+| `schemaCount`     | 已懒加载到内存的 action schema 数量           |
 | `openHandleCount` | 当前 LRU pool 中打开的 `DimensionReader` 数量 |
-| `knownDimensions` | manifest 中可查询维度的展示名，已排序 |
+| `knownDimensions` | manifest 中可查询维度的展示名，已排序         |
 
 典型变化：
 

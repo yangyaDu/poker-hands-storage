@@ -3,81 +3,209 @@
 ## 一、构建阶段（Build）
 
 ### 1.1 入口：`build_store()`
-`storage-tools/src/range_store_builder/build_orchestrator.rs:107`
+
+`build_orchestrator.rs:107`
 
 ```
-源 SQLite (range.db)
-  ├── discover_dimensions()          → 扫描 range_data_* 表名，发现所有维度
-  ├── prepare_build_state()          → 创建 meta.db + 初始化表结构
-  └── 遍历每个维度:
-        └── build_dimension()        → 构建 .bin + .idx + 更新 dimension_action_schemas
+输入: BuildOptions { source_db, out_dir, dimensions, max_concrete_lines_per_dimension, overwrite, resume }
+
+主流程:
+1. 校验 --resume/--overwrite 互斥，source_db 存在
+2. Connection::open(source_db) → discover_dimensions() → select_dimensions()
+     └── 扫描源 DB 中 range_data_* 表名，发现所有可构建维度
+3. sha256_file(source_db) → source_db_checksum
+4. prepare_build_state() → 初始化 meta.db + build-state.json
+     ├── 创建 out_dir（overwrite 时先删，resume 时校验 build-state.json 一致性）
+     ├── init_meta_db() → 建表
+     ├── copy_metadata() → 从源 DB 复制 concrete_lines / drill_scenario_lines 数据
+     └── build_info 写入 source_checksum + built_at
+5. 遍历每个维度:
+     ├── completed_state_dimension() → 如果 resume 且该维度已完成，跳过，直接从 build-state.json 恢复 ManifestDimension
+     └── build_dimension() → 构建 .bin/.idx，标记 completed，写入 build-state.json
+6. 写入 manifest.json（含 dimensions 列表、files 列表、source_db_checksum、built_at）
 ```
 
 ### 1.2 创建 meta.db
+
 `init_meta_db()` — `build_orchestrator.rs:519`
 
 创建以下表：
-- `build_info` — 构建时间戳 + 源 DB SHA-256
+
+- `build_info` — key/value 表，写入 source_checksum 和 built_at 两个键
 - `action_schemas` — 去重后的动作定义
+  ```sql
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  action_count INTEGER NOT NULL,
+  action_blob BLOB NOT NULL,
+  checksum INTEGER NOT NULL,         -- CRC32C(action_blob)
+  schema_key TEXT NOT NULL UNIQUE     -- to_hex(action_blob)，用于跨维度去重
+  ```
 - `dimension_action_schemas` — 维度与 schema 的映射
-- `concrete_lines_{strategy}_{N}max_{BB}BB` — 具体行定义
-- `drill_scenario_lines_{strategy}` — 训练场景数据
+  ```sql
+  (strategy, player_count, depth_bb, action_schema_id) PRIMARY KEY
+  ```
+- `concrete_lines_{strategy}_{N}max_{BB}BB` — 具体行定义（每个维度一张）
+  ```sql
+  concrete_line_id INTEGER PRIMARY KEY,
+  abstract_line TEXT NOT NULL,
+  concrete_line TEXT NOT NULL,
+  UNIQUE(abstract_line, concrete_line)
+  ```
+- `drill_scenario_lines_{strategy}` — 训练场景数据（每个 strategy 一张，全局共享）
+  ```sql
+  UNIQUE(drill_name, player_count, drill_depth, abstract_line)
+  ```
+
+copy_metadata() 从源 SQLite 的对应表中 INSERT OR IGNORE 到 meta.db 的对应表，在同一事务中完成。
 
 ### 1.3 核心循环：`build_dimension_files()`
+
 `build_orchestrator.rs:739`
 
 ```
-1. 创建 .bin.tmp 和 .idx.tmp 文件
-2. 写 PFSP 头到 .bin (16 bytes)
-3. 写 PFXI 头到 .idx (record_count=0, 最后重写)
-4. 从源 SQLite 读取 rows (ORDER BY concrete_line_id, hole_cards, action_name)
-5. 遍历时按 concrete_line_id 分组：
-   └── concrete_line_id 变化 → flush_pack()
+前置: 创建 .bin.tmp 和 .idx.tmp 文件，写 PFSP/PFXI 头
+
+1. 从源 DB 读取 rows:
+   SELECT concrete_line_id, hole_cards, action_name, action_size, amount_bb, frequency, hand_ev
+   FROM range_data_{strategy}_{N}max_{BB}BB
+   ORDER BY concrete_line_id, hole_cards, action_name
+
+2. 遍历时按 concrete_line_id 分组:
+   ├── concrete_line_id 变化 → flush_pack()
+   ├── 达到 max_concrete_lines 上限 → break
+   └── 流结束 → flush_pack() 最后一个组
+
+3. dimension_action_schemas 回填:
+   对 dimension_schema_ids 中每个 action_schema_id:
+     INSERT OR IGNORE INTO dimension_action_schemas(...)
+
+4. 重写 .idx 头: record_count = pack_count
+5. bin.sync_all() + idx.sync_all()
+6. 返回 (pack_count, concrete_line_count)
 ```
 
 ### 1.4 编码单个 pack：`encode_concrete_line_pack()`
+
 `build_orchestrator.rs:890`
 
 ```
-输入: 同一 concrete_line_id 的所有 rows
+输入: 同一 concrete_line_id 的所有 RangeRow
 
 步骤:
-1. 收集所有 unique actions → HashSet<ActionKey>
-2. 按 (action_type, action_size, amount_bb) 排序
-3. 构建 action_blob: 每个动作 9 字节 = type(u8) + size(f32) + amount_bb(f32)
-4. 构建 hand_ids: 排序后的 u8 数组 (0..168，代表该 concrete_line 覆盖的手牌)
-5. 构建 action_masks: 每手牌一个 u32 位掩码
-6. 构建 cell_data: 每手牌 × 每个动作 = (freq f32, ev f32) 交替排列
+1. 规范化:
+   ├── 每行 hole_cards → hand_id: u8 (通过 get_hand_id)
+   ├── 每行 action_name → action_type: u8 (normalize_action_type: fold=0, call=1, check=2, bet=3, raise=4, allin=5)
+   ├── 构建 ActionKey { action_type, action_size_bits, amount_bb_bits } → HashSet 去重
+   └── 构建 normalized_rows: (hand_id, action_key, frequency, hand_ev)
 
-输出: EncodedPack { hand_ids, action_masks, cell_data }
-      action_schema_id (通过 get_or_insert_action_schema 获取/插入)
+2. 排序 actions:
+   └── 按 (action_type, action_size, amount_bb) 升序 → Vec<ActionKey>
+
+3. 构建索引:
+   ├── hand_index: hand_id → position (0..hand_count)
+   └── action_index: action_key → position (0..action_count)
+
+4. 构建 action_blob:
+   └── 每个 action 9 字节 = type(u8) + action_size(f32 LE) + amount_bb(f32 LE)
+
+5. 构建 payload:
+   ├── hand_ids: sorted u8 数组 (hand_count 字节)
+   ├── action_masks: 每手牌一个 u32 (1 << action_position)，hand_count × 4 字节
+   └── cell_data: hand_count × action_count × 8 字节
+         每手牌 × 每动作 = (frequency as f32, hand_ev as f32 或 NAN)
+         按 hand 外循环、action 内循环排列
+
+输出: EncodedPack { action_blob, action_count, hand_count, payload }
+
+校验: action_count ∈ [1, 32], hand_count ≤ u16::MAX
+Pack 大小公式: hand_count × (5 + action_count × 8)
 ```
 
-Pack 大小公式: `hand_count × (5 + action_count × 8)`
-
 ### 1.5 写入磁盘：`flush_pack()`
+
 `build_orchestrator.rs:841`
 
 ```
-1. encode_concrete_line_pack() → EncodedPack
-2. get_or_insert_action_schema() → 去重写入 action_schemas + dimension_action_schemas
-3. bin.seek_to(bin_offset) → 写 pack bytes 到 .bin
-4. 写 idx record (22 bytes) 到 .idx:
-   - concrete_line_id (u32)
-   - action_schema_id (u32)
-   - hand_count (u16)
-   - offset into .bin (u32)
-   - byte_length (u32)
-   - CRC32C checksum (u32)
-5. bin_offset += pack_byte_length
+1. encode_concrete_line_pack(rows) → EncodedPack { action_blob, payload, ... }
+
+2. 去重写入 action_schemas:
+   ├── schema_key = to_hex(action_blob)
+   ├── schema_ids_by_key (进程内 HashMap) 缓存 → 命中直接返回
+   ├── meta.db 查询 action_schemas WHERE schema_key = ? → 命中直接返回
+   └── 未命中 → INSERT INTO action_schemas(action_count, action_blob, checksum, schema_key)
+         checksum = CRC32C(action_blob)
+
+3. dimension_schema_ids.insert(action_schema_id)
+   (维度级缓存，最后统一 INSERT INTO dimension_action_schemas)
+
+4. 写 .bin:
+   ├── byte_length = payload.len() as u32
+   ├── checksum = CRC32C(payload)
+   ├── bin.seek(bin_offset) → bin.write_all(&payload)
+   └── bin_offset += byte_length
+
+5. 写 .idx (append):
+   └── 22 字节记录: concrete_line_id(4) + action_schema_id(4) + hand_count(2) +
+       offset(4) + byte_length(4) + CRC32C(4)
 ```
 
 ### 1.6 收尾
+
+`build_dimension()` — `build_orchestrator.rs:677`
+
 ```
-1. 重写 .idx 头: record_count = 实际记录数
-2. .bin.tmp → .bin (原子重命名)
-3. .idx.tmp → .idx (原子重命名)
-4. 写 manifest.json
+1. build_dimension_files() 完成后:
+   ├── .bin.tmp → .bin (rename，非原子但比 copy 快)
+   └── .idx.tmp → .idx
+
+2. 构建 ManifestDimension:
+   ├── concrete_line_count = pack_count
+   ├── bin_file_size_bytes = fs::metadata(bin_path)?.len()
+   ├── idx_file_size_bytes = fs::metadata(idx_path)?.len()
+   ├── bin_file_checksum = sha256_file(&bin_path)
+   └── idx_file_checksum = sha256_file(&idx_path)
+
+3. mark_state_dimension_completed():
+   └── 更新 build-state.json 中该维度的 status="completed" + checksums + completed_at
+
+4. 所有维度构建完成后:
+   └── 写入 manifest.json (pretty-print + trailing newline)
+```
+
+### 1.7 断点续建：`build-state.json`
+
+`build_orchestrator.rs:19`
+
+```
+文件: out_dir/build-state.json
+
+结构:
+{
+  version: 1,
+  source_db: path,
+  source_db_checksum: sha256,
+  output_dir: path,
+  built_at: ISO8601,
+  updated_at: ISO8601,
+  max_concrete_lines_per_dimension: Option<usize>,
+  dimensions: [
+    {
+      strategy, player_count, depth_bb,
+      status: "pending" | "completed",
+      concrete_line_count, pack_count,
+      bin_file, idx_file,
+      bin_file_size_bytes, idx_file_size_bytes,
+      bin_file_checksum, idx_file_checksum,
+      completed_at
+    }
+  ]
+}
+
+resume 模式:
+1. 校验 build-state.json 版本、source_db_checksum、max_concrete_lines、dimensions 列表
+2. 已完成的维度: 校验 bin/idx 文件大小和 SHA-256 一致性
+3. 跳过的维度直接返回 ManifestDimension，不重新构建
+4. 未完成的维度正常 build_dimension()，完成后更新 build-state.json
 ```
 
 ---
@@ -85,6 +213,7 @@ Pack 大小公式: `hand_count × (5 + action_count × 8)`
 ## 二、运行时阶段（Service）
 
 ### 2.1 启动：`serve()`
+
 `service/src/http/server.rs`
 
 ```
@@ -103,26 +232,47 @@ QueryService::open_with_meta(data_dir, meta_db_path)
 ```
 
 ### 2.2 Prewarm：打开维度句柄
-`range-store-core/src/query/store_query_service.rs:397`
+
+`range-store-core/src/query/store_query_service.rs:451`
 
 ```
-1. HTTP 启动时读取 PHS_PREWARM，或外部调用 /range/prewarm
-2. QueryService::prewarm()
-   └── RangeStoreFacade::prewarm()
-       └── StoreQueryService::prewarm()
-3. pool.get_or_open(dimension)
-   ├── DimensionReader::open(idx_path, bin_path)
-   ├── IdxReader::open() → mmap .idx，验证 PFXI 头和 dense record
-   └── BinReader::open() → mmap .bin，验证 PFSP 头
-4. 返回当前已打开的 dimension handle 数量
+外部入口:
+- HTTP: POST /range/prewarm
+  → service/src/routes/hand_query_routes.rs:414 prewarm()
+  → service/src/query/hand_query_service.rs prewarm()
+  → range-store-core/src/query/range_store_facade.rs:158 prewarm()
+  → range-store-core/src/query/store_query_service.rs:451 StoreQueryService::prewarm()
+- 服务启动时自动预加载 PHS_PREWARM 环境变量指定的维度列表
+
+1. StoreQueryService::prewarm(dimension)
+   ├── pool.get_or_open(dimension)
+   │     ├── DimensionReader::open(idx_path, bin_path)
+   │     ├── IdxReader::open() → mmap .idx，验证 PFXI 头和 dense record
+   │     └── BinReader::open() → mmap .bin，验证 PFSP 头
+   └── 返回 pool.open_count() — 当前已打开的 dimension handle 数量
+
+2. HTTP prewarm 支持批量预加载:
+   → 遍历请求中的 dimensions 列表，逐个调用 prewarm()
+   → 返回 { prewarmed: 本次请求数, total_open: 池内总数 }
 
 注意: prewarm 只提前打开/mmap 维度 .idx/.bin 文件；action_schemas 仍然在第一次查询用到具体 action_schema_id 时懒加载。
 ```
 
 ### 2.3 单次查询：`query()`
-`range-store-core/src/query/store_query_service.rs:164`
+
+`range-store-core/src/query/store_query_service.rs:223`
 
 ```
+外部入口:
+- HTTP: POST /range/hand-strategy
+  → service/src/routes/hand_query_routes.rs:299 query()
+  → service/src/query/hand_query_service.rs query()
+  → range-store-core/src/query/store_query_service.rs:223 StoreQueryService::query()
+- Native SDK: PokerHandsRange.queryHandStrategy()
+  → range-store-native/src/lib.rs:197 query_hand_strategy()
+  → RangeStoreFacade::query_hand_strategy()
+  → StoreQueryService::query()
+
 输入: dimension + concrete_line_id + hole_cards
 
 1. StoreQueryService::query()
@@ -199,63 +349,71 @@ QueryService::open_with_meta(data_dir, meta_db_path)
 ```
 
 ### 2.4 批量查询：`query_batch()`
-`range-store-core/src/query/store_query_service.rs:210`
+
+`range-store-core/src/query/store_query_service.rs:255`
 
 ```
 外部入口:
 - HTTP: POST /range/hand-strategy-batch
+  → service/src/routes/hand_query_routes.rs:334 batch()
+  → service/src/query/hand_query_service.rs:93 query_batch()
+  → range-store-core/src/query/store_query_service.rs:255 StoreQueryService::query_batch()
 - Native SDK: PokerHandsRange.queryBatch()
-- Core: RangeStoreFacade::query_batch() / StoreQueryService::query_batch()
+  → range-store-native/src/lib.rs:217 query_batch()
+  → RangeStoreFacade::query_batch()
+  → StoreQueryService::query_batch()
 
 输入: dimension + [{ concrete_line_id, hole_cards }]
 
 1. StoreQueryService::query_batch()
    ├── pool.get_or_open(dimension)
    │     └── 整个 batch 只打开/复用一个 DimensionReader
-   ├── 逐项 parse_hole_cards(hole_cards)
-   │     ├── 成功: 得到 hand_id + hand_code，进入后续分组
-   │     └── 失败: 直接写入该 item 的 error，不影响其他 item
-   └── 按 concrete_line_id 分组:
-         concrete_line_id -> [(原始 index, hand_id, hand_code)]
-
-2. 每个 concrete_line_id 分组调用一次 DimensionReader::query_many_hands()
-   ├── IdxReader.find(concrete_line_id)
-   │     └── 只查一次 .idx record
-   ├── BinReader.read_pack(record.offset, record.byte_length)
-   │     └── 只切一次 .bin pack payload
-   ├── read_and_validate_pack()
-   │     └── 只做一次 pack 边界、长度、action_count、checksum 校验
-   └── 对该组中的多个 hand_id 逐个 decode_pack_for_hand()
-         └── 返回 Vec<Option<PackDecodeResult>>
-
-3. item-level 结果回填
-   ├── concrete_line_id 不存在:
-   │     该组所有 item 写入 404 error
-   ├── 某个 hand_id 不在该 pack 的 hand_ids 段:
-   │     只给该 item 写入 not found error
-   ├── action_schema_id 存在:
-   │     对该组只查一次 ActionSchemaCache
-   └── 成功 item:
-         cell.action_id -> action_schema[action_id]
-         输出 action_name/action_size/amount_bb/frequency/hand_ev
-
-4. 保持原始请求顺序
-   └── 分组只是内部优化；最终 results 仍按输入 items 的顺序返回。
+   ├── Stage 1: 逐项 parse_hole_cards(hole_cards)
+   │     ├── 成功: 得到 hand_id，记入 parsed_hand_ids
+   │     └── 失败: 记录到 first_failure (min index)，记入 parsed_hand_ids 为 None
+   ├── Stage 2: 按 concrete_line_id 分组
+   │     ├── 只收集 parse 成功的 item: (原始 index, hand_id)
+   │     ├── group_keys 记录首次出现的 line_id 顺序
+   │     └── groups[group_pos] = [(min_index_in_group, hand_id), ...]
+   ├── Stage 3: 对每个 group 调用 DimensionReader::query_many_hands()
+   │     ├── IdxReader.find(concrete_line_id) → 只查一次 .idx record
+   │     ├── BinReader.read_pack(offset, byte_length) → 只切一次 .bin pack payload
+   │     ├── read_and_validate_pack() → 一次 pack 边界/长度/action_count/checksum 校验
+   │     └── 对该组中的多个 hand_id 逐个 decode_pack_for_hand()
+   │           → 返回 Vec<Option<PackDecodeResult>> (每项 None = hand 不在 pack 中)
+   ├── Stage 4: 结果回填 (per-item)
+   │     ├── LineNotFound: 记到 first_failure(min_index, ConcreteLineNotFound)
+   │     ├── IO 错误: 记到 first_failure(min_index, Io)
+   │     ├── action_schema 不存在: 记到 first_failure(min_index, ActionSchemaNotFound)
+   │     ├── hand_id 不在 pack 中 (None): 记到 first_failure(min_index, HandStrategyNotFound)
+   │     ├── cells_to_actions 失败: 记到 first_failure(min_index, Internal)
+   │     └── 成功: results_vec[item_index] = Some(actions)
+   └── Stage 5: first-failure-by-min-index
+         ├── 遍历 first_failure，取 index 最小的那个作为全局唯一失败
+         ├── 若存在失败: 返回 Err(StoreQueryError::BatchItem { index, source })
+         └── 若无失败: 按输入顺序组装 QueryBatchResult
 
 关键边界:
 - `query_batch` 不是删除项：HTTP service、native SDK 和 benchmark 都有外部入口在使用。
-- 当前实现已经走 `query_many_hands()`；同一 concrete_line_id 的多手牌共享一次 idx lookup、一次 bin pack read、一次 pack 校验。
-- 错误语义仍是 item-level：单个 item 失败不会把整个 batch 变成失败响应。
+- 当前实现走 `query_many_hands()`；同一 concrete_line_id 的多手牌共享一次 idx lookup、一次 bin pack read、一次 pack 校验。
+- 错误语义是 first-failure-by-min-index：逐项探测所有失败（为了正确归因），但最终只返回最小 index 的那个失败，包装为 BatchItem 错误。单个 item 失败会让整个 batch 返回错误响应，而不是逐条填充 results。
+- 分组只是内部优化；成功时 results 仍按输入 items 的顺序返回。
 ```
 
 ### 2.5 按动作过滤手牌：`hands-by-actions`
-`range-store-core/src/query/store_query_service.rs:359`
+
+`range-store-core/src/query/store_query_service.rs:413`
 
 ```
 外部入口:
 - HTTP: POST /range/hands-by-actions
+  → service/src/routes/hand_query_routes.rs:368 hands_by_actions()
+  → service/src/query/hand_query_service.rs query_hands_by_actions()
+  → range-store-core/src/query/store_query_service.rs:413 StoreQueryService::query_hands_by_actions()
 - Native SDK: PokerHandsRange.handsByActions()
-- Core: RangeStoreFacade::hands_by_actions() / StoreQueryService::query_hands_by_actions()
+  → range-store-native/src/lib.rs:177 hands_by_actions()
+  → RangeStoreFacade::hands_by_action_names()
+  → StoreQueryService::query_hands_by_actions()
 
 输入: dimension + concrete_line_id + actions? + frequency?
 
@@ -320,9 +478,94 @@ QueryService::open_with_meta(data_dir, meta_db_path)
          { holeCards: ["AA", "AKs", ...] }
 
 关键边界:
-- `query()` 是查一个 hand 的 action 策略；`hands-by-actions` 是反向查询，查“哪些 hand 满足某些 action/frequency 条件”。
+- `query()` 是查一个 hand 的 action 策略；`hands-by-actions` 是反向查询，查”哪些 hand 满足某些 action/frequency 条件”。
 - `hands-by-actions` 必须完整解码一个 pack，因为它要扫描该 concrete line 下所有 hand/action cell。
 - action filter 的语义是 OR：多个 actions 中任意一个满足频率阈值即可返回该手牌。
+```
+
+### 2.6 查询 concrete line 映射：`concrete-lines`
+
+`range-store-core/src/query/range_store_facade.rs:64`
+
+```
+外部入口:
+- HTTP: POST /range/concrete-lines
+  → service/src/routes/metadata_routes.rs:203 concrete_lines()
+  → service/src/query/hand_query_service.rs:111 get_concrete_lines()
+  → range-store-core/src/query/range_store_facade.rs:64 get_concrete_lines()
+  → range-store-core/src/metadata.rs:521 CachedMetadataReader::get_concrete_lines()
+
+输入: dimension(strategy, player_count, depth_bb) + { abstract_line?, concrete_line? }
+      (至少提供一个 abstract_line 或 concrete_line)
+
+1. CachedMetadataReader::get_concrete_lines()
+   ├── 参数路由:
+   │     ├── (abstract, concrete) 均提供 → get_concrete_lines_by_abstract_and_concrete()
+   │     ├── 仅 abstract 提供 → get_concrete_lines_by_abstract()
+   │     └── 仅 concrete 提供 → get_concrete_lines_by_concrete()
+   ├── 先查内存缓存 state.concrete_by_abstract / state.concrete_by_concrete
+   │     └── cache hit → 直接返回
+   └── cache miss → 从 meta.db 查询
+         ├── 构造表名: concrete_lines_{strategy}_{player_count}max_{depth_bb}BB
+         ├── SELECT concrete_line_id, abstract_line, concrete_line FROM {table} WHERE ...
+         └── 回填缓存: concrete_by_abstract[key] = rows, concrete_by_concrete[row.concrete_line] = row
+
+2. 返回 Vec<ConcreteLineRow>
+   └── { concrete_line_id, abstract_line, concrete_line }
+
+注意: CachedMetadataReader 是纯内存缓存，不 mmap 任何文件；所有数据来自 meta.db 的只读 SQLite 查询。
+```
+
+### 2.7 查询 drill scenario 抽象线：`drill-scenarios`
+
+`range-store-core/src/query/range_store_facade.rs:87`
+
+```
+外部入口:
+- HTTP: POST /range/drill-scenarios
+  → service/src/routes/metadata_routes.rs:249 drill_scenario_lines()
+  → service/src/query/hand_query_service.rs:121 get_drill_scenario_lines()
+  → range-store-core/src/query/range_store_facade.rs:87 get_drill_scenario_lines()
+  → range-store-core/src/metadata.rs:759 CachedMetadataReader::get_drill_scenario_lines()
+
+输入: strategy + drill_name + player_count + drill_depth
+
+1. CachedMetadataReader::get_drill_scenario_lines()
+   ├── 先查缓存 state.drill_lines[(strategy, drill_name, player_count, drill_depth)]
+   │     └── cache hit → 直接返回 Vec<String>
+   └── cache miss → 从 meta.db 查询
+         ├── 构造表名: drill_scenario_lines_{strategy}
+         ├── SELECT abstract_line FROM {table}
+         │     WHERE drill_name=? AND player_count=? AND drill_depth=?
+         │     ORDER BY abstract_line
+         └── 回填缓存: state.drill_lines[key] = lines
+
+2. 返回 Vec<String>（抽象行动线名称，如 [“F-F-F”, “F-F-F-R2”]）
+
+注意: drill scenario 表只按 strategy 区分，不按 player_count/depth_bb 建多张表。
+```
+
+## 三、构建阶段补充：meta.db 表结构
+
+`CachedMetadataReader` 和 `ActionSchemaCache` 共同操作 `meta.db`，以下是核心表：
+
+```
+action_schemas:
+  id (u32 PK) | action_count (u32) | action_blob (bytes)
+  每个 action 占 9 字节: type(u8) + size(f32 LE) + amount_bb(f32 LE)
+
+dimension_action_schemas:
+  strategy | player_count | depth_bb | action_schema_id
+  维度与 schema 的映射关系
+
+concrete_lines_{strategy}_{player_count}max_{depth_bb}BB:
+  concrete_line_id (u32 PK) | abstract_line (TEXT) | concrete_line (TEXT)
+  每个维度一张独立表
+
+drill_scenario_lines_{strategy}:
+  id (u32 PK) | drill_name (TEXT) | abstract_line (TEXT)
+  | player_count (u32) | drill_depth (u32)
+  全局共享表，按 strategy 命名
 ```
 
 ## 四、hand_id 说明
@@ -331,13 +574,14 @@ QueryService::open_with_meta(data_dir, meta_db_path)
 
 编码规则基于 13×13 矩阵（RANKS = [A,K,Q,J,T,9,8,7,6,5,4,3,2]）：
 
-| hand_id 公式 | 含义 | 示例 |
-|---|---|---|
-| `row * 13 + row` | 对子 (pair) | `AA` → 0, `22` → 168 |
-| `row * 13 + col` (row < col) | 同花 (suited) | `AKs` → 1 |
-| `col * 13 + row` (row < col) | 杂色 (offsuit) | `AKo` → 13 |
+| hand_id 公式                 | 含义           | 示例                 |
+| ---------------------------- | -------------- | -------------------- |
+| `row * 13 + row`             | 对子 (pair)    | `AA` → 0, `22` → 168 |
+| `row * 13 + col` (row < col) | 同花 (suited)  | `AKs` → 1            |
+| `col * 13 + row` (row < col) | 杂色 (offsuit) | `AKo` → 13           |
 
 查询接口接收两种输入格式，都归一化为 hand_id：
+
 - 标准 169-hand code：`"AA"`, `"AKs"`, `"AKo"`
 - 花色两牌：`"AsKh"`, `"AcAd"`, `"QdJs"` → 自动归一化为上述格式
 
@@ -373,6 +617,7 @@ QueryService::open_with_meta(data_dir, meta_db_path)
 > 详细格式定义以 [`range-db-binary-storage-design.md`](./range-db-binary-storage-design.md) 为准，此处为快速参考。
 
 ### PFSP (.bin)
+
 ```
 Offset  Size  Field
 0       4     Magic: "PFSP"
@@ -388,6 +633,7 @@ Offset  Size  Field
 ```
 
 ### PFXI (.idx)
+
 ```
 Offset  Size  Field
 0       4     Magic: "PFXI"
@@ -403,12 +649,14 @@ Offset  Size  Field
 ```
 
 ### action_blob (每动作 9 字节)
+
 ```
 action_type(u8) + action_size(f32 LE) + amount_bb(f32 LE)
 type: 0=fold, 1=call, 2=check, 3=bet, 4=raise, 5=allin
 ```
 
 ### pack 内部结构 (每手牌)
+
 ```
 hand_ids:    hand_count bytes  (sorted u8, 0..168)
 action_masks: hand_count × 4 bytes (u32 bitset)
