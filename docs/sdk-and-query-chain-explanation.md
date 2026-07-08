@@ -4,16 +4,17 @@
 
 ## 文档职责
 
-- Bun/Node native SDK 的公开 API、构建测试方式和生产接入边界。
-- 一次 SDK 查询如何经过 JS wrapper、N-API 绑定、`range-store-core` 查询核心，最终从 `.idx/.bin` 和 `meta.db` 返回结果。
+- Bun / TypeScript native SDK 的公开 API、构建测试方式和生产接入边界。
+- 一次 SDK 查询如何经过 SDK wrapper、N-API 绑定、`range-store-core` 查询核心，最终从 `.idx/.bin` 和 `meta.db` 返回结果。
 - SDK 与 HTTP service 的契约差异。
 
 ## 模块定位
 
-`range-store-native` 是 Bun/Node 进程内只读 SDK：
+`range-store-native` 是 Bun / TypeScript 进程内只读 SDK，Node.js 运行时兼容：
 
 - Rust 侧通过 `napi-rs` 暴露 `PokerHandsRange`。
-- JavaScript 侧通过 `index.js` 加载 `index.node`，把 native 异常转换成 `RangeStoreError`。
+- TypeScript 业务代码导入运行时入口 `index.js`；`index.d.ts` 只提供类型声明，由 TypeScript 自动解析。
+- SDK wrapper 通过 `index.js` 加载 `index.node`，把 native 异常转换成 `RangeStoreError`。
 - 查询语义复用 `range-store-core::query::RangeStoreFacade`，与 HTTP service 共用 core 业务路径。
 
 它不负责：
@@ -27,7 +28,7 @@
 
 包入口：
 
-```js
+```typescript
 import {
   PokerHandsRange,
   RangeStore,
@@ -35,6 +36,8 @@ import {
   getPokerHandsRangeSingleton,
 } from "./index.js"
 ```
+
+在业务 `.ts` 文件中仍导入 `index.js`，不要把 `index.d.ts` 当运行时模块导入。`RangeStoreError` 是运行时 class，`instanceof RangeStoreError` 依赖这个真实导入。
 
 构造参数：
 
@@ -48,7 +51,7 @@ interface PokerHandsRangeOptions {
 
 示例：
 
-```js
+```typescript
 const store = new PokerHandsRange({
   dataDir: "./data/range-strata",
   maxOpenHandles: 2,
@@ -74,7 +77,7 @@ const store = new PokerHandsRange({
 
 单手牌策略查询：
 
-```js
+```typescript
 const result = store.queryHandStrategy({
   strategy: "default",
   playerCount: 6,
@@ -99,7 +102,7 @@ const result = store.queryHandStrategy({
 
 错误不会作为成功 payload 的 `code/message` 返回，而是抛出 `RangeStoreError`：
 
-```js
+```typescript
 try {
   store.queryHandStrategy({ ...request, holeCards: "AsXx" })
 } catch (error) {
@@ -134,7 +137,7 @@ $env:PHS_HTTP_URL = "http://127.0.0.1:8080"
 bun run test:http-consistency
 ```
 
-`range-store-native/tests/sdk-contract.test.js` 是 JS wrapper 的直接契约测试入口。benchmark 输出不能替代 SDK contract 测试。
+`range-store-native/tests/sdk-contract.test.js` 是 SDK wrapper 的直接契约测试入口。benchmark 输出不能替代 SDK contract 测试。
 
 ## 与 HTTP service 的关系
 
@@ -143,7 +146,7 @@ bun run test:http-consistency
 | 入口           | 使用场景                   | 返回契约                               | 边界成本                             |
 | -------------- | -------------------------- | -------------------------------------- | ------------------------------------ |
 | HTTP service   | 跨进程、跨语言、容器化服务 | `{ code, data, message }` envelope     | HTTP/JSON 序列化和 loopback/网络成本 |
-| Bun native SDK | Bun/Node 业务进程内查询    | 直接 payload，失败抛 `RangeStoreError` | N-API 边界和 JS 包装成本             |
+| Bun native SDK | Bun / TypeScript 业务进程内查询 | 直接 payload，失败抛 `RangeStoreError` | N-API 边界和 SDK 包装成本            |
 
 当前正式 benchmark 只保留 `core`、`native-sdk`、`http-service` 三组对比。Native SDK 的策略查询最终仍落到 `RangeStoreFacade -> StoreQueryService`；如果某次报告显示 SDK 和 core 有明显速度差异，应优先从 page cache、运行时上下文、计时精度和样本局部性解释，不应假设 SDK 绕过了 core 算法。
 
@@ -166,13 +169,18 @@ bun run test:http-consistency
 ## 查询链路总览
 
 ```text
+业务 .ts 文件
+  |
+  | 从 range-store-native/index.js 导入运行时符号
+  | TypeScript 类型由 index.d.ts 自动解析
+  v
 range-store-native/index.js
   |
-  | callNative(): JS 参数映射 + RangeStoreError 归一化
+  | SDK wrapper: 参数映射、直接 payload、RangeStoreError 归一化
   v
 range-store-native/src/lib.rs
   |
-  | napi-rs: camelCase JS 方法 <-> Rust snake_case 方法
+  | napi-rs: camelCase 方法 <-> Rust snake_case 方法
   v
 RangeStoreFacade
   |
@@ -194,13 +202,23 @@ RangeStoreFacade
                     +-- IdxReader.find(concrete_line_id) -> .idx mmap dense lookup
                     +-- BinReader.read_pack(offset, byte_length) -> .bin mmap slice
                     +-- decode_pack_for_hand() / decode_pack()
+
+HTTP service 是平级入口：
+
+service route -> RangeStoreFacade -> HTTP { code, data, message } envelope
 ```
+
+当前边界语义：
+
+- Native SDK：成功返回直接 payload；失败抛 `RangeStoreError`。
+- HTTP service：成功/失败都由 service 边界转换成 HTTP status + `{ code, data, message }`。
+- Core：只返回领域结果或 typed error，不返回 HTTP envelope。
 
 ## 构造阶段
 
-JS 层 `new PokerHandsRange(options)` 会把 `dataDir/maxOpenHandles/verifyChecksums` 传给 native 类：
+业务 `.ts` 代码调用 `new PokerHandsRange(options)` 后，`index.js` wrapper 会把 `dataDir/maxOpenHandles/verifyChecksums` 传给 native 类：
 
-```js
+```typescript
 new native.PokerHandsRange({
   dataDir: options.dataDir,
   maxOpenHandles: options.maxOpenHandles,
@@ -225,7 +243,7 @@ let inner = RangeStoreFacade::open(options.data_dir, max_open_handles, verify_ch
 
 因此构造后通常可以看到：
 
-```js
+```typescript
 store.stats() // { schemaCount: 0, openHandleCount: 0, knownDimensions: [...] }
 ```
 
@@ -233,11 +251,11 @@ store.stats() // { schemaCount: 0, openHandleCount: 0, knownDimensions: [...] }
 
 ## 单手牌策略查询
 
-### 1. JS wrapper
+### 1. SDK wrapper
 
 `queryHandStrategy(request)` 位于 `range-store-native/index.js`：
 
-```js
+```typescript
 queryHandStrategy(request) {
   const result = callNative(() =>
     this.#native.queryHandStrategy({
@@ -258,9 +276,9 @@ queryHandStrategy(request) {
 RANGE_STORE_ERROR:{CODE}:{message}
 ```
 
-JS 会转换成：
+SDK wrapper 会转换成：
 
-```js
+```typescript
 new RangeStoreError(code, message, { cause: error })
 ```
 
@@ -268,7 +286,7 @@ new RangeStoreError(code, message, { cause: error })
 
 ### 2. N-API 绑定
 
-`range-store-native/src/lib.rs` 把 JS request 转成 core 的 `DimensionRef`：
+`range-store-native/src/lib.rs` 把 SDK request 转成 core 的 `DimensionRef`：
 
 ```rust
 let dimension = dimension_from_parts(request.strategy, request.player_count, request.depth_bb);
@@ -277,7 +295,7 @@ let result = self
     .query_hand_strategy(&dimension, request.concrete_line_id, &request.hole_cards)?;
 ```
 
-`strategy` 是可选字段，未传时默认为 `default`。N-API 返回的 Rust struct 再由 napi-rs 转成 JS object，字段会以 camelCase 暴露。
+`strategy` 是可选字段，未传时默认为 `default`。N-API 返回的 Rust struct 再由 napi-rs 转成 JS runtime object，字段会以 camelCase 暴露；TypeScript 侧类型来自 `index.d.ts`。
 
 ### 3. RangeStoreFacade
 
@@ -287,7 +305,10 @@ let result = self
 self.query_service.query(dimension, concrete_line_id, hole_cards)
 ```
 
-它的主要职责是统一错误类型：core 内部错误最终映射成 `RangeStoreError`，再由 native 层编码成 `RANGE_STORE_ERROR:{CODE}:{message}`。
+它的主要职责是统一 core 查询结果和 typed error。到边界层后再分流：
+
+- Native SDK：native 层把 core error 编码成 `RANGE_STORE_ERROR:{CODE}:{message}`，`index.js` 再转换为 `RangeStoreError` 并抛出。
+- HTTP service：service 层把同一类 core error 转成 HTTP status + `{ code, data, message }` envelope。
 
 常见错误码：
 
@@ -425,7 +446,7 @@ frequency f32 + hand_ev f32
 4. 遍历 `action_id = 0..action_count`。
 5. 如果 mask 对应 bit 为 0，跳过该 action。
 6. 如果 bit 为 1，读取 frequency 和 EV。
-7. `hand_ev` 的 `NaN` 表示业务 null，返回到 JS 时是 `null`。
+7. `hand_ev` 的 `NaN` 表示业务 null，返回到 Bun / TypeScript 调用方时是 `null`。
 
 最多 169 个 hand，所以二分查找不超过 8 次比较。由于 pack 是稀疏的，不能直接用 `hand_ids[target_hand_id]` 当固定下标。
 
@@ -446,7 +467,7 @@ let action_schema = self.action_schemas.get(fragment.action_schema_id)?;
 
 因此 constructor 和 prewarm 都不会主动加载全部 schema；只有真实策略查询命中某个 `action_schema_id` 后，`schemaCount` 才会上升。
 
-## 返回给 JS
+## 返回给 Bun / TypeScript
 
 core 组装出的 action：
 
@@ -460,7 +481,7 @@ ActionResult {
 }
 ```
 
-N-API 层把 `f32` 转成 JS number 可表达的 `f64`：
+N-API 层把 `f32` 转成 JS runtime `number` / TypeScript `number` 可表达的 `f64`：
 
 ```rust
 ActionResult {
@@ -472,9 +493,9 @@ ActionResult {
 }
 ```
 
-JS wrapper 再转换成 camelCase：
+SDK wrapper 再转换成 camelCase：
 
-```js
+```typescript
 {
   actionName,
   actionSize,
@@ -486,7 +507,7 @@ JS wrapper 再转换成 camelCase：
 
 `queryHandStrategy()` 最终只返回：
 
-```js
+```typescript
 {
   actions
 }
@@ -498,7 +519,7 @@ JS wrapper 再转换成 camelCase：
 
 SDK 入参：
 
-```js
+```typescript
 store.queryBatch({
   strategy: "default",
   playerCount: 6,
@@ -512,7 +533,7 @@ store.queryBatch({
 
 返回：
 
-```js
+```typescript
 {
   results: [
     { concreteLineId: 1, holeCards: "AA", actions: [...] },
@@ -521,20 +542,22 @@ store.queryBatch({
 }
 ```
 
-当前 `range-store-core::StoreQueryService::query_batch()` 是严格 all-or-nothing：
+当前 `range-store-core::StoreQueryService::query_batch()` 是严格 all-or-nothing，但成功路径会按 `concrete_line_id` 分组共享 pack 读取：
 
-- 每个 item 调一次 `query()`。
+- 先解析全部 `holeCards`，记录最小失败 index，但不会立刻返回。
+- 按 `concrete_line_id` 分组；同一 concrete line 的多个 hand 走一次 `DimensionReader::query_many_hands()`。
+- 每个 concrete line group 只读一次 `.idx` record 和一次 `.bin` pack slice。
 - 任一 item 失败时，整个 batch 抛出 `RangeStoreError`。
 - 错误消息会包含 `Batch item requests[index] failed`。
 - 成功 item 不带 `handCode`，失败 item 不会作为 `{ error }` 留在 results 里。
 
-当前 core batch 没有使用 `DimensionReader::query_many_hands()` 做同一 concrete line 的 pack 共享优化。它的主要收益来自复用同一个 store、handle pool、schema cache，以及一次 N-API 调用边界。
+batch 的主要收益来自：一次 N-API 调用边界、一次 `HandlePool::get_or_open()`、同 concrete line 下共享 pack 读取和 schema 解析，以及 all-or-nothing 错误传播。
 
 ## handsByActions 当前语义
 
 SDK 入参：
 
-```js
+```typescript
 store.handsByActions({
   strategy: "default",
   playerCount: 6,
@@ -547,7 +570,7 @@ store.handsByActions({
 
 返回：
 
-```js
+```typescript
 {
   holeCards: ["AA", "AKs"]
 }
@@ -555,7 +578,7 @@ store.handsByActions({
 
 链路：
 
-1. JS wrapper 把 `actions/frequency` 传给 N-API。
+1. SDK wrapper 把 `actions/frequency` 传给 N-API。
 2. Rust 层把原始 action 字符串解析成 `ActionFilter`。
 3. `StoreQueryService::query_hands_by_actions()` 打开维度 reader。
 4. `DimensionReader::query_all()` 找到 pack，并完整解码该 concrete line 下的所有 hand/action cell。
@@ -613,7 +636,7 @@ store.handsByActions({
 
 `stats()` 返回：
 
-```js
+```typescript
 {
   schemaCount: 0,
   openHandleCount: 0,

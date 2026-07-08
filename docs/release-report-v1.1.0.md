@@ -25,7 +25,7 @@
 range-store-core    ← 纯 Rust 库：二进制存储引擎（mmap、编解码、查询），不依赖 HTTP 或 CLI
     ^
     |--- service    ← HTTP API 服务（axum + OpenAPI），8 个端点
-    |--- range-store-native  ← Bun/Node.js 进程内 SDK（napi-rs）
+    |--- range-store-native  ← Bun/TypeScript 进程内 SDK（Node.js 兼容，napi-rs）
     |--- storage-tools       ← 离线工具：构建、验证、benchmark CLI
 ```
 
@@ -377,7 +377,7 @@ for action_id in 0..action_count {
 
 - 全量 cross verify 覆盖 9 个维度、23,806,716 条源记录，失败数为 0
 - Float32 bit-exact 匹配
-- 量化误差：f32 尾数 23 位，有效数字约 7 位十进制，对 poker strategy 的 frequency (0-1) 和 hand_ev (0-5 BB) 完全可接受
+- 量化误差：f32 尾数 23 位，有效数字约 7 位十进制；`frequency` 是 0..1 概率值，`hand_ev` 是以 BB 计的期望值（可负、可超过 5、可 null），两者按实际源值分别统计量化误差
 
 ---
 
@@ -421,8 +421,8 @@ for action_id in 0..action_count {
 `source_checksum` 是对源 SQLite **整个文件内容**做 checksum（不是对表数据），所以：
 
 - 同一个文件不变 → checksum 不变 → resume 通过
-- ALTER TABLE（即使数据不变）→ SQLite 生成新文件（page 布局变化）→ checksum 变 → resume 拒绝
-- 重新 export 相同数据但文件字节不同 → checksum 变 → resume 拒绝
+- 换成另一份 SQLite 文件，或者重新 export / 重新生成相同业务数据但文件字节不同 → checksum 变 → resume 拒绝
+- 构建流程不会对源 SQLite 做 `ALTER TABLE` 这类原地 schema 修改；源库按不可变输入处理
 
 更精细的数据校验靠的是 build 过程中记录的每维度 `pack_count` 和 `concrete_line_count`，resume 时对比这些数字。
 
@@ -440,10 +440,10 @@ for action_id in 0..action_count {
 ### 6.1 架构分层
 
 ```
-Bun/Node.js 应用
+Bun / TypeScript 应用
     |
     v
-index.js (JS 包装层)                    ← 业务信封格式转换、错误处理
+index.js (SDK 包装层，index.d.ts 提供类型) ← 参数映射、RangeStoreError 归一化
     |
     v
 index.node (napi-rs 原生绑定)           ← Rust ↔ JS 类型转换、N-API 序列化
@@ -476,7 +476,9 @@ bun run build:native    # 编译 Rust 代码生成 index.node (napi-rs)
 
 ### 6.3 API 完整用法
 
-```javascript
+业务侧在 `.ts` 文件中仍导入 SDK runtime 入口 `index.js`；`index.d.ts` 只提供类型声明，由 TypeScript 自动解析，不作为运行时 import 目标。
+
+```typescript
 import { PokerHandsRange } from "./range-store-native/index.js";
 
 // 1. 初始化
@@ -494,9 +496,9 @@ const result = store.queryHandStrategy({
   concreteLineId: 42,
   holeCards: "AKs",
 });
-// { code: 0, data: { inputHoleCards: "AKs", handCode: "AKs", actions: [...] }, message: null }
+// { actions: [...] }
 
-// 3. 批量查询（error-tolerant：单个失败不影响其他项）
+// 3. 批量查询（all-or-nothing：任一 item 失败会抛 RangeStoreError）
 const batchResult = store.queryBatch({
   strategy: "default",
   playerCount: 6,
@@ -506,8 +508,8 @@ const batchResult = store.queryBatch({
     { concreteLineId: 2, holeCards: "KK" },
   ],
 });
-// { code: 0, data: { results: [{ concreteLineId: 1, holeCards: "AA", actions: [...] },
-//                            { concreteLineId: 2, holeCards: "KK", error: { code: 404, message: "..." } }] }, message: null }
+// { results: [{ concreteLineId: 1, holeCards: "AA", actions: [...] },
+//             { concreteLineId: 2, holeCards: "KK", actions: [...] }] }
 
 // 4. 按动作筛选手牌
 const handsResult = store.handsByActions({
@@ -518,7 +520,7 @@ const handsResult = store.handsByActions({
   actions: ["call", "fold"], // OR 语义：任一匹配即可
   frequency: 0.005, // 默认 0.005，严格大于
 });
-// { code: 0, data: { holeCards: ["AA", "KK", "AKs", ...] }, message: null }
+// { holeCards: ["AA", "KK", "AKs", ...] }
 
 // 5. 查询 concrete lines
 const linesResult = store.getConcreteLines({
@@ -528,7 +530,7 @@ const linesResult = store.getConcreteLines({
   abstractLine: "F-F-F", // 可选：按 abstract 或 concrete 过滤
   concreteLine: "F-F-F-R2", // 可选
 });
-// { code: 0, data: { lines: [{ concreteLineId: 42, abstractLine: "F-F-F", concreteLine: "F-F-F-R2" }] } }
+// { lines: [{ concreteLineId: 42, abstractLine: "F-F-F", concreteLine: "F-F-F-R2" }] }
 
 // 6. 查询 drill 场景的抽象线路
 const abstractResult = store.getAbstractLines({
@@ -537,35 +539,65 @@ const abstractResult = store.getAbstractLines({
   playerCount: 6,
   drillDepth: 100,
 });
-// { code: 0, data: { abstractLines: ["F-F-F", "F-F-F-R2", ...] } }
+// { abstractLines: ["F-F-F", "F-F-F-R2", ...] }
 
 // 7. 预加载维度
-store.prewarm({ strategy: "default", playerCount: 6, depthBb: 100 });
+const prewarmResult = store.prewarm({ strategy: "default", playerCount: 6, depthBb: 100 });
+// { openHandleCount: 1 }
 
 // 8. 查看统计信息
 const stats = store.stats();
-// { code: 0, data: { schemaCount: 15, openHandleCount: 3, knownDimensions: [...] } }
+// { schemaCount: 15, openHandleCount: 3, knownDimensions: [...] }
 ```
 
 ### 6.4 错误处理
 
-所有 API 返回统一信封格式：
+Native SDK 成功时返回直接 payload，不返回 `{ code, data, message }`。失败时抛出 `RangeStoreError`：
 
 ```typescript
-{ code: number, data: T | null, message: string | null }
+class RangeStoreError extends Error {
+  name: "RangeStoreError"
+  code: RangeStoreErrorCode
+  message: string
+}
 ```
 
-错误码映射：
+示例：
 
-| 错误类型                                     | HTTP code | N-API code |
-| -------------------------------------------- | --------- | ---------- |
-| 非法参数（手牌格式错误、action filter 无效） | 1000      | 1000       |
-| 资源不存在（维度/手牌/concrete_line 未找到） | 404       | 404        |
-| 内部错误（manifest 损坏、文件 IO 失败）      | 500       | 500        |
+```typescript
+// RangeStoreError 是运行时 class，必须从 index.js 导入；index.d.ts 只提供类型声明。
+import { RangeStoreError } from "./range-store-native/index.js";
+
+try {
+  store.queryBatch({
+    strategy: "default",
+    playerCount: 6,
+    depthBb: 100,
+    items: [{ concreteLineId: 1, holeCards: "AsXx" }],
+  });
+} catch (error) {
+  if (error instanceof RangeStoreError) {
+    console.log(error.code); // INVALID_ARGUMENT
+    console.log(error.message); // Batch item requests[0] failed: ...
+  }
+}
+```
+
+SDK error code 与 HTTP service public code 的关系：
+
+| SDK `RangeStoreError.code` | HTTP service public code | 语义 |
+| -------------------------- | ------------------------ | ---- |
+| `INVALID_ARGUMENT` | 1000 | 请求参数语义非法，包括手牌格式、action filter、frequency 等 |
+| `DIMENSION_NOT_FOUND`、`DATA_FILE_NOT_FOUND`、`ACTION_SCHEMA_NOT_FOUND` | 404 | 运行数据或维度资源不存在 |
+| `ABSTRACT_LINE_NOT_FOUND`、`CONCRETE_LINE_NOT_FOUND`、`HAND_STRATEGY_NOT_FOUND` | 404 | metadata 或策略查询目标不存在 |
+| `DRILL_SCENARIO_NOT_FOUND`、`HANDS_NOT_FOUND` | 404 | drill 或 hands-by-actions 查询没有匹配结果 |
+| `INVALID_FORMAT`、`META_DB_ERROR`、`INTERNAL` | 500 | 数据文件、meta.db 或内部错误 |
+
+只有 HTTP service 边界返回 `{ code, data, message }` envelope；Native SDK 边界直接返回 payload 或抛异常。
 
 ### 6.5 Singleton 模式
 
-```javascript
+```typescript
 import { getPokerHandsRangeSingleton } from "./range-store-native/index.js";
 
 const store = getPokerHandsRangeSingleton({ dataDir: "./data" });
@@ -575,7 +607,7 @@ const store = getPokerHandsRangeSingleton({ dataDir: "./data" });
 
 ### 6.6 SDK 与 HTTP Service 的关系
 
-两者底层使用同一套 `range-store-core` 查询逻辑。SDK 通过 napi-rs 编译成 `.node` 原生模块嵌入 JS 进程，零网络开销；HTTP Service 是独立的 axum 服务，通过 REST API 访问，适合多语言客户端和分布式部署。
+两者底层使用同一套 `range-store-core` 查询逻辑。SDK 通过 napi-rs 编译成 `.node` 原生模块嵌入 Bun / TypeScript 业务进程，零网络开销；HTTP Service 是独立的 axum 服务，通过 REST API 访问，适合多语言客户端和分布式部署。
 
 ---
 
@@ -584,6 +616,6 @@ const store = getPokerHandsRangeSingleton({ dataDir: "./data" });
 - **CachedMetadataReader**：惰性加载元数据索引，消除批量查询中的重复 SQLite 查找。构造时只读 manifest，查询时先查内存 HashMap，miss 才查 SQLite，结果缓存。使用 RwLock<HashMap> 而非 Mutex 的原因是 batch 查询中大量 cache hit 场景下多个并发请求可以同时持有读锁而不互斥。由于整个项目只有构建时写、运行时只读（meta.db 以 `read_only` 模式打开，`.bin/.idx` 以 mmap 只读映射），cache 是 append-only 的——LRU eviction 仅是内存淘汰不改文件。不用 `OnceLock<HashMap>`（一次性预加载全部 metadata）而用增量懒加载，是因为 concrete_lines 表可能很大，按需加载避免初始化时占用过多内存。
 - **Native benchmark runner**：新增 metadata drill 和 `hands_by_actions` 单链路 benchmark，覆盖 Core/HTTP/SDK 三种模式
 - **P90 延迟指标**：补充尾部延迟可视化
-- **查询批错误传播**：单个失败不影响整个 batch 的其余项，每个 item 独立返回 `{ actions, error }`
+- **查询批错误传播**：batch 为 all-or-nothing，任一 item 失败时 SDK 抛 `RangeStoreError`，HTTP service 返回错误 envelope；成功 payload 只包含 `{ results: [{ concreteLineId, holeCards, actions }] }`
 - **Service directory refactor**：简化 service 模块组织，职责边界更清晰
 - **文档更新**：扩展 README、docs index、verification guide、tier1 optimization plan；添加 agent references
