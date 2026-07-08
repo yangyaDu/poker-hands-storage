@@ -1,4 +1,4 @@
-#[path = "../../support/verify_store_fixture.rs"]
+#[path = "../support/verify_store_fixture.rs"]
 mod verify_store_fixture;
 
 use std::fs;

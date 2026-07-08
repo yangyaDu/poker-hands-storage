@@ -1,12 +1,13 @@
 use std::fmt;
 use std::io;
 
-use crate::storage::manifest::ManifestError;
 use range_store_core::action_schema::{ActionSchemaError, ActionSchemaLoadError};
 use range_store_core::dimension::NamingError;
 use range_store_core::hole_cards::HandDictError;
+use range_store_core::manifest::ManifestError;
 use range_store_core::metadata::MetadataError;
 use range_store_core::query::RangeStoreError;
+use range_store_core::sqlite::SqliteError;
 
 #[derive(Debug)]
 pub struct AppError {
@@ -207,8 +208,8 @@ impl From<io::Error> for AppError {
     }
 }
 
-impl From<crate::storage::sqlite::SqliteError> for AppError {
-    fn from(error: crate::storage::sqlite::SqliteError) -> Self {
+impl From<SqliteError> for AppError {
+    fn from(error: SqliteError) -> Self {
         Self::new("META_DB_ERROR", error.to_string())
     }
 }

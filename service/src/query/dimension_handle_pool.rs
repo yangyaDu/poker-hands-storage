@@ -5,8 +5,8 @@ use std::sync::{Arc, RwLock};
 use range_store_core::DimensionReader;
 
 use crate::errors::AppError;
-use crate::storage::manifest::QueryableDimension;
 use range_store_core::dimension::DimensionRef;
+use range_store_core::manifest::QueryableDimension;
 
 #[derive(Debug)]
 pub struct HandlePool {

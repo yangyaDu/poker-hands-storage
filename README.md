@@ -63,7 +63,7 @@ poker-hands-storage/
 |   |-- src/
 |   |   |-- lib.rs                     # core 对外模块导出
 |   |   |-- types.rs                   # 存储和查询共享类型
-|   |   |-- manifest/mod.rs            # manifest.json 解析和校验
+|   |   |-- manifest.rs                # manifest.json 解析和校验
 |   |   |-- metadata.rs                # meta.db 读取、维度发现和 metadata lookup
 |   |   |-- dimension.rs               # 维度命名、解析和文件名规则
 |   |   |-- idx_reader.rs              # PFXI .idx 索引文件 reader
@@ -73,7 +73,7 @@ poker-hands-storage/
 |   |   |-- action_schema.rs           # action schema 解码和动作语义
 |   |   |-- hole_cards.rs              # 手牌字符串解析、归一化和 hand_id 映射
 |   |   |-- crc32c.rs                  # pack CRC32C 校验
-|   |   |-- sqlite/mod.rs              # SQLite 动态库加载和连接封装
+|   |   |-- sqlite.rs                  # SQLite 动态库加载和连接封装
 |   |   `-- query/
 |   |       |-- mod.rs                  # query 子模块导出
 |   |       |-- range_store_facade.rs   # HTTP/native 共用业务 facade
@@ -87,12 +87,11 @@ poker-hands-storage/
 |   |-- src/
 |   |   |-- main.rs                    # service 二进制入口，支持 serve/healthcheck
 |   |   |-- lib.rs                     # service 库入口和模块导出
-|   |   |-- config/                    # PHS_* 环境变量解析
-|   |   |-- errors/                    # AppError 和业务错误映射
+|   |   |-- config.rs                  # PHS_* 环境变量解析
+|   |   |-- errors.rs                  # AppError 和业务错误映射
 |   |   |-- http/                      # axum router、OpenAPI、response、healthcheck
 |   |   |-- routes/                    # /range/*、/health、/ready 路由 handler
-|   |   |-- query/                     # HTTP 层查询服务和维度 handle pool wrapper
-|   |   `-- storage/                   # service 侧 metadata 存储入口
+|   |   `-- query/                     # HTTP 层查询服务和维度 handle pool wrapper
 |   `-- tests/                         # HTTP 路由、配置和 service 集成测试
 |
 |-- range-store-native/
@@ -113,19 +112,15 @@ poker-hands-storage/
 |   |   |-- lib.rs                     # storage-tools 库入口
 |   |   |-- errors.rs                  # ToolError 错误类型
 |   |   |-- metadata.rs                # 构建阶段写入 meta.db
-|   |   |-- range_store_builder/       # SQLite -> manifest/meta/idx/bin 构建流程
-|   |   |   |-- mod.rs                 # 构建入口 build_store()
-|   |   |   |-- build_orchestrator.rs  # 维度发现、meta.db 建表、pack 编码、文件写入
+|   |   |-- range_store_builder.rs     # SQLite -> manifest/meta/idx/bin 构建流程
 |   |   |-- verification/              # standalone/cross verify 和验证报告
 |   |   |   |-- mod.rs                 # verify 子模块导出
 |   |   |   |-- cli.rs                 # verify --mode standalone|cross 参数解析
-|   |   |   |-- standalone/mod.rs      # standalone 验证入口
-|   |   |   |-- standalone/standalone_runner.rs  # manifest/header/idx/bin/catalog 自洽检查
-|   |   |   |-- cross/mod.rs           # cross 验证入口
-|   |   |   |-- cross/source_cross_runner.rs     # 源 SQLite 与二进制 pack 逐项比对
+|   |   |   |-- standalone.rs          # manifest/header/idx/bin/catalog 自洽检查
+|   |   |   |-- cross.rs               # 源 SQLite 与二进制 pack 逐项比对
 |   |   |   |-- catalog_checks.rs      # meta.db 表结构、action_schemas、concrete_lines 表检查
 |   |   |   |-- float32_precision.rs   # IEEE754 Float32 bit-exact 精度校验
-|   |   |   |-- report/mod.rs          # 验证报告 JSON/Markdown 生成
+|   |   |   |-- report.rs              # 验证报告 JSON/Markdown 生成
 |   |   |-- benchmark/                 # hot/cold/native benchmark
 |   |   |   |-- mod.rs                 # benchmark 子模块导出
 |   |   |   |-- cli.rs                 # benchmark 参数解析

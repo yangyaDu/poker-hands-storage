@@ -6,7 +6,7 @@ use crate::routes::hand_query_routes::{
 };
 use crate::routes::health_routes::{HealthResponse, ReadyResponse};
 use crate::routes::metadata_routes::{ConcreteLinesRequest, DrillScenarioLinesRequest};
-use crate::storage::metadata::ConcreteLineRow;
+use range_store_core::metadata::ConcreteLineRow;
 
 /// Concrete response types for OpenAPI documentation.
 /// utoipa doesn't support generic `ApiResponse<T>` in path macros,

@@ -5,9 +5,9 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use range_store_core::crc32c::crc32c;
+pub use range_store_core::dimension::{discover_dimensions, DimensionSpec};
 use range_store_core::dimension::{
-    discover_dimensions, get_bin_file_name, get_drill_scenario_table_name, get_idx_file_name,
-    quote_identifier, DimensionSpec,
+    get_bin_file_name, get_drill_scenario_table_name, get_idx_file_name, quote_identifier,
 };
 use range_store_core::hole_cards::get_hand_id;
 use range_store_core::manifest::{BuildManifest, ManifestDimension};

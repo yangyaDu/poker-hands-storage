@@ -2,8 +2,8 @@ use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use poker_hands_storage_service::storage::sqlite::{Connection, Value};
 use range_store_core::crc32c::crc32c;
+use range_store_core::sqlite::{Connection, Value};
 use range_store_core::types::{IDX_HEADER_SIZE, IDX_RECORD_SIZE, PFSP_HEADER_SIZE};
 
 /// Build a minimal test store with one dimension (default:6:100) containing

@@ -316,6 +316,24 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
 
 所有 benchmark 脚本位于 `storage-tools` crate，通过不同 subcommand 选择不同引擎和模式。它们共用同一 workload 生成逻辑（`storage-tools/src/benchmark/workload.rs`），从源 SQLite 的 `range_data_*` 表抽取 hand/batch/hands-by-actions 查询样本，并从 metadata 表派生 `concrete_line` 精确 lookup 样本。
 
+### 三维度矩阵：hot / cold / native 测的是不同维度
+
+benchmark 并不是同一件事的多个版本，而是三条正交的测量轴：
+
+| 模块 | 测的核心问题 | 测量轴 | 进程模型 | 输出重点 |
+|---|---|---|---|---|
+| **hot** | 稳态吞吐有多快 | 温度轴 · 热端 | 单进程内复用 `StoreQueryService` | cases 的 p50/p90/p95/p99/qps |
+| **cold** | 冷启动代价多大 | 温度轴 · 冷端 | 每次 run 起新子进程 + 强制 evict OS page cache | 分阶段时延（open/prewarm/first-query/close）的多次重复分布 |
+| **native** | 三种实现谁快 | 实现轴 · 横向对比 | core / http-service / native-sdk 各起一个子进程 | 三路 cases 横向对比 + 各路 coldStart 上下文 |
+
+三者的正交关系：
+
+- **hot vs cold** 是温度轴的两端 -- hot 回答"已热状态下能跑多快"，cold 回答"从冷到能回答一次查询要多久"。
+- **native** 不再测温度，而是把同一 workload 喂给三种实现（Rust 直调 / Bun SDK / HTTP），看实现间相对差异。native 的 cases 部分本质也是热路径，但额外记录 coldStart 作为附加上下文。
+- 三者不能互相替代：hot 看"够不够快"，cold 看"首次查询会不会卡"，native 看"三种接法谁更划算"。
+
+后续按维度一（hot）、维度二（cold）、维度三（native）组织，每个维度内含 Binary 主测、SQLite baseline、二者对比三步。
+
 ### 统一 workload 机制
 
 workload 是每个 benchmark 的输入基础，包含：
@@ -337,7 +355,11 @@ workload 是每个 benchmark 的输入基础，包含：
 
 workload 可以通过 `--write-workload` 导出为 JSON，供多个 benchmark 复用。也可以通过 `--workload` 加载已有 JSON，避免重新生成。
 
-### 1. 热路径 Binary benchmark
+### 维度一：热路径（hot）-- 稳态吞吐
+
+热路径 benchmark 关注"已预热状态下单实现能跑多快"。流程：单进程内打开 `StoreQueryService` -> `prewarm_workload_dimensions` 全维度预热 -> 每个 case 再各自 warmup -> 进入计时循环。分 Binary 主测、SQLite baseline、二者对比三步。
+
+#### 1.1 Binary hot benchmark
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark `
@@ -372,7 +394,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 **报告：** `reports/benchmark-range-strata-binary.json` / `.md`
 包含 QPS、avg、p50、p95、p99、max、error count、内存快照。
 
-### 2. SQLite baseline benchmark
+#### 1.2 SQLite baseline benchmark
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-sqlite `
@@ -398,7 +420,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 **报告：** `reports/benchmark-sqlite.json` / `.md`
 
-### 3. Binary vs SQLite 对比
+#### 1.3 Binary vs SQLite 对比
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-compare `
@@ -419,7 +441,11 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 
 **报告：** `reports/benchmark-compare.json` / `.md`
 
-### 4. 冷启动 benchmark
+### 维度二：冷启动（cold）-- 首次查询代价
+
+冷启动 benchmark 关注"从冷到能回答一次查询要多久"。每次 run 的流程：`evict_cache` -> 起新 worker 子进程 -> open service -> prewarm 一个维度 -> **只查一次** -> close。不做 warmup，不重复查询，强调 OS page cache 被清掉的真冷启动，多次重复测分布。
+
+#### 2.1 Binary cold benchmark
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-cold `
@@ -436,24 +462,27 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
   [--max-errors-per-dimension 3]
 ```
 
-**测量阶段：**
+测量的分阶段时延（worker 内）：
 
 | 阶段 | 说明 |
 |---|---|
-| `import` | Native SDK 模块加载（仅 native-sdk 模式） |
-| `constructor` | RangeStoreFacade 构造（manifest 解析 + SQLite 连接打开） |
-| `warmup` | prewarm 打开维度文件 |
-| `first-query` | 首次查询（含 mmap 创建 + 首次 pack 解码） |
-| `process-cold` | 新进程打开 + 查询（含 OS page cache 驱逐） |
+| `service_open` | `StoreQueryService::open_with_meta` 打开 manifest + meta.db |
+| `dimension_prewarm` | `service.prewarm(&dimension)` 打开维度文件、建立 mmap |
+| `first_query` | 首次查询（含首次 pack 解码） |
+| `close` | drop service |
+| `worker_total` | worker 子进程端到端总时延 |
 
-**缓存驱逐策略：**
+缓存驱逐策略（`--mode`）：
 
-- `--mode process-cold`：新进程模式，不强制驱逐 OS page cache
-- `--mode os-cold`：通过写入 filler 文件驱逐 OS page cache（需要 root/admin 权限）
+| 模式 | 行为 | 适用平台 |
+|---|---|---|
+| `process-cold` | 仅新进程模式，**不**驱逐 OS page cache | 全平台 |
+| `os-best-effort` | 通过写入 filler 文件（默认 max(512MB, dataset*2)）尽力挤掉 OS page cache | 全平台（需足够磁盘空间） |
+| `linux-drop-cache` | 直接写 `/proc/sys/vm/drop_caches` 强制清 cache | Linux，需 root |
 
-**报告：** `reports/benchmark-cold-start.json` / `.md`
+报告：`reports/benchmark-cold-start.json` / `.md`
 
-SQLite cold 对比：
+#### 2.2 SQLite cold baseline
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-sqlite-cold `
@@ -463,7 +492,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
   --runs 10
 ```
 
-Cold 对比：
+#### 2.3 Cold 对比
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-cold-compare `
@@ -471,7 +500,9 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
   --sqlite reports\benchmark-sqlite-cold-start.json
 ```
 
-### 5. Native benchmark（core / SDK / HTTP 公平对比）
+### 维度三：实现横向对比（native）-- core / SDK / HTTP 公平对比
+
+native benchmark 不再测温度，而是把同一 workload 喂给三种实现，看实现间相对差异。三路用同一份 workload JSON、按 `--seed` 随机化执行顺序，分别跑在独立子进程里，避免 OS 调度偏差。
 
 ```powershell
 cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-native `
@@ -490,7 +521,7 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
   [--warmup-iterations 5]
 ```
 
-**工作原理：** 用同一 workload JSON 在三个独立子进程中并行测试：
+#### 三路 Worker
 
 | Worker | 入口 | 说明 |
 |---|---|---|
@@ -498,15 +529,34 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchm
 | `native-sdk` | `range-store-native` (Bun/NAPI) | 通过 NAPI 桥接，含 JS→Rust 序列化 |
 | `http-service` | HTTP REST API | 通过 localhost HTTP 请求，含网络往返 |
 
-每个 worker 独立测量：
-- 内存快照（import/constructor/warmup 前后）
-- metadata lookup：`concrete-lines-exact` 按 `concrete_line` 精确解析 `concrete_line_id`；`drill-scenarios-metadata` 按 drill 条件读取 abstract lines
-- 策略/范围查询：`hand-strategy`、`batch-hand-strategy`、`batch-size-*`、`hands-by-actions`
-- 组合链路：`line-to-hands-by-actions`，先做 `concrete_line -> concrete_line_id`，再执行 `hands-by-actions`
+#### 每个 worker 内部的测量
+
+每个 worker 内部都先走一遍冷启动上下文（计入 `coldStart` 字段），然后才跑真正的 cases（热路径）：
+
+1. import（仅 Bun SDK）/ constructor / first query / explicit warmup -> 记录到 `coldStart`
+2. 然后才跑真正的 cases（热路径，和 hot benchmark 同构）
+
+所以 native 的输出有两层：
+
+- **cases 横向对比**（主）：三路的 `concrete-lines-exact` / `hand-strategy` / `batch-hand-strategy` / `batch-size-*` / `hands-by-actions` / `drill-scenarios-metadata` / `line-to-hands-by-actions`，含 p50/p90/p95/p99/qps
+- **coldStart 上下文**（辅）：三路各自的 import/constructor/firstQuery/warmup 时延 + 各阶段内存快照
+
+#### native coldStart vs cold benchmark 的区别
+
+两者都涉及"冷启动"，但口径不同：
+
+| | native coldStart | cold benchmark |
+|---|---|---|
+| 目的 | 三路实现启动代价的附加上下文 | 专门测冷启动时延分布 |
+| OS page cache | 跨 worker **共享**（不驱逐） | 每次 run **强制驱逐** |
+| 重复次数 | 单次记录 | `--runs` 多次重复测分布 |
+| 是否单独 case | 否，仅作上下文 | 是，主输出 |
+
+#### 额外 case 与边界说明
+
+native 额外测了 `line-to-hands-by-actions`：先做 `concrete_line -> concrete_line_id`，再执行 `hands-by-actions`，覆盖组合链路。
 
 `concrete-lines-exact` 和 `drill-scenarios-metadata` 都走 `meta.db` + `CachedMetadataReader`，只是业务入口和 SQL 表不同。当前 Native benchmark 单独输出的是 concrete-line exact lookup；`abstract_line`、`concrete_line`、`abstract_line + concrete_line` 三种筛选语义由接口一致性测试覆盖，不作为这里的三个独立性能 case。
-
-**随机化执行顺序：** 通过 `--seed` 随机化三个 worker 的执行顺序，避免 OS 调度偏差。
 
 ### 报告生成代码边界
 
@@ -537,7 +587,7 @@ benchmark 报告代码统一收敛到外层 `benchmark/report.rs`，低层写文
 | `--verify-results` | hot | 前 100 条查询结果与源 SQLite 校验 |
 | `--verify-checksum` | hot/cold | 查询时校验 pack CRC32C |
 | `--runs` | cold | 每个维度的运行次数 |
-| `--mode` | cold | `process-cold`（新进程）或 `os-cold`（驱逐 page cache） |
+| `--mode` | cold | `process-cold` / `os-best-effort` / `linux-drop-cache`（见维度二缓存驱逐策略表） |
 | `--cache-filler-mb` | cold | 用于驱逐 OS page cache 的 filler 文件大小 |
 | `--query-policy` | cold | `all`（所有维度）或 `fixed`（固定 concrete_line_id） |
 | `--fixed-concrete-line-id` | cold | 固定查询的 concrete_line_id |
@@ -551,5 +601,5 @@ benchmark 报告代码统一收敛到外层 `benchmark/report.rs`，低层写文
 - 对比前确保 Binary 和 SQLite 使用相同 workload（通过 `--workload` 复用 JSON）
 - 冷启动结果需区分：进程启动、metadata 打开、mmap 创建、首次查询、OS page-cache 影响
 - `process-cold` 不强制驱逐 OS page cache，只代表当前机器的新进程 open/query 成本
-- Native benchmark 的 OS page cache 仍跨 worker 进程共享，多次运行取稳定值
+- Native benchmark 的 OS page cache 仍跨 worker 进程共享，多次运行取稳定值；其 `coldStart` 字段是附加上下文，不等同于 cold benchmark 的驱逐式冷启动测量
 - 正式 benchmark 结论只更新 `docs/binary-vs-sqlite-benchmark-and-verification-report.md`

@@ -10,8 +10,8 @@ use crate::http::request_validation::{
     ALLOWED_STRATEGIES,
 };
 use crate::http::{ApiResponse, AppState, HttpError};
-use crate::storage::metadata::{ConcreteLineFilter, ConcreteLineRow};
 use range_store_core::dimension::DimensionRef;
+use range_store_core::metadata::{ConcreteLineFilter, ConcreteLineRow};
 
 #[derive(Deserialize, ToSchema)]
 pub struct ConcreteLinesRequest {

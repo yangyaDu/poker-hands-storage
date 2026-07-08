@@ -15,19 +15,19 @@ tempfile = "3"
 
 [[test]]
 name = "range_store_builder_build_orchestrator_test"
-path = "tests/range_store_builder/build_orchestrator.test.rs"
+path = "tests/range_store_builder_build_orchestrator.test.rs"
 
 [[test]]
 name = "verification_float32_precision_test"
 path = "tests/verification/float32_precision.test.rs"
 
 [[test]]
-name = "verification_source_cross_runner_test"
-path = "tests/verification/cross/source_cross_runner.test.rs"
+name = "verification_cross_test"
+path = "tests/verification/cross.test.rs"
 
 [[test]]
-name = "verification_standalone_runner_test"
-path = "tests/verification/standalone/standalone_runner.test.rs"
+name = "verification_standalone_test"
+path = "tests/verification/standalone.test.rs"
 
 [[test]]
 name = "verification_markdown_report_test"
