@@ -1,4 +1,4 @@
-# SQLite 与二进制数据一致性验证报告
+# 数据验证与 Benchmark 脚本介绍
 
 更新日期：2026-07-05
 
@@ -20,7 +20,8 @@
 | 格式自洽 | `manifest.json`、`meta.db`、`.idx`、`.bin`、header、record 边界、CRC32C | `storage-tools verify --mode standalone` |
 | 源数据一致性 | 二进制解码结果与源 SQLite `range_data_*` rows 对齐 | `storage-tools verify --mode cross` |
 | Float32 精度 | `frequency`、`hand_ev` 按 IEEE754 Float32 bit-exact 比对 | cross verify |
-| 查询结果抽样 | benchmark workload 下 Binary 和 SQLite result count / case 兼容性 | `benchmark --verify-results`、`benchmark-compare` |
+| Benchmark 结果一致性 | Binary vs SQLite 查询结果 count 兼容 | `benchmark --verify-results`、`benchmark-compare` |
+| Native 运行时一致性 | core / SDK / HTTP 三路公平对比 | `benchmark-native` |
 | API 边界 | HTTP 路由、OpenAPI、请求校验、错误码、batch 单项错误 | `service/tests/http/*` |
 | Native 边界 | Bun SDK envelope、lazy schema cache、native 与 HTTP 抽样一致性 | `range-store-native/tests/*` |
 
@@ -306,3 +307,228 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify
 - Cross verify 依赖源 SQLite 和二进制产物来自同一数据版本。
 - `sourceDbChecksum` 可用于人工核对，但工具链仍应保证构建和验证使用同一源库。
 - `PHS_VERIFY_CHECKSUMS=true` 会让运行时查询也做 CRC32C 检查，但会增加每次查询成本。
+
+---
+
+## Benchmark 脚本总览
+
+所有 benchmark 脚本位于 `storage-tools` crate，通过不同 subcommand 选择不同引擎和模式。它们共用同一 workload 生成逻辑（`storage-tools/src/benchmark/workload.rs`），从源 SQLite 的 `range_data_*` 表抽取 hand/batch/hands-by-actions 查询样本。
+
+### 统一 workload 机制
+
+workload 是每个 benchmark 的输入基础，包含：
+
+| 字段 | 说明 |
+|---|---|
+| `hand_queries` | 单手策略查询样本（concrete_line_id + hole_cards） |
+| `batch_queries` | 默认批量查询样本（同 `--batch-size`） |
+| `batch_queries_by_size` | 多批量大小样本（1, 5, 10, 50, 100） |
+| `hands_by_actions_queries` | hands-by-actions 查询样本 |
+| `drill_scenario_queries` | drill scenario metadata 查询样本 |
+| `dimensions` | 涉及的维度列表 |
+
+workload 可以通过 `--write-workload` 导出为 JSON，供多个 benchmark 复用。也可以通过 `--workload` 加载已有 JSON，避免重新生成。
+
+### 1. 热路径 Binary benchmark
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  [--verify-results] `
+  [--dimension default:6:100] `
+  [--workload workload.json] `
+  [--write-workload workload.json] `
+  [--seed 42] `
+  [--iterations 3] `
+  [--hand-iterations 100] `
+  [--batch-iterations 50] `
+  [--batch-size 10] `
+  [--batch-sizes 1,5,10,50,100] `
+  [--warmup-iterations 5] `
+  [--workload-mode random|abstract-local] `
+  [--verify-checksum]
+```
+
+**测量内容：**
+
+| Case | 说明 |
+|---|---|
+| `hand-strategy` | 单 concrete_line_id + hand 查询，通过 `StoreQueryService::query()` 解码 pack |
+| `batch-hand-strategy` | 默认批量大小（`--batch-size`）的 batch 查询，通过 `StoreQueryService::query_batch()` |
+| `batch-size-{N}` | 各批量大小的 sweep 用例 |
+| `hands-by-actions` | 完整解码 pack，按 action filter + frequency 阈值匹配手牌 |
+| `drill-scenarios-metadata` | 从 meta.db 查询 drill scenario abstract lines |
+
+**报告：** `reports/benchmark-range-strata-binary.json` / `.md`
+包含 QPS、avg、p50、p95、p99、max、error count、内存快照。
+
+### 2. SQLite baseline benchmark
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-sqlite `
+  --source data\sqlite\range.db `
+  [--workload workload.json] `
+  [--write-workload workload.json] `
+  [--seed 42] `
+  [--iterations 3] `
+  [--hand-iterations 100] `
+  [--batch-iterations 50] `
+  [--batch-size 10] `
+  [--batch-sizes 1,5,10,50,100] `
+  [--warmup-iterations 5]
+```
+
+**测量内容：** 与 Binary benchmark 相同的 5 个 case，但直接查询源 SQLite `range_data_*` 表。
+
+- `hand-strategy`: `SELECT ... FROM range_data_{strategy}_{N}max_{BB}BB WHERE concrete_line_id=? AND hole_cards=?`
+- `batch-hand-strategy`: 批量 UNION ALL 查询
+- `hands-by-actions`: `SELECT DISTINCT hole_cards FROM ... WHERE concrete_line_id=? AND frequency > ?`
+- `drill-scenarios-metadata`: 查询 `drill_scenario_lines_{strategy}` 表
+
+**报告：** `reports/benchmark-sqlite.json` / `.md`
+
+### 3. Binary vs SQLite 对比
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-compare `
+  --binary reports\benchmark-range-strata-binary.json `
+  --sqlite reports\benchmark-sqlite.json `
+  [--out reports\benchmark-compare.json] `
+  [--md reports\benchmark-compare.md] `
+  [--allow-mismatch]
+```
+
+**对比逻辑：**
+
+- 校验 workload 兼容性（dimensions、hand/batch/hands-by-actions 查询数量必须一致）
+- 按 case 名匹配 Binary 和 SQLite 报告
+- 计算延迟比（Binary / SQLite，>1 表示 Binary 更慢）
+- 计算 QPS 比（Binary / SQLite，<1 表示 Binary 吞吐更低）
+- 报告每个 case 的 error count 差异
+
+**报告：** `reports/benchmark-compare.json` / `.md`
+
+### 4. 冷启动 benchmark
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-cold `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --mode process-cold `
+  --runs 10 `
+  [--dimension default:6:100] `
+  [--cache-filler-mb 512] `
+  [--query-policy all|fixed] `
+  [--fixed-concrete-line-id 1] `
+  [--fixed-hand AA] `
+  [--fail-fast] `
+  [--max-errors-per-dimension 3]
+```
+
+**测量阶段：**
+
+| 阶段 | 说明 |
+|---|---|
+| `import` | Native SDK 模块加载（仅 native-sdk 模式） |
+| `constructor` | RangeStoreFacade 构造（manifest 解析 + SQLite 连接打开） |
+| `warmup` | prewarm 打开维度文件 |
+| `first-query` | 首次查询（含 mmap 创建 + 首次 pack 解码） |
+| `process-cold` | 新进程打开 + 查询（含 OS page cache 驱逐） |
+
+**缓存驱逐策略：**
+
+- `--mode process-cold`：新进程模式，不强制驱逐 OS page cache
+- `--mode os-cold`：通过写入 filler 文件驱逐 OS page cache（需要 root/admin 权限）
+
+**报告：** `reports/benchmark-cold-start.json` / `.md`
+
+SQLite cold 对比：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-sqlite-cold `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --mode process-cold `
+  --runs 10
+```
+
+Cold 对比：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-cold-compare `
+  --binary reports\benchmark-cold-start.json `
+  --sqlite reports\benchmark-sqlite-cold-start.json
+```
+
+### 5. Native benchmark（core / SDK / HTTP 公平对比）
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- benchmark-native `
+  --dir data\range-strata `
+  --source data\sqlite\range.db `
+  --native-entry range-store-native\index.js `
+  --http-service-bin target\x86_64-pc-windows-msvc\debug\poker-hands-storage-service.exe `
+  [--seed 42] `
+  [--workload workload.json] `
+  [--write-workload workload.json] `
+  [--dimension default:6:100] `
+  [--batch-size 10] `
+  [--batch-sizes 1,5,10,50,100] `
+  [--hand-iterations 100] `
+  [--batch-iterations 50] `
+  [--warmup-iterations 5]
+```
+
+**工作原理：** 用同一 workload JSON 在三个独立子进程中并行测试：
+
+| Worker | 入口 | 说明 |
+|---|---|---|
+| `core` | `StoreQueryService` (Rust) | 直接调用 range-store-core API，无序列化开销 |
+| `native-sdk` | `range-store-native` (Bun/NAPI) | 通过 NAPI 桥接，含 JS→Rust 序列化 |
+| `http-service` | HTTP REST API | 通过 localhost HTTP 请求，含网络往返 |
+
+每个 worker 独立测量：
+- 内存快照（import/constructor/warmup 前后）
+- metadata lookup：`concrete-lines-exact` 按 `concrete_line` 精确解析 `concrete_line_id`；`drill-scenarios-metadata` 按 drill 条件读取 abstract lines
+- 策略/范围查询：`hand-strategy`、`batch-hand-strategy`、`batch-size-*`、`hands-by-actions`
+- 组合链路：`line-to-hands-by-actions`，先做 `concrete_line -> concrete_line_id`，再执行 `hands-by-actions`
+
+`concrete-lines-exact` 和 `drill-scenarios-metadata` 都走 `meta.db` + `CachedMetadataReader`，只是业务入口和 SQL 表不同。当前 Native benchmark 单独输出的是 concrete-line exact lookup；`abstract_line`、`concrete_line`、`abstract_line + concrete_line` 三种筛选语义由接口一致性测试覆盖，不作为这里的三个独立性能 case。
+
+**随机化执行顺序：** 通过 `--seed` 随机化三个 worker 的执行顺序，避免 OS 调度偏差。
+
+### 控制参数总览
+
+| 参数 | 适用 | 说明 |
+|---|---|---|
+| `--seed` | 所有 | 随机种子，控制 workload 生成和 native benchmark 执行顺序 |
+| `--iterations` | hot | 总迭代次数 |
+| `--hand-iterations` | hot | 单手查询迭代次数 |
+| `--batch-iterations` | hot | 批量查询迭代次数 |
+| `--batch-size` | hot | 默认批量大小 |
+| `--batch-sizes` | hot | 批量大小 sweep 列表 |
+| `--warmup-iterations` | hot | 预热迭代次数（不计入结果） |
+| `--workload-mode` | hot | `random`（随机采样）或 `abstract-local`（按 abstract_line 本地化） |
+| `--workload` | hot/sqlite/native | 加载已有 workload JSON |
+| `--write-workload` | hot/sqlite/native | 导出 workload JSON |
+| `--dimension` | 所有 | 指定维度过滤（`default:6:100` 或 `default_6max_100BB`） |
+| `--verify-results` | hot | 前 100 条查询结果与源 SQLite 校验 |
+| `--verify-checksum` | hot/cold | 查询时校验 pack CRC32C |
+| `--runs` | cold | 每个维度的运行次数 |
+| `--mode` | cold | `process-cold`（新进程）或 `os-cold`（驱逐 page cache） |
+| `--cache-filler-mb` | cold | 用于驱逐 OS page cache 的 filler 文件大小 |
+| `--query-policy` | cold | `all`（所有维度）或 `fixed`（固定 concrete_line_id） |
+| `--fixed-concrete-line-id` | cold | 固定查询的 concrete_line_id |
+| `--fixed-hand` | cold | 固定查询的 hole_cards |
+| `--fail-fast` | cold | 遇到失败立即停止 |
+| `--max-errors-per-dimension` | cold | 每个维度最大允许错误数 |
+
+### 注意事项
+
+- 不同 workload mode、dimension、sample set 的报告不可直接对比
+- 对比前确保 Binary 和 SQLite 使用相同 workload（通过 `--workload` 复用 JSON）
+- 冷启动结果需区分：进程启动、metadata 打开、mmap 创建、首次查询、OS page-cache 影响
+- `process-cold` 不强制驱逐 OS page cache，只代表当前机器的新进程 open/query 成本
+- Native benchmark 的 OS page cache 仍跨 worker 进程共享，多次运行取稳定值
+- 正式 benchmark 结论只更新 `docs/binary-vs-sqlite-benchmark-and-verification-report.md`

@@ -14,7 +14,7 @@
 | 文件格式、pack 编码、查询流程 | `docs/range-db-binary-storage-design.md` |
 | HTTP API 请求/响应、错误码、业务语义 | `docs/api-business-contract.md` |
 | Bun/Node native SDK API、构建测试、生产接入边界和查询链路 | `docs/sdk-and-query-chain-explanation.md` |
-| standalone/cross verify、Float32、checksum、发布前验证 | `docs/data-verification-and-format-validation.md` |
+| standalone/cross verify、Float32、checksum、发布前验证、benchmark 脚本介绍 | `docs/verification_and_benchmark.md` |
 | 性能、体积、内存、benchmark 方法和结论 | `docs/binary-vs-sqlite-benchmark-and-verification-report.md` |
 | Docker/Compose/Kubernetes、发布、回滚、prewarm | `docs/docker-deployment-guide.md` |
 | 代码级构建和查询数据流速查 | `docs/data-flow-overview.md` |
@@ -53,18 +53,18 @@
 
 1. `range-db-binary-storage-design.md`
 2. `data-flow-overview.md`
-3. `data-verification-and-format-validation.md`
+3. `verification_and_benchmark.md`
 
 性能和验收：
 
 1. `binary-vs-sqlite-benchmark-and-verification-report.md`
-2. `data-verification-and-format-validation.md`
+2. `verification_and_benchmark.md`
 3. `roadmap.md`
 
 部署和发布：
 
 1. `docker-deployment-guide.md`
-2. `data-verification-and-format-validation.md`
+2. `verification_and_benchmark.md`
 3. `roadmap.md`
 
 ## 模块边界
@@ -81,7 +81,7 @@
 ## 报告口径
 
 - benchmark 数字只在 `binary-vs-sqlite-benchmark-and-verification-report.md` 更新。
-- verification 覆盖面和命令只在 `data-verification-and-format-validation.md` 更新。
+- verification 覆盖面和命令只在 `verification_and_benchmark.md` 更新。
 - API 语义只在 `api-business-contract.md` 更新。
 - 生产部署和回滚只在 `docker-deployment-guide.md` 更新。
 - 下一步任务只在 `roadmap.md` 更新。

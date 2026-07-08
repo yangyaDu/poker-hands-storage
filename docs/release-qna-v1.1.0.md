@@ -21,17 +21,30 @@
 
 ### Q: pack 格式 `hand_count * (5 + action_count * 8)` 里，action_count 是从哪里来的？不同 concrete_line 的 action_count 不同怎么办？
 
-**回答**：action_count 是从 idx record 里的 `byte_length` 和 `hand_count` 反推出来的，公式在 `action_count_from_pack()` 中：
+**回答**：有两个口径，但它们在正确产物中必须一致。
+
+- `meta.db.action_schemas.action_count` 是 schema 层的权威语义值，表示这个 `action_schema_id` 下有多少个 action definition。
+- `.idx` record 里的 `byte_length` 和 `hand_count` 可以反推出该 pack 物理布局中的 `action_count`。运行时热路径用这个反推值来切分 pack：
 
 ```rust
 action_count = (byte_length / hand_count - 5) / 8
 ```
 
-这意味着同一个 dimension 的不同 concrete_line 可以有不同数量的 actions。比如一个 line 只有 fold+call 两个动作（action_count=2），另一个 line 可能有 15 个动作。每个 pack 的 byte_length 不同，但 hand_count 相同（都是该 concrete_line 实际出现的手牌数）。
+`.idx` record 同时保存 `action_schema_id`，所以同一条 concrete line 的完整解释链路是：
 
-不同 action_count 的 pack 直接顺序拼接在 .bin 文件中，通过 idx record 中的 byte_length 字段分隔。解码时先读 idx record 拿到 byte_length，反推 action_count，再决定如何解析 pack 内部结构。
+```text
+concrete_line_id -> idx record(action_schema_id, hand_count, byte_length, offset)
+                 -> 由 hand_count + byte_length 反推 pack action_count
+                 -> 通过 action_schema_id 查 action_schemas.action_count/action_blob
+```
 
-这也意味着 pack 之间不是定长的——这是有意的设计取舍。定长 pack 可以实现更简单的 offset 计算，但会为 action_count 小的 concrete_line 浪费大量空间。我们的数据中 action_count 差异很大（从 2 到 30+），所以选择了变长。
+这两个 `action_count` 不应该各说各话：standalone verify 会用 `action_schemas.action_count` 校验 `.idx.byte_length` 是否等于 `hand_count * (5 + action_count * 8)`。如果不一致，说明构建产物损坏或构建逻辑有 bug，应该 fail fast，而不是在运行时容忍。
+
+同一个 dimension 的不同 concrete_line 可以有不同数量的 actions。比如一个 line 只有 fold+call 两个动作（action_count=2），另一个 line 可能有 15 个动作。每个 concrete line 指向自己的 `action_schema_id`，也有自己的 `byte_length`，所以 pack 可以是变长的。
+
+不同 action_count 的 pack 直接顺序拼接在 .bin 文件中，通过 idx record 中的 `offset + byte_length` 分隔。解码时先读 idx record 拿到 pack 边界和物理布局，再用 `action_schema_id` 找 schema，把 action_id 翻译成业务 action name、size 和 amount。
+
+这也意味着 pack 之间不是定长的——这是有意的设计取舍。定长 pack 可以实现更简单的 offset 计算，但会为 action_count 小的 concrete_line 浪费大量空间。我们的数据中 action_count 差异很大，所以选择了变长，并用 verify 保证 schema 语义值和 pack 物理长度一致。
 
 ### Q: ActionSchemaCache 用了 Mutex + RwLock 的双重锁结构，为什么不直接用 HashMap？
 

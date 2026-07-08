@@ -125,7 +125,7 @@ poker-hands-storage/
 |   |-- api-business-contract.md       # HTTP API 契约、错误码和业务语义
 |   |-- range-db-binary-storage-design.md # 二进制格式、pack 编码和查询流程
 |   |-- data-flow-overview.md          # 从构建到查询的代码级数据流
-|   |-- data-verification-and-format-validation.md # 验证覆盖面和发布前校验
+|   |-- verification_and_benchmark.md # 验证覆盖面、Float32 策略、benchmark 脚本介绍和发布前校验
 |   |-- binary-vs-sqlite-benchmark-and-verification-report.md # 性能、体积、内存和 benchmark 结论
 |   `-- docker-deployment-guide.md     # Docker/Compose/Kubernetes、发布和回滚
 |
@@ -241,7 +241,7 @@ bun run test:sdk
 | [docs/range-db-binary-storage-design.md](docs/range-db-binary-storage-design.md) | 文件格式、pack 编码、查询流程和运行时约束 |
 | [docs/api-business-contract.md](docs/api-business-contract.md) | HTTP API 请求/响应、错误码和业务语义 |
 | [docs/sdk-and-query-chain-explanation.md](docs/sdk-and-query-chain-explanation.md) | Bun/Node native SDK API、构建测试、生产接入边界和查询链路 |
-| [docs/data-verification-and-format-validation.md](docs/data-verification-and-format-validation.md) | standalone/cross verify、Float32 策略和发布前验证 |
+| [docs/verification_and_benchmark.md](docs/verification_and_benchmark.md) | standalone/cross verify、Float32 策略、benchmark 脚本和发布前验证 |
 | [docs/binary-vs-sqlite-benchmark-and-verification-report.md](docs/binary-vs-sqlite-benchmark-and-verification-report.md) | 性能、体积、内存和 benchmark 结论 |
 | [docs/docker-deployment-guide.md](docs/docker-deployment-guide.md) | Docker/Compose/Kubernetes、发布和回滚 |
 | [docs/data-flow-overview.md](docs/data-flow-overview.md) | 构建到查询的代码级数据流速查 |

@@ -115,7 +115,9 @@ function countBatchActions(response) {
   let total = 0;
   for (const item of response.results) {
     if (item.error) {
-      throw new Error(item.error);
+      throw new Error(
+        typeof item.error === "object" ? item.error.message : item.error,
+      );
     }
     total += item.actions?.length ?? 0;
   }
@@ -136,16 +138,9 @@ function readApiData(response) {
   return response;
 }
 
-function countBatchActionsEnvelope(response) {
+function countBatchActionsResponse(response) {
   const data = readApiData(response);
-  let total = 0;
-  for (const item of data.results) {
-    if (item.error) {
-      throw new Error(item.error.message);
-    }
-    total += item.actions?.length ?? 0;
-  }
-  return total;
+  return countBatchActions(data);
 }
 
 function handsByActionsRequest(item, concreteLineId) {
@@ -211,7 +206,7 @@ function pushStoreCases(cases, mode, store) {
   cases.push(
     measureCase(
       `${prefix}:hand-strategy`,
-      `Single concrete_line_id + hand query through ${prefix} business envelope API.`,
+      `Single concrete_line_id + hand query through ${prefix}.`,
       input.workload.handQueries,
       input.warmupIterations,
       (item) =>
@@ -231,7 +226,7 @@ function pushStoreCases(cases, mode, store) {
       input.workload.batchQueries,
       input.warmupIterations,
       (item) =>
-        countBatchActionsEnvelope(
+        countBatchActionsResponse(
           store.queryBatch({
             ...dimensionRequest(item),
             items: item.requests,
@@ -244,11 +239,11 @@ function pushStoreCases(cases, mode, store) {
     cases.push(
       measureCase(
         `${prefix}:batch-size-${size}`,
-        `Run ${size} lookups per batch through ${prefix} business envelope API.`,
+        `Run ${size} lookups per batch through ${prefix}.`,
         queries,
         input.warmupIterations,
         (item) =>
-          countBatchActionsEnvelope(
+          countBatchActionsResponse(
             store.queryBatch({
               ...dimensionRequest(item),
               items: item.requests,
@@ -317,7 +312,7 @@ function warmupStore(mode, store) {
     ).actions.length,
   );
   runWarmupItems(input.workload.batchQueries, input.warmupIterations, (item) =>
-    countBatchActionsEnvelope(
+    countBatchActionsResponse(
       store.queryBatch({
         ...dimensionRequest(item),
         items: item.requests,
@@ -326,7 +321,7 @@ function warmupStore(mode, store) {
   );
   for (const [, queries] of input.workload.batchQueriesBySize) {
     runWarmupItems(queries, input.warmupIterations, (item) =>
-      countBatchActionsEnvelope(
+      countBatchActionsResponse(
         store.queryBatch({
           ...dimensionRequest(item),
           items: item.requests,

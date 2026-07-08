@@ -54,7 +54,7 @@ cargo test --workspace --target x86_64-pc-windows-msvc
 | 下一步任务 / 验收条件 | `docs/roadmap.md` |
 | API 路由 / 请求 / 响应 | `docs/api-business-contract.md` |
 | 二进制格式 / 存储布局 | `docs/range-db-binary-storage-design.md` |
-| 验证逻辑 | `docs/data-verification-and-format-validation.md` |
+| 验证逻辑 | `docs/verification_and_benchmark.md` |
 | benchmark 结果 / 性能结论 | `docs/binary-vs-sqlite-benchmark-and-verification-report.md` |
 | Bun/Node native SDK | `docs/native-sdk.md` |
 | Docker / 运行时 | `docs/docker-deployment-guide.md` |

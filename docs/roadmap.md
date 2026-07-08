@@ -7,7 +7,7 @@
 本文只维护当前剩余工作、优先级和验收条件。已完成能力的命令、数据表和接口细节分别放在专项文档中：
 
 - benchmark 结论：`binary-vs-sqlite-benchmark-and-verification-report.md`
-- verification 结论：`data-verification-and-format-validation.md`
+- verification 结论：`verification_and_benchmark.md`
 - API 契约：`api-business-contract.md`
 - Docker 发布：`docker-deployment-guide.md`
 - native SDK：`sdk-and-query-chain-explanation.md`
@@ -74,7 +74,7 @@
 
 验收条件：
 
-- 边界 case 清单同步到 `data-verification-and-format-validation.md` 或 `api-business-contract.md` 的对应章节。
+- 边界 case 清单同步到 `verification_and_benchmark.md` 或 `api-business-contract.md` 的对应章节。
 - 发布目录重跑必要 standalone/cross verify。
 - 重跑必要 benchmark 并刷新报告日期和输入数据说明。
 

@@ -205,17 +205,19 @@ for action_id in 0..action_count {
 1. 从 SQLite 源数据中按种子随机采样 workload（保证可复现）
 2. 打开 `StoreQueryService`（max_open_handles=100，预加载所有需要的维度）
 3. 预加载 workload 涉及的所有维度：`service.prewarm(&dimension)`
-4. 对以下 5 类查询执行多次测量，记录延迟和 QPS
+4. 对 metadata lookup、策略/范围查询和组合链路执行多次测量，记录延迟和 QPS
 
 **测量的查询类型**：
 
-| 查询类型                   | 代码路径                                          | 说明                                           |
-| -------------------------- | ------------------------------------------------- | ---------------------------------------------- |
-| `hand-strategy`            | `service.query()`                                 | 单手牌查询，一次 idx lookup + 一次 pack decode |
-| `batch-hand-strategy`      | `service.query_batch()`                           | 批量查询，默认 batch_size                      |
-| `batch-size-{N}`           | `service.query_batch()`                           | 批量大小扫掠 [1, 5, 10, 50, 100]               |
-| `hands-by-actions`         | `service.query_hands_by_actions()`                | 解码整个 pack + 位掩码过滤                     |
-| `drill-scenarios-metadata` | `CachedMetadataReader.get_drill_scenario_lines()` | 查询 drill 场景的抽象线路                      |
+| 查询类型                   | 分类 | 代码路径                                          | 说明                                           |
+| -------------------------- | ---- | ------------------------------------------------- | ---------------------------------------------- |
+| `concrete-lines-exact`     | metadata lookup | `facade.get_concrete_lines()`                     | 按 `concrete_line` 精确解析 `concrete_line_id` |
+| `drill-scenarios-metadata` | metadata lookup | `CachedMetadataReader.get_drill_scenario_lines()` | 查询 drill 场景的抽象线路                      |
+| `hand-strategy`            | strategy/range query | `service.query()`                                 | 单手牌查询，一次 idx lookup + 一次 pack decode |
+| `batch-hand-strategy`      | strategy/range query | `service.query_batch()`                           | 批量查询，默认 batch_size                      |
+| `batch-size-{N}`           | strategy/range query | `service.query_batch()`                           | 批量大小扫掠 [1, 5, 10, 50, 100]               |
+| `hands-by-actions`         | strategy/range query | `service.query_hands_by_actions()`                | 解码整个 pack + 位掩码过滤                     |
+| `line-to-hands-by-actions` | chained flow | `facade.get_concrete_lines()` + `hands_by_actions` | 先解析行动线 id，再查询该线下满足 action filter 的手牌 |
 
 **指标**：p50 / p90 / p95 / p99 延迟 + QPS
 
