@@ -61,7 +61,7 @@ poker-hands-storage/
 |-- range-store-core/
 |   |-- Cargo.toml                     # core crate 配置
 |   |-- src/
-|   |   |-- lib.rs                     # core 对外模块导出
+|   |   |-- lib.rs                     # core crate root，声明顶层模块和公共 re-export
 |   |   |-- types.rs                   # 存储和查询共享类型
 |   |   |-- manifest.rs                # manifest.json 解析和校验
 |   |   |-- metadata.rs                # meta.db 读取、维度发现和 metadata lookup
@@ -75,7 +75,7 @@ poker-hands-storage/
 |   |   |-- crc32c.rs                  # pack CRC32C 校验
 |   |   |-- sqlite.rs                  # SQLite 动态库加载和连接封装
 |   |   `-- query/
-|   |       |-- mod.rs                  # query 子模块导出
+|   |       |-- mod.rs                  # query 子模块入口，组织内部查询实现
 |   |       |-- range_store_facade.rs   # HTTP/native 共用业务 facade
 |   |       |-- store_query_service.rs  # 单手牌和批量策略查询服务
 |   |       |-- hands_by_actions.rs     # actions/frequency 过滤手牌能力
@@ -86,7 +86,7 @@ poker-hands-storage/
 |   |-- Cargo.toml                     # HTTP service crate 配置
 |   |-- src/
 |   |   |-- main.rs                    # service 二进制入口，支持 serve/healthcheck
-|   |   |-- lib.rs                     # service 库入口和模块导出
+|   |   |-- lib.rs                     # service crate root，声明 HTTP 服务公共模块
 |   |   |-- config.rs                  # PHS_* 环境变量解析
 |   |   |-- errors.rs                  # AppError 和业务错误映射
 |   |   |-- http/                      # axum router、OpenAPI、response、healthcheck
@@ -109,12 +109,12 @@ poker-hands-storage/
 |   |-- Cargo.toml                     # 离线工具 crate 配置
 |   |-- src/
 |   |   |-- main.rs                    # CLI 入口，分发 build/verify/benchmark 命令
-|   |   |-- lib.rs                     # storage-tools 库入口
+|   |   |-- lib.rs                     # storage-tools crate root，声明离线工具公共模块
 |   |   |-- errors.rs                  # ToolError 错误类型
 |   |   |-- metadata.rs                # 构建阶段写入 meta.db
 |   |   |-- range_store_builder.rs     # SQLite -> manifest/meta/idx/bin 构建流程
 |   |   |-- verification/              # standalone/cross verify 和验证报告
-|   |   |   |-- mod.rs                 # verify 子模块导出
+|   |   |   |-- mod.rs                 # verification 子模块入口，组织验证实现
 |   |   |   |-- cli.rs                 # verify --mode standalone|cross 参数解析
 |   |   |   |-- standalone.rs          # manifest/header/idx/bin/catalog 自洽检查
 |   |   |   |-- cross.rs               # 源 SQLite 与二进制 pack 逐项比对
@@ -122,7 +122,7 @@ poker-hands-storage/
 |   |   |   |-- float32_precision.rs   # IEEE754 Float32 bit-exact 精度校验
 |   |   |   |-- report.rs              # 验证报告 JSON/Markdown 生成
 |   |   |-- benchmark/                 # hot/cold/native benchmark
-|   |   |   |-- mod.rs                 # benchmark 子模块导出
+|   |   |   |-- mod.rs                 # benchmark 子模块入口，组织测量实现和运行入口
 |   |   |   |-- cli.rs                 # benchmark 参数解析
 |   |   |   |-- types.rs               # BenchmarkWorkload 和查询项类型
 |   |   |   |-- workload.rs            # workload 生成与 JSON 序列化（跨 benchmark 复用）
