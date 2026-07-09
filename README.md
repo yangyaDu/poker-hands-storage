@@ -41,8 +41,9 @@ poker-hands-storage/
 |-- .gitattributes                     # Git 文件属性和换行策略
 |
 |-- .agents/
-|   |-- SKILL.md                       # AI 编码助手的项目级规则
-|   `-- references/                    # 按需加载的构建、验证、benchmark、service 参考
+|   `-- poker-hands-storage/           # 与 skill name 一致的项目级 Codex skill
+|       |-- SKILL.md                    # AI 编码助手的项目级规则
+|       `-- references/                 # 按需加载的构建、验证、benchmark、service 参考
 |
 |-- .docker/
 |   |-- Dockerfile                     # HTTP service 多阶段构建镜像

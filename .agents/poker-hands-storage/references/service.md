@@ -19,7 +19,6 @@ cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- serv
 | `PHS_MAX_OPEN_HANDLES` | `2` | 最大打开维度 reader 数 |
 | `PHS_VERIFY_CHECKSUMS` | `false` | 查询时是否校验 pack CRC32C |
 | `PHS_PREWARM` | 空 | 启动预热维度，格式 `strategy:player_count:depth_bb` |
-| `PHS_SQLITE3_LIB` | 自动检测 | 离线工具使用的 SQLite 动态库路径 |
 | `RUST_LOG` | `info` | 日志级别 |
 
 ## 端点
@@ -68,3 +67,4 @@ Invoke-RestMethod `
 - Docker 运行时数据目录只读挂载
 - 源 SQLite 仅用于离线构建，不进入容器
 - 运行时镜像包含 `libsqlite3.so.0`
+- `PHS_SQLITE3_LIB` 只给离线工具动态加载 SQLite 使用，不是 HTTP service 运行时配置

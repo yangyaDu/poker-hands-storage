@@ -1,0 +1,5 @@
+interface:
+  display_name: "poker-hands-storage"
+  short_description: "Project rules for the poker-hands-storage Rust workspace."
+  default_prompt: "Use $poker-hands-storage to work on this repository while following its build, verification, benchmark, SDK, and service rules."
+

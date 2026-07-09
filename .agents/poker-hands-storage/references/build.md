@@ -27,5 +27,5 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build 
 
 构建完成后应依次运行：
 
-1. standalone 验证（见 `references/verify.md`）
+1. standalone 验证（见 `verify.md`）
 2. cross 验证（如有源 SQLite）

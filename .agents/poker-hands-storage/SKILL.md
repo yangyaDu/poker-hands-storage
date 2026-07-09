@@ -1,7 +1,8 @@
 ---
 name: poker-hands-storage
 description: >
-  poker-hands-storage Rust workspace 的全局项目指令。
+  poker-hands-storage Rust workspace 的全局项目指令。Use when Codex is editing,
+  reviewing, testing, benchmarking, documenting, or running commands in this repository.
   四个 crate：range-store-core（存储核心）、service（HTTP API）、
   range-store-native（Bun/Node native SDK）、storage-tools（离线工具）。
   涵盖：编译规则、架构边界、代码质量、文档同步、数据构建/验证/基准测试、native SDK、服务部署。
@@ -56,7 +57,7 @@ cargo test --workspace --target x86_64-pc-windows-msvc
 | 二进制格式 / 存储布局 | `docs/range-db-binary-storage-design.md` |
 | 验证逻辑 | `docs/verification_and_benchmark.md` |
 | benchmark 结果 / 性能结论 | `docs/binary-vs-sqlite-benchmark-and-verification-report.md` |
-| Bun/Node native SDK | `docs/native-sdk.md` |
+| Bun/Node native SDK | `docs/sdk-and-query-chain-explanation.md` |
 | Docker / 运行时 | `docs/docker-deployment-guide.md` |
 
 ## Git Hooks
@@ -95,7 +96,10 @@ git config core.hooksPath .githooks
 1. binary benchmark → SQLite baseline → benchmark-compare
 2. 冷启动同理：benchmark-cold → benchmark-sqlite-cold → benchmark-cold-compare
 3. native benchmark 只保留 `core`、`native-sdk`、`http-service` 三组正式对比
-4. 不同 workload / dimension / sample set 的报告不可直接对比
+4. hot benchmark 的 Binary、SQLite baseline、compare 代码都归在 `storage-tools/src/benchmark/hot/`
+5. benchmark 报告写入和 Markdown 渲染统一走 `storage-tools/src/benchmark/report.rs`
+6. `concrete-lines-exact` 是 hot/native 正式 case，按 `concrete_line` 精确 lookup 并校验 id
+7. 不同 workload / dimension / sample set 的报告不可直接对比
 
 ### HTTP 服务
 

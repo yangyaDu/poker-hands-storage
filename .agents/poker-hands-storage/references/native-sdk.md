@@ -38,6 +38,7 @@ bun run test:http-consistency
 
 - `PokerHandsRange`
 - `RangeStore`
+- `RangeStoreError`
 - `getPokerHandsRangeSingleton(options)`
 
 主要方法：
@@ -50,13 +51,13 @@ bun run test:http-consistency
 - `prewarm`
 - `stats`
 
-所有默认业务方法返回 `{ code, data, message }` envelope。
+当前 SDK 成功时返回直接 payload，不返回 HTTP service 的 `{ code, data, message }` envelope；失败抛 `RangeStoreError`。HTTP service 才负责把成功/失败转换成 HTTP status + envelope。
 
 ## 边界
 
 - native SDK 不负责源 SQLite 构建。
 - native SDK 不负责 source cross verify。
-- native SDK 不生成 benchmark 报告。
+- native SDK 不生成 benchmark 报告；正式 native benchmark 由 `storage-tools benchmark-native` 统一生成。
 - 正式 native benchmark 只保留 `core`、`native-sdk`、`http-service` 三组对比。
 
-详细说明见 `docs/native-sdk.md`。
+详细说明见 `docs/sdk-and-query-chain-explanation.md`。
