@@ -316,4 +316,39 @@ u32 byte_length
 u32 crc32c
 ```
 
+## CompactLineMatrix V2 archive
+
+V2 does not replace the V1 `LineMatrix` archive. It uses a separate command and
+reader so an existing V1 archive cannot be decoded using the compact layout:
+
+```powershell
+cargo run -p poker-hands-storage-tools -- export-compact-line-matrix-archive `
+  --source-db data\sqlite\range.db `
+  --out-dir reports\line-matrix-compact-default-6max-100BB
+```
+
+The V2 payload is `zenithstrat.gto.v2.CompactLineMatrix`, with
+`schema_version=2`. Its archive uses manifest version `2` and `LMCN` / `LMCX`
+binary file magic. The index record layout is unchanged.
+
+Rows where `hand_ev IS NULL` are omitted. Their source `frequency` must be
+zero; otherwise export fails with `NULL_EV_WITH_NONZERO_FREQUENCY`.
+
+`valid_hand_bitmap` is a 22-byte, LSB-first bitmap in original 169-hand id
+space. Its set-bit rank maps `hand_id` to `global_compact_index`.
+`action_hand_bitmap` is an LSB-first bitmap in that compact space, with length
+`ceil(popcount(valid_hand_bitmap) / 8)`. For each action:
+
+```text
+frequency_x10000.len == ev_x10000.len == popcount(action_hand_bitmap)
+```
+
+Values are ordered by action bitmap set bits. The reader caches:
+
+```text
+original hand_id -> global_compact_index -> action_compact_index
+```
+
+The maps contain at most 1326 entries and provide O(1) hand/action lookup.
+
 第 `n` 条 index record 对应 `concrete_line_id = n + 1`。`offset` 相对 `matrices.lmbin` 文件开头，`crc32c` 覆盖该条 raw Protobuf payload。`lines.db` 只保存行动线元数据：`concrete_line_id`、`abstract_line` 和 `concrete_line`。

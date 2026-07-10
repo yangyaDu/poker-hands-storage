@@ -1,4 +1,6 @@
 pub mod benchmark;
+pub mod compact_line_matrix;
+pub mod compact_line_matrix_archive;
 pub mod errors;
 pub mod line_matrix_archive;
 pub mod line_matrix_export;

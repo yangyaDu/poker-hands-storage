@@ -1,6 +1,9 @@
 use std::fs;
 use std::process::Command;
 
+use poker_hands_storage_tools::compact_line_matrix_archive::{
+    export_compact_line_matrix_archive, CompactLineMatrixArchive, CompactLineMatrixArchiveOptions,
+};
 use poker_hands_storage_tools::line_matrix_archive::{
     export_line_matrix_archive, LineMatrixArchive, LineMatrixArchiveOptions,
 };
@@ -195,6 +198,130 @@ fn cli_exports_default_6max_100bb_archive() {
     );
     assert!(out_dir.join("manifest.json").is_file());
     assert!(String::from_utf8_lossy(&output.stdout).contains("LineMatrix archive export complete."));
+}
+
+#[test]
+fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "UPDATE range_data_default_6max_100BB
+             SET frequency = 0.0
+             WHERE concrete_line_id = 1 AND hole_cards = 'AKs'
+               AND action_name = 'call'",
+        )
+        .expect("make omitted NULL EV row safe");
+    let out_dir = temp.path().join("compact-archive");
+
+    let summary = export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        overwrite: false,
+    })
+    .expect("export compact archive");
+
+    assert_eq!(summary.matrix_count, 2);
+    assert_eq!(
+        fs::metadata(&summary.index_path)
+            .expect("index metadata")
+            .len(),
+        48
+    );
+
+    let archive = CompactLineMatrixArchive::open(&out_dir).expect("open compact archive");
+    let first = archive.read_matrix(1).expect("read first compact matrix");
+    let matrix = first.matrix();
+    assert_eq!(matrix.schema_version, 2);
+    assert_eq!(matrix.valid_hand_bitmap.len(), 22);
+    assert_eq!(matrix.valid_hand_bitmap[0], 0xff);
+    assert!(!bit_is_set(&matrix.valid_hand_bitmap, 168));
+
+    let call_index = matrix
+        .actions
+        .iter()
+        .position(|action| action.action_type == ActionType::Call as i32)
+        .expect("call action");
+    let call = &matrix.actions[call_index];
+    assert_eq!(call.action_hand_bitmap.len(), 21);
+    assert_eq!(call.frequency_x10000.len(), 167);
+    assert_eq!(call.ev_x10000.len(), 167);
+
+    assert_eq!(first.action_value(call_index, 1), None);
+    assert_eq!(first.action_value(call_index, 168), None);
+    assert_eq!(
+        first.action_value(call_index, 2),
+        Some(
+            poker_hands_storage_tools::compact_line_matrix_archive::HandActionValue {
+                frequency_x10000: 2_500,
+                ev_x10000: 0,
+            }
+        )
+    );
+}
+
+#[test]
+fn compact_archive_rejects_null_ev_with_nonzero_frequency() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "UPDATE range_data_default_6max_100BB
+             SET frequency = 0.25
+             WHERE concrete_line_id = 1 AND hole_cards = 'AKs'
+               AND action_name = 'call'",
+        )
+        .expect("make invalid NULL EV row");
+
+    let error = export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: temp.path().join("compact-archive"),
+        overwrite: false,
+    })
+    .expect_err("NULL EV with frequency must fail");
+
+    assert_eq!(error.code(), "NULL_EV_WITH_NONZERO_FREQUENCY");
+}
+
+#[test]
+fn cli_exports_compact_default_6max_100bb_archive() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "UPDATE range_data_default_6max_100BB
+             SET frequency = 0.0
+             WHERE concrete_line_id = 1 AND hole_cards = 'AKs'
+               AND action_name = 'call'",
+        )
+        .expect("make omitted NULL EV row safe");
+    let out_dir = temp.path().join("compact-archive");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_poker-hands-storage-tools"))
+        .args([
+            "export-compact-line-matrix-archive",
+            "--source-db",
+            source_db.to_str().expect("source path"),
+            "--out-dir",
+            out_dir.to_str().expect("output path"),
+        ])
+        .output()
+        .expect("run compact archive command");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(out_dir.join("manifest.json").is_file());
+    assert!(String::from_utf8_lossy(&output.stdout)
+        .contains("Compact LineMatrix archive export complete."));
 }
 
 fn create_source_fixture(path: &std::path::Path) {

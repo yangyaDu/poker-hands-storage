@@ -15,6 +15,8 @@ use poker_hands_storage_tools::benchmark::run_cold_benchmark;
 use poker_hands_storage_tools::benchmark::run_drill_metadata_benchmark;
 use poker_hands_storage_tools::benchmark::run_hot_benchmark;
 use poker_hands_storage_tools::benchmark::run_native_benchmark;
+use poker_hands_storage_tools::compact_line_matrix_archive::cli::parse_export_compact_line_matrix_archive_args;
+use poker_hands_storage_tools::compact_line_matrix_archive::export_compact_line_matrix_archive;
 use poker_hands_storage_tools::errors::ToolError;
 use poker_hands_storage_tools::line_matrix_archive::cli::parse_export_line_matrix_archive_args;
 use poker_hands_storage_tools::line_matrix_archive::export_line_matrix_archive;
@@ -39,6 +41,9 @@ fn run() -> Result<(), ToolError> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("build") => run_build(args.collect()),
+        Some("export-compact-line-matrix-archive") => {
+            run_export_compact_line_matrix_archive(args.collect())
+        }
         Some("export-line-matrix-archive") => run_export_line_matrix_archive(args.collect()),
         Some("export-line-matrix") => run_export_line_matrix(args.collect()),
         Some("verify") => run_verify(args.collect()),
@@ -68,6 +73,20 @@ fn run_export_line_matrix_archive(args: Vec<String>) -> Result<(), ToolError> {
     let options = parse_export_line_matrix_archive_args(args)?;
     let summary = export_line_matrix_archive(&options)?;
     println!("LineMatrix archive export complete.");
+    println!("  Dimension: default:6:100");
+    println!("  Matrix count: {}", summary.matrix_count);
+    println!("  Protobuf bytes: {}", summary.protobuf_bytes);
+    println!("  Manifest: {}", summary.manifest_path.display());
+    println!("  Data: {}", summary.data_path.display());
+    println!("  Index: {}", summary.index_path.display());
+    println!("  Metadata: {}", summary.metadata_path.display());
+    Ok(())
+}
+
+fn run_export_compact_line_matrix_archive(args: Vec<String>) -> Result<(), ToolError> {
+    let options = parse_export_compact_line_matrix_archive_args(args)?;
+    let summary = export_compact_line_matrix_archive(&options)?;
+    println!("Compact LineMatrix archive export complete.");
     println!("  Dimension: default:6:100");
     println!("  Matrix count: {}", summary.matrix_count);
     println!("  Protobuf bytes: {}", summary.protobuf_bytes);
@@ -492,6 +511,10 @@ Commands:
   export-line-matrix-archive --source-db <range.db> --out-dir <dir>
         --gto-data-version <version> [--overwrite]
         Exports every LineMatrix for default:6:100.
+
+  export-compact-line-matrix-archive --source-db <range.db> --out-dir <dir>
+        [--overwrite]
+        Exports V2 CompactLineMatrix payloads for default:6:100.
 
   verify --dir <dir> [--mode standalone|cross] [--source <range.db>]
          [--verify-checksum] [--sample-size <n>] [--max-failures <n>]

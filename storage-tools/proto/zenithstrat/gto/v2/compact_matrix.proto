@@ -1,0 +1,45 @@
+syntax = "proto3";
+
+package zenithstrat.gto.v2;
+
+import "zenithstrat/gto/v1/matrix.proto";
+
+message CompactActionColumn {
+  zenithstrat.gto.v1.ActionType action_type = 1;
+
+  // Action 后该玩家在本轮的总投入额，单位：1 / 100 BB。
+  uint32 amount_centi_bb = 2;
+
+  // 行动尺寸，单位：1 / 10000。
+  uint32 action_size_x10000 = 3;
+
+  // 只保存 action_hand_bitmap 中置位手牌的数据。
+  // 数组第 i 项对应 action_hand_bitmap 中第 i 个置位的
+  // global_compact_index，按 global_compact_index 升序。
+  // 长度必须等于 popcount(action_hand_bitmap)。
+  repeated uint32 frequency_x10000 = 4 [packed = true];
+
+  // 与 frequency_x10000 一一对应，长度必须相同。
+  repeated sint32 ev_x10000 = 5 [packed = true];
+
+  // 当前 action 实际覆盖的手牌，位图域为 global_compact_index。
+  // 长度必须等于 ceil(popcount(CompactLineMatrix.valid_hand_bitmap) / 8)。
+  // byte_index = global_compact_index >> 3，bit_index = global_compact_index & 7。
+  // 每个 byte 内低位优先（LSB-first）。
+  bytes action_hand_bitmap = 6;
+}
+
+message CompactLineMatrix {
+  // 固定为 2，表示此紧凑编码规范。
+  uint32 schema_version = 1;
+
+  zenithstrat.gto.v1.HandEncoding hand_encoding = 2;
+
+  repeated CompactActionColumn actions = 3;
+
+  // 原始 hand_id 空间中当前行动线实际导出的手牌。
+  // hand_ev IS NULL 的 SQLite 行不会导出。
+  // bit 的 rank 定义 original hand_id -> global_compact_index 映射。
+  // byte_index = hand_id >> 3，bit_index = hand_id & 7，LSB-first。
+  bytes valid_hand_bitmap = 100;
+}
