@@ -1,6 +1,6 @@
 # Poker Hands Storage 文档地图
 
-更新日期：2026-07-05
+更新日期：2026-07-10
 
 ## 收束原则
 
@@ -12,6 +12,7 @@
 | 文档职责和阅读路径 | `docs/README.md` |
 | 当前剩余工作和验收标准 | `docs/roadmap.md` |
 | 文件格式、pack 编码、查询流程 | `docs/range-db-binary-storage-design.md` |
+| 单行动线 Protobuf schema、字段语义、导出与校验 | `docs/protobuf-line-matrix-export.md` |
 | HTTP API 请求/响应、错误码、业务语义 | `docs/api-business-contract.md` |
 | Bun/Node native SDK API、构建测试、生产接入边界和查询链路 | `docs/sdk-and-query-chain-explanation.md` |
 | standalone/cross verify、Float32、checksum、发布前验证、benchmark 脚本介绍 | `docs/verification_and_benchmark.md` |
@@ -52,8 +53,9 @@
 存储格式和数据流：
 
 1. `range-db-binary-storage-design.md`
-2. `data-flow-overview.md`
-3. `verification_and_benchmark.md`
+2. `protobuf-line-matrix-export.md`
+3. `data-flow-overview.md`
+4. `verification_and_benchmark.md`
 
 性能和验收：
 

@@ -16,6 +16,10 @@ use poker_hands_storage_tools::benchmark::run_drill_metadata_benchmark;
 use poker_hands_storage_tools::benchmark::run_hot_benchmark;
 use poker_hands_storage_tools::benchmark::run_native_benchmark;
 use poker_hands_storage_tools::errors::ToolError;
+use poker_hands_storage_tools::line_matrix_archive::cli::parse_export_line_matrix_archive_args;
+use poker_hands_storage_tools::line_matrix_archive::export_line_matrix_archive;
+use poker_hands_storage_tools::line_matrix_export::cli::parse_export_line_matrix_args;
+use poker_hands_storage_tools::line_matrix_export::export_line_matrix;
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_tools::verification::cli::parse_verify_args;
 use poker_hands_storage_tools::verification::cross::{run_cross_verify, CrossVerifyOptions};
@@ -35,6 +39,8 @@ fn run() -> Result<(), ToolError> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("build") => run_build(args.collect()),
+        Some("export-line-matrix-archive") => run_export_line_matrix_archive(args.collect()),
+        Some("export-line-matrix") => run_export_line_matrix(args.collect()),
         Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
         Some("benchmark-drill-metadata") => run_benchmark_drill_metadata(args.collect()),
@@ -56,6 +62,47 @@ fn run() -> Result<(), ToolError> {
             "Unknown command: {cmd}"
         ))),
     }
+}
+
+fn run_export_line_matrix_archive(args: Vec<String>) -> Result<(), ToolError> {
+    let options = parse_export_line_matrix_archive_args(args)?;
+    let summary = export_line_matrix_archive(&options)?;
+    println!("LineMatrix archive export complete.");
+    println!("  Dimension: default:6:100");
+    println!("  Matrix count: {}", summary.matrix_count);
+    println!("  Protobuf bytes: {}", summary.protobuf_bytes);
+    println!("  Manifest: {}", summary.manifest_path.display());
+    println!("  Data: {}", summary.data_path.display());
+    println!("  Index: {}", summary.index_path.display());
+    println!("  Metadata: {}", summary.metadata_path.display());
+    Ok(())
+}
+
+fn run_export_line_matrix(args: Vec<String>) -> Result<(), ToolError> {
+    let options = parse_export_line_matrix_args(args)?;
+    let summary = export_line_matrix(&options)?;
+    println!("LineMatrix protobuf export complete.");
+    println!("  Concrete line id: {}", summary.concrete_line_id);
+    println!("  Abstract line: {}", summary.abstract_line);
+    println!("  Concrete line: {}", summary.concrete_line);
+    println!("  Actions: {}", summary.action_count);
+    println!("  Source rows: {}", summary.source_row_count);
+    println!("  NULL EV cells: {}", summary.null_ev_count);
+    println!("  Hands with actions: {}", summary.hands_with_actions);
+    println!("  Hands without actions: {}", summary.hands_without_actions);
+    println!(
+        "  Frequency sum mismatches: {}",
+        summary.frequency_sum_mismatch_hand_count
+    );
+    println!(
+        "  Max frequency error x10000: {}",
+        summary.max_frequency_error_x10000
+    );
+    println!("  Protobuf bytes: {}", summary.protobuf_bytes);
+    println!("  Protobuf: {}", summary.protobuf_path.display());
+    println!("  Debug JSON: {}", summary.debug_json_path.display());
+    println!("  Verify JSON: {}", summary.verify_json_path.display());
+    Ok(())
 }
 
 fn run_build(args: Vec<String>) -> Result<(), ToolError> {
@@ -436,6 +483,15 @@ Commands:
   build --source-db <range.db> --out-dir <dir>
         [--dimension strategy:player_count:depth_bb]
         [--max-concrete-lines <count>] [--overwrite] [--resume]
+
+  export-line-matrix --source-db <range.db> --out-dir <dir>
+        --dimension <strategy:player_count:depth_bb>
+        (--concrete-line-id <id> | --concrete-line <line>)
+        [--abstract-line <line>] --gto-data-version <version> [--overwrite]
+
+  export-line-matrix-archive --source-db <range.db> --out-dir <dir>
+        --gto-data-version <version> [--overwrite]
+        Exports every LineMatrix for default:6:100.
 
   verify --dir <dir> [--mode standalone|cross] [--source <range.db>]
          [--verify-checksum] [--sample-size <n>] [--max-failures <n>]

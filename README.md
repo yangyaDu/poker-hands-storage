@@ -22,7 +22,7 @@
 | `range-store-core` | Rust 只读查询核心 | 负责 manifest、metadata、`.idx/.bin` reader、pack decode、CRC32C、LRU handle pool 和 `RangeStoreFacade` |
 | `service` | HTTP API 服务 | 提供 OpenAPI、请求校验、错误码映射、health/readiness、Docker 运行入口 |
 | `range-store-native` | Bun/Node 进程内 SDK | 通过 napi-rs 加载同一套 core 查询能力，成功返回直接 payload，失败抛出 `RangeStoreError` |
-| `storage-tools` | 离线工具 | 提供构建、standalone/cross verify、SQLite/Binary/native benchmark 和报告生成 |
+| `storage-tools` | 离线工具 | 提供构建、单行动线 Protobuf 导出、standalone/cross verify、SQLite/Binary/native benchmark 和报告生成 |
 | `.docker` | HTTP service 容器化 | Dockerfile 只构建 `range-store-core` + `service`，不包含 benchmark 或 native SDK |
 | `docs` | 项目文档 | 入口见 [docs/README.md](docs/README.md) |
 
@@ -108,12 +108,15 @@ poker-hands-storage/
 |
 |-- storage-tools/
 |   |-- Cargo.toml                     # 离线工具 crate 配置
+|   |-- build.rs                       # 从 matrix.proto 生成 Prost Rust 类型
+|   |-- proto/                         # 单行动线 LineMatrix Protobuf schema
 |   |-- src/
-|   |   |-- main.rs                    # CLI 入口，分发 build/verify/benchmark 命令
+|   |   |-- main.rs                    # CLI 入口，分发 build/export/verify/benchmark 命令
 |   |   |-- lib.rs                     # storage-tools crate root，声明离线工具公共模块
 |   |   |-- errors.rs                  # ToolError 错误类型
 |   |   |-- metadata.rs                # 构建阶段写入 meta.db
 |   |   |-- range_store_builder.rs     # SQLite -> manifest/meta/idx/bin 构建流程
+|   |   |-- line_matrix_export/        # 单行动线 SQLite -> Protobuf、bitmap、校验和报告
 |   |   |-- verification/              # standalone/cross verify 和验证报告
 |   |   |   |-- mod.rs                 # verification 子模块入口，组织验证实现
 |   |   |   |-- cli.rs                 # verify --mode standalone|cross 参数解析
@@ -156,6 +159,7 @@ poker-hands-storage/
 |   |-- sdk-and-query-chain-explanation.md # Bun/Node native SDK API、接入边界和查询链路
 |   |-- api-business-contract.md       # HTTP API 契约、错误码和业务语义
 |   |-- range-db-binary-storage-design.md # 二进制格式、pack 编码和查询流程
+|   |-- protobuf-line-matrix-export.md # 单行动线 Protobuf schema、字段语义、导出与校验
 |   |-- data-flow-overview.md          # 从构建到查询的代码级数据流
 |   |-- verification_and_benchmark.md # 验证覆盖面、Float32 策略、benchmark 脚本介绍和发布前校验
 |   |-- binary-vs-sqlite-benchmark-and-verification-report.md # 性能、体积、内存和 benchmark 结论
@@ -218,6 +222,17 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build 
   --overwrite
 ```
 
+导出指定行动线的 Protobuf 矩阵：
+
+```powershell
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- export-line-matrix `
+  --source-db data\sqlite\range.db `
+  --dimension default:6:100 `
+  --concrete-line-id 1 `
+  --gto-data-version poc-001 `
+  --out-dir reports\line-matrix-poc
+```
+
 数据验证：
 
 ```powershell
@@ -271,6 +286,7 @@ bun run test:sdk
 | [docs/README.md](docs/README.md) | 文档地图和阅读路径 |
 | [docs/roadmap.md](docs/roadmap.md) | 当前剩余工作、验收条件和优先级 |
 | [docs/range-db-binary-storage-design.md](docs/range-db-binary-storage-design.md) | 文件格式、pack 编码、查询流程和运行时约束 |
+| [docs/protobuf-line-matrix-export.md](docs/protobuf-line-matrix-export.md) | 单行动线 Protobuf schema、字段语义、bitmap、导出和校验 |
 | [docs/api-business-contract.md](docs/api-business-contract.md) | HTTP API 请求/响应、错误码和业务语义 |
 | [docs/sdk-and-query-chain-explanation.md](docs/sdk-and-query-chain-explanation.md) | Bun/Node native SDK API、构建测试、生产接入边界和查询链路 |
 | [docs/verification_and_benchmark.md](docs/verification_and_benchmark.md) | standalone/cross verify、Float32 策略、benchmark 脚本和发布前验证 |

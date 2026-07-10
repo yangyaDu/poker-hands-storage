@@ -6,9 +6,14 @@ license.workspace = true
 autotests = false
 
 [dependencies]
+prost = "0.14"
 range-store-core = { path = "../range-store-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+[build-dependencies]
+prost-build = "0.14"
+protoc-bin-vendored = "3"
 
 [dev-dependencies]
 tempfile = "3"
@@ -16,6 +21,10 @@ tempfile = "3"
 [[test]]
 name = "range_store_builder_build_orchestrator_test"
 path = "tests/range_store_builder_build_orchestrator.test.rs"
+
+[[test]]
+name = "line_matrix_export_test"
+path = "tests/line_matrix_export.test.rs"
 
 [[test]]
 name = "verification_float32_precision_test"

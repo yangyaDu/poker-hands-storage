@@ -1,0 +1,71 @@
+syntax = "proto3";
+
+package zenithstrat.gto.v1;
+
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_FOLD = 1;
+  ACTION_TYPE_CHECK = 2;
+  ACTION_TYPE_CALL = 3;
+  ACTION_TYPE_BET = 4;
+  ACTION_TYPE_RAISE = 5;
+  ACTION_TYPE_ALLIN = 6;
+}
+
+enum HandEncoding {
+  HAND_ENCODING_UNSPECIFIED = 0;
+
+  // 翻前固定 169 种底牌类型，例如 AA、AKs、AKo。
+  HAND_ENCODING_169 = 1;
+
+  // 精确到花色的 1326 种两张牌组合，例如 AsAh、KsQs。
+  HAND_ENCODING_1326_COMBO = 2;
+}
+
+/**
+ * 一个全局行动列及其对应的全部手牌数据。
+ *
+ * action_type + action_size_x10000 + amount_centi_bb 共同确定一个行动。
+ * 三个行动定义字段在当前 ActionColumn 中都只存一份。
+ */
+message ActionColumn {
+  ActionType action_type = 1;
+
+  // 源数据 amount_bb，单位：1 / 100 BB。示例：2.0 BB -> 200。
+  uint32 amount_centi_bb = 2;
+
+  // 源数据 action_size，单位：1 / 10000。示例：40.0 -> 400000。
+  // 这是当前行动的单个标量，不按手牌重复存储。
+  uint32 action_size_x10000 = 3;
+
+  // 按固定 hand_idx 排列，长度严格等于 169 或 1326。
+  // 10000 = 100.00%，6075 = 60.75%。
+  repeated uint32 frequency_x10000 = 4 [packed = true];
+
+  // 按固定 hand_idx 排列，长度严格等于 169 或 1326。
+  // 单位：1 / 10000 BB，负数使用 ZigZag 编码。
+  repeated sint32 ev_x10000 = 5 [packed = true];
+
+  // 当前行动覆盖哪些 hand_idx。bit=1 表示该手牌存在当前行动。
+  bytes action_hand_bitmap = 6;
+
+  // 当前行动下哪些 hand_idx 的 EV 为 NULL。
+  // 仅 action_hand_bitmap 对应 bit=1 时有意义；bit=1 表示 EV=NULL。
+  bytes ev_null_bitmap = 7;
+}
+
+/** 某一条具体行动线对应的 GTO 矩阵。 */
+message LineMatrix {
+  uint32 schema_version = 1;
+
+  // GTO 源数据版本，不等同于 schema_version。
+  string gto_data_version = 2;
+
+  HandEncoding hand_encoding = 11;
+
+  // 当前行动线所有手牌出现过的唯一行动并集。
+  repeated ActionColumn actions = 12;
+
+  // 整个矩阵级别的非法 hand_idx。bit=1 表示因公共牌等原因非法。
+  bytes invalid_hand_bitmap = 100;
+}
