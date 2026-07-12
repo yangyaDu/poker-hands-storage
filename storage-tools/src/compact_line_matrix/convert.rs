@@ -31,19 +31,10 @@ pub(crate) fn build_compact_line_matrix(
     let mut normalized_rows = Vec::with_capacity(rows.len());
     let mut seen_cells = HashSet::new();
     for row in rows {
-        let frequency_x10000 = quantize_frequency(row.frequency)?;
         let Some(hand_ev) = row.hand_ev else {
-            if row.frequency != 0.0 {
-                return Err(ToolError::new(
-                    "NULL_EV_WITH_NONZERO_FREQUENCY",
-                    format!(
-                        "Cannot omit NULL EV row with nonzero frequency for hand={} action={}",
-                        row.hole_cards, row.action_name
-                    ),
-                ));
-            }
             continue;
         };
+        let frequency_x10000 = quantize_frequency(row.frequency)?;
         let action = ActionKey {
             action_type: normalize_action_type(&row.action_name)? as i32,
             action_size_x10000: quantize_u32("action_size", row.action_size, 10_000.0)?,
@@ -198,9 +189,9 @@ pub(crate) fn validate_compact_line_matrix(matrix: &CompactLineMatrix) -> Result
 pub(crate) fn build_compact_index_map(bitmap: &[u8], total_count: usize) -> Vec<i16> {
     let mut mapping = vec![-1; total_count];
     let mut compact_index = 0i16;
-    for original_index in 0..total_count {
+    for (original_index, slot) in mapping.iter_mut().enumerate() {
         if bit_is_set(bitmap, original_index) {
-            mapping[original_index] = compact_index;
+            *slot = compact_index;
             compact_index += 1;
         }
     }
@@ -280,7 +271,7 @@ fn validate_bitmap(name: &str, bitmap: &[u8], total_count: usize) -> Result<(), 
             bitmap.len()
         )));
     }
-    if total_count % 8 != 0 && !bitmap.is_empty() {
+    if !total_count.is_multiple_of(8) && !bitmap.is_empty() {
         let padding_mask = !((1u8 << (total_count % 8)) - 1);
         if bitmap[expected_bytes - 1] & padding_mask != 0 {
             return Err(invalid_matrix(format!("{name} has non-zero padding bits")));

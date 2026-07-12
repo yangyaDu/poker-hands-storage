@@ -324,15 +324,29 @@ reader so an existing V1 archive cannot be decoded using the compact layout:
 ```powershell
 cargo run -p poker-hands-storage-tools -- export-compact-line-matrix-archive `
   --source-db data\sqlite\range.db `
-  --out-dir reports\line-matrix-compact-default-6max-100BB
+  --out-dir reports\line-matrix-compact-default-6max-100BB `
+  --dimension default:6:100
 ```
+
+To discover and export every dimension into separate archive directories, then
+verify every record and write `storage-comparison.json`:
+
+```powershell
+cargo run -p poker-hands-storage-tools --release -- export-all-compact-line-matrix-archives `
+  --source-db data\sqlite\range.db `
+  --out-dir reports\line-matrix-compact-all
+```
+
+The comparison report includes per-dimension `.lmbin`, `.lmidx`, metadata, and
+manifest sizes. Its storage ratio uses only `sum(.lmbin + .lmidx)` divided by
+the complete source SQLite file size.
 
 The V2 payload is `zenithstrat.gto.v2.CompactLineMatrix`, with
 `schema_version=2`. Its archive uses manifest version `2` and `LMCN` / `LMCX`
 binary file magic. The index record layout is unchanged.
 
-Rows where `hand_ev IS NULL` are omitted. Their source `frequency` must be
-zero; otherwise export fails with `NULL_EV_WITH_NONZERO_FREQUENCY`.
+Rows where `hand_ev IS NULL` are excluded by the V2 SQLite query and are never
+loaded into or written to `CompactLineMatrix`, regardless of source frequency.
 
 `valid_hand_bitmap` is a 22-byte, LSB-first bitmap in original 169-hand id
 space. Its set-bit rank maps `hand_id` to `global_compact_index`.
@@ -343,12 +357,44 @@ space. Its set-bit rank maps `hand_id` to `global_compact_index`.
 frequency_x10000.len == ev_x10000.len == popcount(action_hand_bitmap)
 ```
 
-Values are ordered by action bitmap set bits. The reader caches:
+Values are ordered by action bitmap set bits. The reader builds:
 
 ```text
 original hand_id -> global_compact_index -> action_compact_index
 ```
 
-The maps contain at most 1326 entries and provide O(1) hand/action lookup.
+The first map has 169 entries. All per-action second-level maps are stored in
+one flat array with action offsets, avoiding one allocation per action while
+keeping O(1) lookup once the action index is known. Action identity lookup
+linearly scans the matrix actions because their count is small; it does not use
+binary search.
+
+The archive reader memory-maps `.lmbin` and `.lmidx`, validates CRC32C directly
+against mapped payload slices, and performs full-archive verification as a
+Rayon parallel stream. A sequential verifier is retained for equivalence tests.
+Decoded matrices are not cached by default: the initial V2 read path has no LRU,
+so cache capacity and memory ownership do not conflict with the operating
+system page cache. Archive files must remain immutable while a reader is open.
 
 第 `n` 条 index record 对应 `concrete_line_id = n + 1`。`offset` 相对 `matrices.lmbin` 文件开头，`crc32c` 覆盖该条 raw Protobuf payload。`lines.db` 只保存行动线元数据：`concrete_line_id`、`abstract_line` 和 `concrete_line`。
+### Compact V2 vs core benchmark
+
+Use the dedicated script to compare the V2 reader and the core `.bin/.idx`
+reader for the same `concrete_line_id + hand` query shape:
+
+```powershell
+.\scripts\benchmark-compact-vs-core.ps1 `
+  -CompactDir .tmp\compact-line-matrix-v2-all-dimensions-20260711\default_9max_200BB `
+  -CoreDir data\range-strata `
+  -Dimension default:9:200 `
+  -HotIterations 1000 `
+  -ColdRuns 20
+```
+
+The script builds the release tool if needed and writes JSON/Markdown reports.
+Its underlying command is `benchmark-compact-vs-core`. Hot runs use a
+deterministic valid-hand workload and warm both readers before timing. Cold runs
+spawn a fresh worker process for each engine/run; `process-cold` resets the
+process but does not evict the OS page cache. V2 result counts omit rows whose
+`hand_ev` is `NULL`, so they are reported for context rather than used as a
+cross-format equality assertion.

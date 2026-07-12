@@ -10,9 +10,9 @@
 
 ## Global Constraints
 
-- Only `default:6:100` and `HAND_ENCODING_169` are supported by this exporter.
+- Every discovered dimension is exported separately and must use `HAND_ENCODING_169`.
 - V1 files and readers remain backward compatible.
-- `hand_ev IS NULL` is omitted only when its source frequency is exactly zero.
+- `hand_ev IS NULL` is filtered by the V2 source query and never enters the payload.
 - Bitmap bit order is LSB-first and all padding bits are zero.
 
 ---

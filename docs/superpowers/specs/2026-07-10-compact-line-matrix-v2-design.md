@@ -2,7 +2,7 @@
 
 ## Goal
 
-Store every `default:6:100` line as a random-access Protobuf archive while omitting SQLite rows where `hand_ev IS NULL`.
+Store every line from each discovered 169-hand dimension as a separate random-access Protobuf archive while omitting SQLite rows where `hand_ev IS NULL`.
 
 ## Compatibility
 
@@ -14,7 +14,7 @@ V1 remains readable and unchanged. V2 uses package `zenithstrat.gto.v2`, a new e
 
 Each `action_hand_bitmap` is in global compact-index space, LSB-first, and has length `ceil(popcount(valid_hand_bitmap) / 8)`. `frequency_x10000` and `ev_x10000` are ordered by the set bits of that action bitmap and both have length `popcount(action_hand_bitmap)`.
 
-The exporter rejects `hand_ev IS NULL` rows whose frequency is nonzero; all other NULL EV rows are omitted. Action identity is `(action_type, action_size_x10000, amount_centi_bb)` and action columns are sorted by that identity.
+The exporter excludes all `hand_ev IS NULL` rows in the SQLite query, regardless of source frequency. Action identity is `(action_type, action_size_x10000, amount_centi_bb)` and action columns are sorted by that identity.
 
 ## Archive
 

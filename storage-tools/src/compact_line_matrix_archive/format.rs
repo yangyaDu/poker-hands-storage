@@ -70,8 +70,8 @@ pub(crate) fn write_index_record(file: &mut File, record: IndexRecord) -> Result
     Ok(())
 }
 
-pub(crate) fn read_index_record(
-    file: &mut File,
+pub(crate) fn read_index_record_from_slice(
+    bytes: &[u8],
     concrete_line_id: u64,
 ) -> Result<IndexRecord, ToolError> {
     if concrete_line_id == 0 {
@@ -88,9 +88,14 @@ pub(crate) fn read_index_record(
                 })?,
         )
         .ok_or_else(|| ToolError::invalid_format("Compact archive index offset overflow"))?;
-    let mut encoded = [0u8; INDEX_RECORD_SIZE];
-    file.seek(SeekFrom::Start(position))?;
-    file.read_exact(&mut encoded)?;
+    let start = usize::try_from(position)
+        .map_err(|_| ToolError::invalid_format("Compact archive index offset exceeds usize"))?;
+    let end = start
+        .checked_add(INDEX_RECORD_SIZE)
+        .ok_or_else(|| ToolError::invalid_format("Compact archive index offset overflow"))?;
+    let encoded = bytes
+        .get(start..end)
+        .ok_or_else(|| ToolError::invalid_format("Compact archive index record is truncated"))?;
     Ok(IndexRecord {
         offset: u64::from_le_bytes(encoded[0..8].try_into().expect("record offset")),
         byte_length: u32::from_le_bytes(encoded[8..12].try_into().expect("record length")),

@@ -1,47 +1,58 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Seek, SeekFrom, Write};
+use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 
+use memmap2::Mmap;
 use prost::Message;
 use range_store_core::crc32c::{assert_crc32c, crc32c};
-use range_store_core::dimension::DimensionSpec;
+use range_store_core::dimension::{discover_dimensions, DimensionSpec};
 use range_store_core::sqlite::{Connection, Value};
+use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::compact_line_matrix::convert::{
     build_compact_index_map, build_compact_line_matrix, count_bits, validate_compact_line_matrix,
     HAND_COUNT_169,
 };
-use crate::compact_line_matrix::proto::{CompactLineMatrix, HandEncoding};
+use crate::compact_line_matrix::proto::{ActionType, CompactLineMatrix, HandEncoding};
 use crate::errors::ToolError;
-use crate::line_matrix_export::source::{load_all_lines, load_rows, ResolvedLine};
+use crate::line_matrix_export::source::{load_all_lines, load_rows_with_ev, ResolvedLine};
 
+mod benchmark;
 pub mod cli;
 mod format;
 
+pub use benchmark::{
+    run_compact_vs_core_benchmark, run_compact_vs_core_cold_worker, CompactVsCoreBenchmarkCommand,
+    CompactVsCoreColdWorkerCommand, CompactVsCoreEngine, CompactVsCoreQuery,
+};
+
 use format::{
-    read_header, read_index_record, write_header, write_index_record, IndexRecord, DATA_FILE_NAME,
-    DATA_MAGIC, HEADER_SIZE, INDEX_FILE_NAME, INDEX_MAGIC, INDEX_RECORD_SIZE, MANIFEST_FILE_NAME,
-    METADATA_FILE_NAME,
+    read_header, read_index_record_from_slice, write_header, write_index_record, IndexRecord,
+    DATA_FILE_NAME, DATA_MAGIC, HEADER_SIZE, INDEX_FILE_NAME, INDEX_MAGIC, INDEX_RECORD_SIZE,
+    MANIFEST_FILE_NAME, METADATA_FILE_NAME,
 };
 
 const ARCHIVE_FORMAT: &str = "LMSP";
 const ARCHIVE_VERSION: u32 = 2;
 const PAYLOAD_SCHEMA: &str = "zenithstrat.gto.v2.CompactLineMatrix";
-const STRATEGY: &str = "default";
-const PLAYER_COUNT: u32 = 6;
-const DEPTH_BB: u32 = 100;
 
 #[derive(Debug, Clone)]
 pub struct CompactLineMatrixArchiveOptions {
     pub source_db: PathBuf,
     pub out_dir: PathBuf,
+    pub dimension: DimensionSpec,
     pub overwrite: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct CompactLineMatrixArchiveSummary {
+    pub strategy: String,
+    pub player_count: u32,
+    pub depth_bb: u32,
     pub matrix_count: u64,
+    pub action_value_count: u64,
     pub protobuf_bytes: u64,
     pub manifest_path: PathBuf,
     pub data_path: PathBuf,
@@ -49,11 +60,80 @@ pub struct CompactLineMatrixArchiveSummary {
     pub metadata_path: PathBuf,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CompactLineMatrixArchiveVerificationSummary {
+    pub matrix_count: u64,
+    pub action_count: u64,
+    pub action_value_count: u64,
+}
+
 #[derive(Debug, Clone)]
+pub struct CompactLineMatrixArchivesOptions {
+    pub source_db: PathBuf,
+    pub out_dir: PathBuf,
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactLineMatrixDimensionStorageSummary {
+    pub strategy: String,
+    pub player_count: u32,
+    pub depth_bb: u32,
+    pub matrix_count: u64,
+    pub action_value_count: u64,
+    pub data_bytes: u64,
+    pub index_bytes: u64,
+    pub bin_idx_bytes: u64,
+    pub metadata_bytes: u64,
+    pub manifest_bytes: u64,
+    pub archive_bytes: u64,
+    pub archive_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CompactLineMatrixStorageReport {
+    pub source_db: PathBuf,
+    pub sqlite_bytes: u64,
+    pub dimensions: Vec<CompactLineMatrixDimensionStorageSummary>,
+    pub total_data_bytes: u64,
+    pub total_index_bytes: u64,
+    pub total_bin_idx_bytes: u64,
+    pub total_archive_bytes: u64,
+    pub bin_idx_to_sqlite_ratio: f64,
+    pub bin_idx_to_sqlite_percent: f64,
+    pub sqlite_share_percent: f64,
+    pub bin_idx_share_percent: f64,
+    #[serde(skip)]
+    pub report_path: PathBuf,
+}
+
+#[derive(Debug)]
 pub struct CompactLineMatrixArchive {
-    data_path: PathBuf,
-    index_path: PathBuf,
+    data_mmap: Mmap,
+    index_mmap: Mmap,
+    _data_file: File,
+    _index_file: File,
+    dimension: DimensionSpec,
     matrix_count: u64,
+    verify_checksums: bool,
+    cache: Mutex<SimpleLru>,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompactArchiveOpenOptions {
+    pub verify_checksums: bool,
+    pub cache_capacity: usize,
+}
+
+impl Default for CompactArchiveOpenOptions {
+    fn default() -> Self {
+        Self {
+            verify_checksums: true,
+            cache_capacity: 1024,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,7 +146,46 @@ pub struct HandActionValue {
 pub struct DecodedCompactLineMatrix {
     matrix: CompactLineMatrix,
     hand_id_to_global_index: Vec<i16>,
-    action_global_to_local_index: Vec<Vec<i16>>,
+    action_offsets: Vec<usize>,
+    action_global_to_local_index: Vec<i16>,
+}
+
+#[derive(Debug)]
+struct SimpleLru {
+    capacity: usize,
+    data: std::collections::HashMap<u64, (DecodedCompactLineMatrix, u64)>,
+    counter: u64,
+}
+
+impl SimpleLru {
+    fn new(capacity: usize) -> Self {
+        Self {
+            capacity: capacity.max(1),
+            data: std::collections::HashMap::new(),
+            counter: 0,
+        }
+    }
+
+    fn get(&mut self, key: u64) -> Option<&DecodedCompactLineMatrix> {
+        let entry = self.data.get_mut(&key)?;
+        self.counter = self.counter.wrapping_add(1);
+        entry.1 = self.counter;
+        Some(&entry.0)
+    }
+
+    fn put(&mut self, key: u64, value: DecodedCompactLineMatrix) {
+        self.counter = self.counter.wrapping_add(1);
+        if self.data.contains_key(&key) {
+            self.data.insert(key, (value, self.counter));
+            return;
+        }
+        if self.data.len() >= self.capacity {
+            if let Some((&lru_key, _)) = self.data.iter().min_by_key(|(_, (_, seq))| *seq) {
+                self.data.remove(&lru_key);
+            }
+        }
+        self.data.insert(key, (value, self.counter));
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -98,7 +217,7 @@ pub fn export_compact_line_matrix_archive(
             options.source_db.display()
         )));
     }
-    let dimension = DimensionSpec::parse("default:6:100")?;
+    let dimension = options.dimension.clone();
     let source = Connection::open(&options.source_db, true)?;
     let lines = load_all_lines(&source, &dimension)?;
     validate_dense_line_ids(&lines)?;
@@ -117,7 +236,7 @@ pub fn export_compact_line_matrix_archive(
         remove_if_exists(path)?;
     }
 
-    let (matrix_count, protobuf_bytes) = match build_archive_files(
+    let (matrix_count, protobuf_bytes, action_value_count) = match build_archive_files(
         &source,
         &dimension,
         &lines,
@@ -137,9 +256,9 @@ pub fn export_compact_line_matrix_archive(
         format: ARCHIVE_FORMAT.to_owned(),
         version: ARCHIVE_VERSION,
         payload_schema: PAYLOAD_SCHEMA.to_owned(),
-        strategy: STRATEGY.to_owned(),
-        player_count: PLAYER_COUNT,
-        depth_bb: DEPTH_BB,
+        strategy: dimension.strategy.clone(),
+        player_count: dimension.player_count,
+        depth_bb: dimension.depth_bb,
         matrix_schema_version: 2,
         hand_encoding: HandEncoding::HandEncoding169.as_str_name().to_owned(),
         matrix_count,
@@ -161,7 +280,11 @@ pub fn export_compact_line_matrix_archive(
     fs::rename(&metadata_tmp, &metadata_path)?;
     fs::rename(&manifest_tmp, &manifest_path)?;
     Ok(CompactLineMatrixArchiveSummary {
+        strategy: dimension.strategy,
+        player_count: dimension.player_count,
+        depth_bb: dimension.depth_bb,
         matrix_count,
+        action_value_count,
         protobuf_bytes,
         manifest_path,
         data_path,
@@ -170,8 +293,183 @@ pub fn export_compact_line_matrix_archive(
     })
 }
 
+pub fn export_all_compact_line_matrix_archives(
+    options: &CompactLineMatrixArchivesOptions,
+) -> Result<CompactLineMatrixStorageReport, ToolError> {
+    if !options.source_db.is_file() {
+        return Err(ToolError::invalid_argument(format!(
+            "Source database does not exist: {}",
+            options.source_db.display()
+        )));
+    }
+    fs::create_dir_all(&options.out_dir)?;
+    let report_path = options.out_dir.join("storage-comparison.json");
+    if report_path.exists() && !options.overwrite {
+        return Err(ToolError::invalid_argument(format!(
+            "Storage report already exists: {}. Use --overwrite to replace it",
+            report_path.display()
+        )));
+    }
+
+    let sqlite_bytes = fs::metadata(&options.source_db)?.len();
+    let source = Connection::open(&options.source_db, true)?;
+    let dimensions = discover_dimensions(&source)?;
+    drop(source);
+    if dimensions.is_empty() {
+        return Err(ToolError::new(
+            "LINE_MATRIX_ARCHIVE_EMPTY",
+            "Source database has no discoverable range dimensions",
+        ));
+    }
+
+    let mut summaries = Vec::with_capacity(dimensions.len());
+    let mut total_data_bytes = 0u64;
+    let mut total_index_bytes = 0u64;
+    let mut total_archive_bytes = 0u64;
+    for dimension in dimensions {
+        let archive_dir = options.out_dir.join(format!(
+            "{}_{}max_{}BB",
+            dimension.strategy, dimension.player_count, dimension.depth_bb
+        ));
+        let summary = export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+            source_db: options.source_db.clone(),
+            out_dir: archive_dir.clone(),
+            dimension: dimension.clone(),
+            overwrite: options.overwrite,
+        })?;
+        let verification = CompactLineMatrixArchive::open(&archive_dir)?.verify_all()?;
+        if verification.matrix_count != summary.matrix_count
+            || verification.action_value_count != summary.action_value_count
+        {
+            return Err(ToolError::new(
+                "COMPACT_ARCHIVE_VERIFICATION_MISMATCH",
+                format!(
+                    "Dimension {}:{}:{} export and read-back totals differ",
+                    dimension.strategy, dimension.player_count, dimension.depth_bb
+                ),
+            ));
+        }
+
+        let data_bytes = fs::metadata(&summary.data_path)?.len();
+        let index_bytes = fs::metadata(&summary.index_path)?.len();
+        let metadata_bytes = fs::metadata(&summary.metadata_path)?.len();
+        let manifest_bytes = fs::metadata(&summary.manifest_path)?.len();
+        let bin_idx_bytes = data_bytes
+            .checked_add(index_bytes)
+            .ok_or_else(|| ToolError::invalid_format("Compact bin+idx size overflow"))?;
+        let archive_bytes = bin_idx_bytes
+            .checked_add(metadata_bytes)
+            .and_then(|size| size.checked_add(manifest_bytes))
+            .ok_or_else(|| ToolError::invalid_format("Compact archive size overflow"))?;
+        total_data_bytes = total_data_bytes
+            .checked_add(data_bytes)
+            .ok_or_else(|| ToolError::invalid_format("Compact data size overflow"))?;
+        total_index_bytes = total_index_bytes
+            .checked_add(index_bytes)
+            .ok_or_else(|| ToolError::invalid_format("Compact index size overflow"))?;
+        total_archive_bytes = total_archive_bytes
+            .checked_add(archive_bytes)
+            .ok_or_else(|| ToolError::invalid_format("Compact archive size overflow"))?;
+        summaries.push(CompactLineMatrixDimensionStorageSummary {
+            strategy: dimension.strategy,
+            player_count: dimension.player_count,
+            depth_bb: dimension.depth_bb,
+            matrix_count: summary.matrix_count,
+            action_value_count: summary.action_value_count,
+            data_bytes,
+            index_bytes,
+            bin_idx_bytes,
+            metadata_bytes,
+            manifest_bytes,
+            archive_bytes,
+            archive_dir,
+        });
+    }
+
+    let total_bin_idx_bytes = total_data_bytes
+        .checked_add(total_index_bytes)
+        .ok_or_else(|| ToolError::invalid_format("Compact bin+idx total size overflow"))?;
+    let comparison_total = sqlite_bytes
+        .checked_add(total_bin_idx_bytes)
+        .ok_or_else(|| ToolError::invalid_format("Storage comparison size overflow"))?;
+    let bin_idx_to_sqlite_ratio = total_bin_idx_bytes as f64 / sqlite_bytes as f64;
+    let report = CompactLineMatrixStorageReport {
+        source_db: options.source_db.clone(),
+        sqlite_bytes,
+        dimensions: summaries,
+        total_data_bytes,
+        total_index_bytes,
+        total_bin_idx_bytes,
+        total_archive_bytes,
+        bin_idx_to_sqlite_ratio,
+        bin_idx_to_sqlite_percent: bin_idx_to_sqlite_ratio * 100.0,
+        sqlite_share_percent: sqlite_bytes as f64 / comparison_total as f64 * 100.0,
+        bin_idx_share_percent: total_bin_idx_bytes as f64 / comparison_total as f64 * 100.0,
+        report_path: report_path.clone(),
+    };
+    let json = serde_json::to_string_pretty(&report)
+        .map_err(|error| ToolError::invalid_format(error.to_string()))?;
+    fs::write(&report_path, format!("{json}\n"))?;
+    Ok(report)
+}
+
+impl CompactLineMatrixArchiveVerificationSummary {
+    fn empty() -> Self {
+        Self {
+            matrix_count: 0,
+            action_count: 0,
+            action_value_count: 0,
+        }
+    }
+
+    fn include(&mut self, decoded: &DecodedCompactLineMatrix) -> Result<(), ToolError> {
+        self.matrix_count = self
+            .matrix_count
+            .checked_add(1)
+            .ok_or_else(|| ToolError::invalid_format("Compact archive matrix count overflow"))?;
+        self.action_count = self
+            .action_count
+            .checked_add(decoded.matrix.actions.len() as u64)
+            .ok_or_else(|| ToolError::invalid_format("Compact archive action count overflow"))?;
+        for action in &decoded.matrix.actions {
+            self.action_value_count = self
+                .action_value_count
+                .checked_add(action.frequency_x10000.len() as u64)
+                .ok_or_else(|| {
+                    ToolError::invalid_format("Compact archive action value count overflow")
+                })?;
+        }
+        Ok(())
+    }
+
+    fn merge(&mut self, other: Self) -> Result<(), ToolError> {
+        self.matrix_count = self
+            .matrix_count
+            .checked_add(other.matrix_count)
+            .ok_or_else(|| ToolError::invalid_format("Compact archive matrix count overflow"))?;
+        self.action_count = self
+            .action_count
+            .checked_add(other.action_count)
+            .ok_or_else(|| ToolError::invalid_format("Compact archive action count overflow"))?;
+        self.action_value_count = self
+            .action_value_count
+            .checked_add(other.action_value_count)
+            .ok_or_else(|| {
+                ToolError::invalid_format("Compact archive action value count overflow")
+            })?;
+        Ok(())
+    }
+}
+
 impl CompactLineMatrixArchive {
     pub fn open(dir: &Path) -> Result<Self, ToolError> {
+        Self::open_with_options(dir, CompactArchiveOpenOptions::default())
+    }
+
+    pub fn open_with_options(
+        dir: &Path,
+        options: CompactArchiveOpenOptions,
+    ) -> Result<Self, ToolError> {
         let manifest_path = dir.join(MANIFEST_FILE_NAME);
         let manifest: ArchiveManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
             .map_err(|error| ToolError::invalid_format(error.to_string()))?;
@@ -183,10 +481,11 @@ impl CompactLineMatrixArchive {
                 "Compact archive metadata file does not exist",
             ));
         }
-        let mut data = File::open(&data_path)?;
-        let mut index = File::open(&index_path)?;
-        let data_count = read_header(&mut data, DATA_MAGIC)?;
-        let index_count = read_header(&mut index, INDEX_MAGIC)?;
+
+        let mut data_file = File::open(&data_path)?;
+        let mut index_file = File::open(&index_path)?;
+        let data_count = read_header(&mut data_file, DATA_MAGIC)?;
+        let index_count = read_header(&mut index_file, INDEX_MAGIC)?;
         if data_count != manifest.matrix_count || index_count != manifest.matrix_count {
             return Err(ToolError::invalid_format(
                 "Compact archive record counts differ between manifest and binary files",
@@ -202,16 +501,43 @@ impl CompactLineMatrixArchive {
                     })?,
             )
             .ok_or_else(|| ToolError::invalid_format("Compact archive index size overflow"))?;
-        if fs::metadata(&index_path)?.len() != expected_index_size {
+        let data_size = data_file.metadata()?.len();
+        let index_size = index_file.metadata()?.len();
+        if index_size != expected_index_size || index_size != manifest.index_file_size_bytes {
             return Err(ToolError::invalid_format(
                 "Compact archive index file size is invalid",
             ));
         }
+        if data_size != manifest.data_file_size_bytes {
+            return Err(ToolError::invalid_format(
+                "Compact archive data file size is invalid",
+            ));
+        }
+
+        // SAFETY: archive files are opened read-only, retained for the mapping lifetime,
+        // and must remain immutable while this reader is alive.
+        let data_mmap = unsafe { Mmap::map(&data_file)? };
+        // SAFETY: same immutable archive contract as the data mapping above.
+        let index_mmap = unsafe { Mmap::map(&index_file)? };
+        let cache_capacity = options.cache_capacity.max(1);
         Ok(Self {
-            data_path,
-            index_path,
+            data_mmap,
+            index_mmap,
+            _data_file: data_file,
+            _index_file: index_file,
+            dimension: DimensionSpec {
+                strategy: manifest.strategy,
+                player_count: manifest.player_count,
+                depth_bb: manifest.depth_bb,
+            },
             matrix_count: manifest.matrix_count,
+            verify_checksums: options.verify_checksums,
+            cache: Mutex::new(SimpleLru::new(cache_capacity)),
         })
+    }
+
+    pub fn dimension(&self) -> &DimensionSpec {
+        &self.dimension
     }
 
     pub fn matrix_count(&self) -> u64 {
@@ -222,32 +548,87 @@ impl CompactLineMatrixArchive {
         &self,
         concrete_line_id: u64,
     ) -> Result<DecodedCompactLineMatrix, ToolError> {
+        {
+            let mut cache = self.cache.lock().expect("compact cache lock poisoned");
+            if let Some(decoded) = cache.get(concrete_line_id) {
+                return Ok(decoded.clone());
+            }
+        }
+        let decoded = self.decode_matrix_uncached(concrete_line_id, self.verify_checksums)?;
+        let cached = decoded.clone();
+        {
+            let mut cache = self.cache.lock().expect("compact cache lock poisoned");
+            cache.put(concrete_line_id, cached);
+        }
+        Ok(decoded)
+    }
+
+    fn decode_matrix_uncached(
+        &self,
+        concrete_line_id: u64,
+        verify: bool,
+    ) -> Result<DecodedCompactLineMatrix, ToolError> {
         if concrete_line_id == 0 || concrete_line_id > self.matrix_count {
             return Err(ToolError::new(
                 "LINE_NOT_FOUND",
                 format!("Concrete line {concrete_line_id} is not in this archive"),
             ));
         }
-        let mut index = File::open(&self.index_path)?;
-        let record = read_index_record(&mut index, concrete_line_id)?;
-        let data_len = fs::metadata(&self.data_path)?.len();
+        let record = read_index_record_from_slice(&self.index_mmap, concrete_line_id)?;
         let payload_end = record
             .offset
             .checked_add(u64::from(record.byte_length))
             .ok_or_else(|| ToolError::invalid_format("Compact archive payload offset overflow"))?;
-        if record.offset < HEADER_SIZE as u64 || payload_end > data_len {
+        if record.offset < HEADER_SIZE as u64 || payload_end > self.data_mmap.len() as u64 {
             return Err(ToolError::invalid_format(
                 "Compact archive index record points outside data file",
             ));
         }
-        let mut payload = vec![0u8; record.byte_length as usize];
-        let mut data = File::open(&self.data_path)?;
-        data.seek(SeekFrom::Start(record.offset))?;
-        data.read_exact(&mut payload)?;
-        assert_crc32c(&payload, record.crc32c).map_err(ToolError::invalid_format)?;
-        let matrix = CompactLineMatrix::decode(payload.as_slice())
+        let start = usize::try_from(record.offset)
+            .map_err(|_| ToolError::invalid_format("Compact payload offset exceeds usize"))?;
+        let end = usize::try_from(payload_end)
+            .map_err(|_| ToolError::invalid_format("Compact payload end exceeds usize"))?;
+        let payload = self
+            .data_mmap
+            .get(start..end)
+            .ok_or_else(|| ToolError::invalid_format("Compact payload is truncated"))?;
+        if verify {
+            assert_crc32c(payload, record.crc32c).map_err(ToolError::invalid_format)?;
+        }
+        let matrix = CompactLineMatrix::decode(payload)
             .map_err(|error| ToolError::new("PROTOBUF_DECODE_ERROR", error.to_string()))?;
         DecodedCompactLineMatrix::new(matrix)
+    }
+
+    pub fn verify_all(&self) -> Result<CompactLineMatrixArchiveVerificationSummary, ToolError> {
+        (1..=self.matrix_count)
+            .into_par_iter()
+            .try_fold(
+                CompactLineMatrixArchiveVerificationSummary::empty,
+                |mut summary, concrete_line_id| {
+                    let decoded = self.decode_matrix_uncached(concrete_line_id, true)?;
+                    summary.include(&decoded)?;
+                    Ok(summary)
+                },
+            )
+            .try_reduce(
+                CompactLineMatrixArchiveVerificationSummary::empty,
+                |mut left, right| {
+                    left.merge(right)?;
+                    Ok(left)
+                },
+            )
+    }
+
+    pub fn verify_all_sequential(
+        &self,
+    ) -> Result<CompactLineMatrixArchiveVerificationSummary, ToolError> {
+        let mut summary = CompactLineMatrixArchiveVerificationSummary::empty();
+        for concrete_line_id in 1..=self.matrix_count {
+            let decoded = self.decode_matrix_uncached(concrete_line_id, true)?;
+            summary.include(&decoded)?;
+        }
+        Ok(summary)
     }
 }
 
@@ -257,14 +638,21 @@ impl DecodedCompactLineMatrix {
         let hand_id_to_global_index =
             build_compact_index_map(&matrix.valid_hand_bitmap, HAND_COUNT_169);
         let valid_hand_count = count_bits(&matrix.valid_hand_bitmap);
-        let action_global_to_local_index = matrix
-            .actions
-            .iter()
-            .map(|action| build_compact_index_map(&action.action_hand_bitmap, valid_hand_count))
-            .collect();
+        let mut action_offsets = Vec::with_capacity(matrix.actions.len() + 1);
+        let mut action_global_to_local_index =
+            Vec::with_capacity(matrix.actions.len() * valid_hand_count);
+        for action in &matrix.actions {
+            action_offsets.push(action_global_to_local_index.len());
+            action_global_to_local_index.extend(build_compact_index_map(
+                &action.action_hand_bitmap,
+                valid_hand_count,
+            ));
+        }
+        action_offsets.push(action_global_to_local_index.len());
         Ok(Self {
             matrix,
             hand_id_to_global_index,
+            action_offsets,
             action_global_to_local_index,
         })
     }
@@ -278,18 +666,36 @@ impl DecodedCompactLineMatrix {
         if global_index < 0 {
             return None;
         }
-        let local_index = *self
-            .action_global_to_local_index
-            .get(action_index)?
-            .get(global_index as usize)?;
+        let action = self.matrix.actions.get(action_index)?;
+        let start = *self.action_offsets.get(action_index)?;
+        let end = *self.action_offsets.get(action_index + 1)?;
+        let position = start.checked_add(global_index as usize)?;
+        if position >= end {
+            return None;
+        }
+        let local_index = *self.action_global_to_local_index.get(position)?;
         if local_index < 0 {
             return None;
         }
-        let action = self.matrix.actions.get(action_index)?;
         Some(HandActionValue {
             frequency_x10000: *action.frequency_x10000.get(local_index as usize)?,
             ev_x10000: *action.ev_x10000.get(local_index as usize)?,
         })
+    }
+
+    pub fn action_value_by_identity(
+        &self,
+        action_type: ActionType,
+        action_size_x10000: u32,
+        amount_centi_bb: u32,
+        hand_id: usize,
+    ) -> Option<HandActionValue> {
+        let action_index = self.matrix.actions.iter().position(|action| {
+            action.action_type == action_type as i32
+                && action.action_size_x10000 == action_size_x10000
+                && action.amount_centi_bb == amount_centi_bb
+        })?;
+        self.action_value(action_index, hand_id)
     }
 }
 
@@ -300,7 +706,7 @@ fn build_archive_files(
     data_tmp: &Path,
     index_tmp: &Path,
     metadata_tmp: &Path,
-) -> Result<(u64, u64), ToolError> {
+) -> Result<(u64, u64, u64), ToolError> {
     let mut data = create_new_file(data_tmp)?;
     let mut index = create_new_file(index_tmp)?;
     write_header(&mut data, DATA_MAGIC, 0)?;
@@ -311,9 +717,30 @@ fn build_archive_files(
     let result = (|| {
         let mut offset = HEADER_SIZE as u64;
         let mut protobuf_bytes = 0u64;
+        let mut action_value_count = 0u64;
         for line in lines {
-            let rows = load_rows(source, dimension, line.concrete_line_id)?;
+            let rows = load_rows_with_ev(source, dimension, line.concrete_line_id)?;
             let matrix = build_compact_line_matrix(&rows)?;
+            let matrix_action_value_count = matrix
+                .actions
+                .iter()
+                .map(|action| action.frequency_x10000.len())
+                .sum::<usize>();
+            if matrix_action_value_count != rows.len() {
+                return Err(ToolError::new(
+                    "COMPACT_ACTION_VALUE_COUNT_MISMATCH",
+                    format!(
+                        "Concrete line {} encoded {matrix_action_value_count} values from {} non-NULL EV rows",
+                        line.concrete_line_id,
+                        rows.len()
+                    ),
+                ));
+            }
+            action_value_count = action_value_count
+                .checked_add(matrix_action_value_count as u64)
+                .ok_or_else(|| {
+                    ToolError::invalid_format("Compact archive action value count overflow")
+                })?;
             let payload = matrix.encode_to_vec();
             let decoded = CompactLineMatrix::decode(payload.as_slice())
                 .map_err(|error| ToolError::new("PROTOBUF_DECODE_ERROR", error.to_string()))?;
@@ -361,7 +788,7 @@ fn build_archive_files(
         write_header(&mut index, INDEX_MAGIC, matrix_count)?;
         data.sync_all()?;
         index.sync_all()?;
-        Ok((matrix_count, protobuf_bytes))
+        Ok((matrix_count, protobuf_bytes, action_value_count))
     })();
     if result.is_err() {
         let _ = metadata.exec("ROLLBACK");
@@ -437,9 +864,9 @@ fn validate_manifest(manifest: &ArchiveManifest) -> Result<(), ToolError> {
             "Unsupported Compact LineMatrix archive manifest",
         ));
     }
-    if manifest.strategy != STRATEGY
-        || manifest.player_count != PLAYER_COUNT
-        || manifest.depth_bb != DEPTH_BB
+    if manifest.strategy.is_empty()
+        || manifest.player_count == 0
+        || manifest.depth_bb == 0
         || manifest.matrix_schema_version != 2
         || manifest.hand_encoding != HandEncoding::HandEncoding169.as_str_name()
     {

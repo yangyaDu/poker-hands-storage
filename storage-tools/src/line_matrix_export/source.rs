@@ -125,10 +125,32 @@ pub(crate) fn load_rows(
     dimension: &DimensionSpec,
     concrete_line_id: u32,
 ) -> Result<Vec<SourceRow>, ToolError> {
+    load_rows_matching(connection, dimension, concrete_line_id, false)
+}
+
+pub(crate) fn load_rows_with_ev(
+    connection: &Connection,
+    dimension: &DimensionSpec,
+    concrete_line_id: u32,
+) -> Result<Vec<SourceRow>, ToolError> {
+    load_rows_matching(connection, dimension, concrete_line_id, true)
+}
+
+fn load_rows_matching(
+    connection: &Connection,
+    dimension: &DimensionSpec,
+    concrete_line_id: u32,
+    require_hand_ev: bool,
+) -> Result<Vec<SourceRow>, ToolError> {
     let table = quote_identifier(&dimension.range_table())?;
+    let hand_ev_filter = if require_hand_ev {
+        " AND hand_ev IS NOT NULL"
+    } else {
+        ""
+    };
     let mut statement = connection.prepare(&format!(
         "SELECT hole_cards, action_name, action_size, amount_bb, frequency, hand_ev \
-         FROM {table} WHERE concrete_line_id = ?1 \
+         FROM {table} WHERE concrete_line_id = ?1{hand_ev_filter} \
          ORDER BY hole_cards, action_name, action_size, amount_bb"
     ))?;
     statement.start(&[Value::from(concrete_line_id)])?;
@@ -147,7 +169,10 @@ pub(crate) fn load_rows(
     if rows.is_empty() {
         return Err(ToolError::new(
             "LINE_MATRIX_EMPTY",
-            format!("Concrete line {concrete_line_id} has no range rows"),
+            format!(
+                "Concrete line {concrete_line_id} has no {}range rows",
+                if require_hand_ev { "non-NULL EV " } else { "" }
+            ),
         ));
     }
     Ok(rows)

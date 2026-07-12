@@ -30,3 +30,4 @@ nul
 .tmp/
 range-store-native/*.node
 range-store-native/native.d.ts
+target-msvc/

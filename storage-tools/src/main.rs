@@ -15,8 +15,15 @@ use poker_hands_storage_tools::benchmark::run_cold_benchmark;
 use poker_hands_storage_tools::benchmark::run_drill_metadata_benchmark;
 use poker_hands_storage_tools::benchmark::run_hot_benchmark;
 use poker_hands_storage_tools::benchmark::run_native_benchmark;
-use poker_hands_storage_tools::compact_line_matrix_archive::cli::parse_export_compact_line_matrix_archive_args;
-use poker_hands_storage_tools::compact_line_matrix_archive::export_compact_line_matrix_archive;
+use poker_hands_storage_tools::compact_line_matrix_archive::cli::{
+    parse_benchmark_compact_vs_core_args, parse_compact_vs_core_cold_worker_args,
+    parse_export_all_compact_line_matrix_archives_args,
+    parse_export_compact_line_matrix_archive_args, parse_verify_compact_line_matrix_archive_args,
+};
+use poker_hands_storage_tools::compact_line_matrix_archive::{
+    export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
+    run_compact_vs_core_benchmark, run_compact_vs_core_cold_worker, CompactLineMatrixArchive,
+};
 use poker_hands_storage_tools::errors::ToolError;
 use poker_hands_storage_tools::line_matrix_archive::cli::parse_export_line_matrix_archive_args;
 use poker_hands_storage_tools::line_matrix_archive::export_line_matrix_archive;
@@ -44,6 +51,14 @@ fn run() -> Result<(), ToolError> {
         Some("export-compact-line-matrix-archive") => {
             run_export_compact_line_matrix_archive(args.collect())
         }
+        Some("export-all-compact-line-matrix-archives") => {
+            run_export_all_compact_line_matrix_archives(args.collect())
+        }
+        Some("verify-compact-line-matrix-archive") => {
+            run_verify_compact_line_matrix_archive(args.collect())
+        }
+        Some("benchmark-compact-vs-core") => run_benchmark_compact_vs_core(args.collect()),
+        Some("compact-vs-core-cold-worker") => run_compact_vs_core_cold_worker_cmd(args.collect()),
         Some("export-line-matrix-archive") => run_export_line_matrix_archive(args.collect()),
         Some("export-line-matrix") => run_export_line_matrix(args.collect()),
         Some("verify") => run_verify(args.collect()),
@@ -69,6 +84,44 @@ fn run() -> Result<(), ToolError> {
     }
 }
 
+fn run_benchmark_compact_vs_core(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_benchmark_compact_vs_core_args(args)?;
+    let report = run_compact_vs_core_benchmark(&command)?;
+    println!("CompactLineMatrix V2 vs core benchmark complete.");
+    println!("  Dimension: {}", report.dimension);
+    println!(
+        "  Hot compact/core P95 ratio: {:.2}x",
+        report.hot.compact_to_core_p95_ratio
+    );
+    println!(
+        "  Cold compact/core open+first P95 ratio: {:.2}x",
+        report.cold.compact_to_core_open_and_first_query_p95_ratio
+    );
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(ToolError::new(
+            "COMPACT_VS_CORE_BENCHMARK_FAILED",
+            "compact/core benchmark had errors",
+        ));
+    }
+    Ok(())
+}
+
+fn run_compact_vs_core_cold_worker_cmd(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_compact_vs_core_cold_worker_args(args)?;
+    let output = run_compact_vs_core_cold_worker(&command);
+    println!(
+        "{}",
+        serde_json::to_string(&output)
+            .map_err(|error| ToolError::invalid_format(error.to_string()))?
+    );
+    if !output.ok {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
 fn run_export_line_matrix_archive(args: Vec<String>) -> Result<(), ToolError> {
     let options = parse_export_line_matrix_archive_args(args)?;
     let summary = export_line_matrix_archive(&options)?;
@@ -87,13 +140,65 @@ fn run_export_compact_line_matrix_archive(args: Vec<String>) -> Result<(), ToolE
     let options = parse_export_compact_line_matrix_archive_args(args)?;
     let summary = export_compact_line_matrix_archive(&options)?;
     println!("Compact LineMatrix archive export complete.");
-    println!("  Dimension: default:6:100");
+    println!(
+        "  Dimension: {}:{}:{}",
+        summary.strategy, summary.player_count, summary.depth_bb
+    );
     println!("  Matrix count: {}", summary.matrix_count);
+    println!("  Action values: {}", summary.action_value_count);
     println!("  Protobuf bytes: {}", summary.protobuf_bytes);
     println!("  Manifest: {}", summary.manifest_path.display());
     println!("  Data: {}", summary.data_path.display());
     println!("  Index: {}", summary.index_path.display());
     println!("  Metadata: {}", summary.metadata_path.display());
+    Ok(())
+}
+
+fn run_export_all_compact_line_matrix_archives(args: Vec<String>) -> Result<(), ToolError> {
+    let options = parse_export_all_compact_line_matrix_archives_args(args)?;
+    let report = export_all_compact_line_matrix_archives(&options)?;
+    println!("All Compact LineMatrix archives exported and verified.");
+    for dimension in &report.dimensions {
+        println!(
+            "  {}:{}:{} matrices={} values={} lmbin={} lmidx={} bin+idx={}",
+            dimension.strategy,
+            dimension.player_count,
+            dimension.depth_bb,
+            dimension.matrix_count,
+            dimension.action_value_count,
+            dimension.data_bytes,
+            dimension.index_bytes,
+            dimension.bin_idx_bytes
+        );
+    }
+    println!("  SQLite bytes: {}", report.sqlite_bytes);
+    println!("  Total lmbin bytes: {}", report.total_data_bytes);
+    println!("  Total lmidx bytes: {}", report.total_index_bytes);
+    println!("  Total bin+idx bytes: {}", report.total_bin_idx_bytes);
+    println!(
+        "  bin+idx / SQLite: {:.6}%",
+        report.bin_idx_to_sqlite_percent
+    );
+    println!(
+        "  SQLite share of SQLite+bin+idx: {:.6}%",
+        report.sqlite_share_percent
+    );
+    println!(
+        "  bin+idx share of SQLite+bin+idx: {:.6}%",
+        report.bin_idx_share_percent
+    );
+    println!("  Report: {}", report.report_path.display());
+    Ok(())
+}
+
+fn run_verify_compact_line_matrix_archive(args: Vec<String>) -> Result<(), ToolError> {
+    let dir = parse_verify_compact_line_matrix_archive_args(args)?;
+    let archive = CompactLineMatrixArchive::open(&dir)?;
+    let summary = archive.verify_all()?;
+    println!("Compact LineMatrix archive verification complete.");
+    println!("  Matrix count: {}", summary.matrix_count);
+    println!("  Action count: {}", summary.action_count);
+    println!("  Action values: {}", summary.action_value_count);
     Ok(())
 }
 
@@ -513,8 +618,23 @@ Commands:
         Exports every LineMatrix for default:6:100.
 
   export-compact-line-matrix-archive --source-db <range.db> --out-dir <dir>
+        [--dimension strategy:player_count:depth_bb] [--overwrite]
+        Exports one V2 CompactLineMatrix dimension (default:6:100).
+
+  export-all-compact-line-matrix-archives --source-db <range.db> --out-dir <dir>
         [--overwrite]
-        Exports V2 CompactLineMatrix payloads for default:6:100.
+        Discovers, exports, verifies, and reports every V2 dimension.
+
+  verify-compact-line-matrix-archive --dir <dir>
+        Verifies every V2 record checksum, payload, and compact index.
+
+  benchmark-compact-vs-core --compact-dir <compact-archive-dir> --core-dir <range-strata-dir>
+        --dimension <strategy:player_count:depth_bb>
+        [--hot-iterations <count>] [--warmup-iterations <count>]
+        [--cold-runs <count>] [--cold-mode <process-cold|os-best-effort|linux-drop-cache>]
+        [--cache-filler-mb <mb>] [--seed <number>] [--max-open-handles <count>]
+        [--concrete-line-id <id> --hand-id <0..168>] [--verify-checksum]
+        [--out <report.json>] [--md <report.md>]
 
   verify --dir <dir> [--mode standalone|cross] [--source <range.db>]
          [--verify-checksum] [--sample-size <n>] [--max-failures <n>]

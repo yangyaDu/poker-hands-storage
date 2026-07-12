@@ -1,8 +1,10 @@
 use std::fs;
 use std::process::Command;
 
+use poker_hands_storage_tools::compact_line_matrix::proto::ActionType as CompactActionType;
 use poker_hands_storage_tools::compact_line_matrix_archive::{
-    export_compact_line_matrix_archive, CompactLineMatrixArchive, CompactLineMatrixArchiveOptions,
+    export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
+    CompactLineMatrixArchive, CompactLineMatrixArchiveOptions, CompactLineMatrixArchivesOptions,
 };
 use poker_hands_storage_tools::line_matrix_archive::{
     export_line_matrix_archive, LineMatrixArchive, LineMatrixArchiveOptions,
@@ -205,25 +207,18 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
     let temp = tempfile::tempdir().expect("temp dir");
     let source_db = temp.path().join("range.db");
     create_source_fixture(&source_db);
-    let connection = Connection::open(&source_db, false).expect("open fixture database");
-    connection
-        .exec(
-            "UPDATE range_data_default_6max_100BB
-             SET frequency = 0.0
-             WHERE concrete_line_id = 1 AND hole_cards = 'AKs'
-               AND action_name = 'call'",
-        )
-        .expect("make omitted NULL EV row safe");
     let out_dir = temp.path().join("compact-archive");
 
     let summary = export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
         source_db,
         out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
         overwrite: false,
     })
     .expect("export compact archive");
 
     assert_eq!(summary.matrix_count, 2);
+    assert_eq!(summary.action_value_count, 504);
     assert_eq!(
         fs::metadata(&summary.index_path)
             .expect("index metadata")
@@ -232,6 +227,17 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
     );
 
     let archive = CompactLineMatrixArchive::open(&out_dir).expect("open compact archive");
+    assert_eq!(archive.dimension().strategy, "default");
+    assert_eq!(archive.dimension().player_count, 6);
+    assert_eq!(archive.dimension().depth_bb, 100);
+    let verification = archive.verify_all().expect("verify compact archive");
+    let sequential_verification = archive
+        .verify_all_sequential()
+        .expect("verify compact archive sequentially");
+    assert_eq!(verification, sequential_verification);
+    assert_eq!(verification.matrix_count, 2);
+    assert_eq!(verification.action_count, 5);
+    assert_eq!(verification.action_value_count, 504);
     let first = archive.read_matrix(1).expect("read first compact matrix");
     let matrix = first.matrix();
     assert_eq!(matrix.schema_version, 2);
@@ -260,10 +266,18 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
             }
         )
     );
+    assert_eq!(
+        first.action_value_by_identity(CompactActionType::Call, 0, 0, 2),
+        first.action_value(call_index, 2)
+    );
+    assert_eq!(
+        first.action_value_by_identity(CompactActionType::Allin, 0, 0, 2),
+        None
+    );
 }
 
 #[test]
-fn compact_archive_rejects_null_ev_with_nonzero_frequency() {
+fn compact_archive_does_not_scan_null_ev_rows() {
     let temp = tempfile::tempdir().expect("temp dir");
     let source_db = temp.path().join("range.db");
     create_source_fixture(&source_db);
@@ -271,20 +285,21 @@ fn compact_archive_rejects_null_ev_with_nonzero_frequency() {
     connection
         .exec(
             "UPDATE range_data_default_6max_100BB
-             SET frequency = 0.25
+             SET action_name = 'unsupported', frequency = 2.0
              WHERE concrete_line_id = 1 AND hole_cards = 'AKs'
                AND action_name = 'call'",
         )
-        .expect("make invalid NULL EV row");
+        .expect("make ignored NULL EV row invalid in other fields");
 
-    let error = export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+    let summary = export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
         source_db,
         out_dir: temp.path().join("compact-archive"),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
         overwrite: false,
     })
-    .expect_err("NULL EV with frequency must fail");
+    .expect("NULL EV rows must not be scanned by V2");
 
-    assert_eq!(error.code(), "NULL_EV_WITH_NONZERO_FREQUENCY");
+    assert_eq!(summary.matrix_count, 2);
 }
 
 #[test]
@@ -292,15 +307,6 @@ fn cli_exports_compact_default_6max_100bb_archive() {
     let temp = tempfile::tempdir().expect("temp dir");
     let source_db = temp.path().join("range.db");
     create_source_fixture(&source_db);
-    let connection = Connection::open(&source_db, false).expect("open fixture database");
-    connection
-        .exec(
-            "UPDATE range_data_default_6max_100BB
-             SET frequency = 0.0
-             WHERE concrete_line_id = 1 AND hole_cards = 'AKs'
-               AND action_name = 'call'",
-        )
-        .expect("make omitted NULL EV row safe");
     let out_dir = temp.path().join("compact-archive");
 
     let output = Command::new(env!("CARGO_BIN_EXE_poker-hands-storage-tools"))
@@ -322,6 +328,55 @@ fn cli_exports_compact_default_6max_100bb_archive() {
     assert!(out_dir.join("manifest.json").is_file());
     assert!(String::from_utf8_lossy(&output.stdout)
         .contains("Compact LineMatrix archive export complete."));
+}
+
+#[test]
+fn exports_and_reports_all_discovered_compact_dimensions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "CREATE TABLE concrete_lines_default_8max_200BB AS
+               SELECT * FROM concrete_lines_default_6max_100BB;
+             CREATE TABLE range_data_default_8max_200BB AS
+               SELECT * FROM range_data_default_6max_100BB;",
+        )
+        .expect("clone fixture dimension");
+    drop(connection);
+
+    let out_dir = temp.path().join("all-compact-archives");
+    let report = export_all_compact_line_matrix_archives(&CompactLineMatrixArchivesOptions {
+        source_db: source_db.clone(),
+        out_dir: out_dir.clone(),
+        overwrite: false,
+    })
+    .expect("export all compact dimensions");
+
+    assert_eq!(
+        report.sqlite_bytes,
+        fs::metadata(source_db).expect("sqlite metadata").len()
+    );
+    assert_eq!(report.dimensions.len(), 2);
+    assert_eq!(report.dimensions[0].matrix_count, 2);
+    assert_eq!(report.dimensions[1].matrix_count, 2);
+    assert_eq!(report.dimensions[0].action_value_count, 504);
+    assert_eq!(report.dimensions[1].action_value_count, 504);
+    assert_eq!(
+        report.total_bin_idx_bytes,
+        report.total_data_bytes + report.total_index_bytes
+    );
+    assert!(report.bin_idx_to_sqlite_ratio > 0.0);
+    assert!(out_dir.join("storage-comparison.json").is_file());
+    assert!(out_dir
+        .join("default_6max_100BB")
+        .join("matrices.lmbin")
+        .is_file());
+    assert!(out_dir
+        .join("default_8max_200BB")
+        .join("matrices.lmidx")
+        .is_file());
 }
 
 fn create_source_fixture(path: &std::path::Path) {
