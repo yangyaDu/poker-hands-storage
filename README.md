@@ -121,6 +121,8 @@ poker-hands-storage/
 |   |   |   |-- line_matrix_codec.rs   # payload conversion and validation
 |   |   |   |-- sqlite_source.rs       # SQLite source query
 |   |   |   |-- line_matrix_store.rs   # archive writer and reader
+|   |   |   |-- query_service.rs       # single-dimension core-compatible query
+|   |   |   |-- query_facade.rs        # multi-dimension query and LRU handle pool
 |   |   |   |-- cli.rs                 # archive CLI argument parsing
 |   |   |   |-- format.rs              # archive binary layout
 |   |   |   `-- benchmark.rs           # Proto archive versus core benchmark

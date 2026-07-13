@@ -466,10 +466,7 @@ impl CompactLineMatrixArchive {
         dir: &Path,
         options: CompactArchiveOpenOptions,
     ) -> Result<Self, ToolError> {
-        let manifest_path = dir.join(MANIFEST_FILE_NAME);
-        let manifest: ArchiveManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
-            .map_err(|error| ToolError::invalid_format(error.to_string()))?;
-        validate_manifest(&manifest)?;
+        let manifest = read_archive_manifest(dir)?;
         let data_path = dir.join(&manifest.data_file);
         let index_path = dir.join(&manifest.index_file);
         if !dir.join(&manifest.metadata_file).is_file() {
@@ -626,6 +623,23 @@ impl CompactLineMatrixArchive {
         }
         Ok(summary)
     }
+}
+
+pub fn read_compact_archive_dimension(dir: &Path) -> Result<DimensionSpec, ToolError> {
+    let manifest = read_archive_manifest(dir)?;
+    Ok(DimensionSpec {
+        strategy: manifest.strategy,
+        player_count: manifest.player_count,
+        depth_bb: manifest.depth_bb,
+    })
+}
+
+fn read_archive_manifest(dir: &Path) -> Result<ArchiveManifest, ToolError> {
+    let manifest_path = dir.join(MANIFEST_FILE_NAME);
+    let manifest: ArchiveManifest = serde_json::from_slice(&fs::read(&manifest_path)?)
+        .map_err(|error| ToolError::invalid_format(error.to_string()))?;
+    validate_manifest(&manifest)?;
+    Ok(manifest)
 }
 
 impl DecodedCompactLineMatrix {

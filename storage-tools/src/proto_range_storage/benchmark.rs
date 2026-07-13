@@ -19,9 +19,7 @@ use crate::benchmark::report_support::{
 };
 use crate::errors::ToolError;
 
-use super::line_matrix_store::{CompactArchiveOpenOptions, CompactLineMatrixArchive};
-
-const HAND_COUNT_169: usize = 169;
+use super::query_facade::ProtoRangeStoreFacade;
 
 #[derive(Debug, Clone)]
 pub struct CompactVsCoreBenchmarkCommand {
@@ -89,7 +87,7 @@ pub struct CompactVsCoreColdWorkerCommand {
 #[serde(rename_all = "camelCase")]
 pub struct CompactVsCoreBenchmarkReport {
     pub generated_at: String,
-    pub compact_archive_dir: PathBuf,
+    pub compact_storage_root: PathBuf,
     pub core_dir: PathBuf,
     pub dimension: String,
     pub matrix_count: u64,
@@ -198,24 +196,23 @@ pub fn run_compact_vs_core_benchmark(
         ));
     }
 
-    let compact_archive = CompactLineMatrixArchive::open_with_options(
-        &command.compact_dir,
-        CompactArchiveOpenOptions {
-            verify_checksums: command.verify_checksums,
-            cache_capacity: 4096,
-        },
-    )?;
-    assert_archive_dimension(&compact_archive, &command.dimension)?;
-    let queries = build_query_plan(&compact_archive, command)?;
-    let cold_query = queries
-        .first()
-        .cloned()
-        .ok_or_else(|| ToolError::invalid_format("Compact benchmark query plan is empty"))?;
     let dimension_ref = DimensionRef::new(
         &command.dimension.strategy,
         command.dimension.player_count,
         command.dimension.depth_bb,
     );
+    let compact_service = ProtoRangeStoreFacade::open(
+        &command.compact_dir,
+        command.max_open_handles,
+        command.verify_checksums,
+    )?;
+    let matrix_count = compact_service.matrix_count(&dimension_ref)?;
+    let queries = build_query_plan(&compact_service, &dimension_ref, matrix_count, command)?;
+    let cold_query = queries
+        .first()
+        .cloned()
+        .ok_or_else(|| ToolError::invalid_format("Compact benchmark query plan is empty"))?;
+    compact_service.prewarm(&dimension_ref)?;
     let core_service = StoreQueryService::open_with_meta(
         &command.core_dir,
         command.core_dir.join("meta.db"),
@@ -224,17 +221,20 @@ pub fn run_compact_vs_core_benchmark(
     )?;
     core_service.prewarm(&dimension_ref)?;
 
-    // Query-plan construction decodes CompactLineMatrix records to choose valid hands.
+    // Query-plan construction selects valid hands through the Proto facade.
     // Execute the same plan through both readers before timing so both operate hot.
     let action_count_mismatch_count =
-        warmup_query_plan(&compact_archive, &core_service, &dimension_ref, &queries)?;
+        warmup_query_plan(&compact_service, &core_service, &dimension_ref, &queries)?;
 
     let compact_hot = measure_benchmark_case(
         "compact-line-matrix:hand-strategy",
-        "Decode one CompactLineMatrix and return materialized action values for one hand.",
+        "Query one concrete_line_id + hand through the Proto range facade.",
         &queries,
         command.warmup_iterations,
-        |query, _| compact_action_count(&compact_archive, query).map_err(|error| error.to_string()),
+        |query, _| {
+            compact_action_count(&compact_service, &dimension_ref, query)
+                .map_err(|error| error.to_string())
+        },
     );
     let core_hot = measure_benchmark_case(
         "range-strata-core:hand-strategy",
@@ -250,10 +250,10 @@ pub fn run_compact_vs_core_benchmark(
     let cold = run_cold_benchmark(command, &cold_query)?;
     let report = CompactVsCoreBenchmarkReport {
         generated_at: generated_at_utc(),
-        compact_archive_dir: command.compact_dir.clone(),
+        compact_storage_root: command.compact_dir.clone(),
         core_dir: command.core_dir.clone(),
         dimension: dimension_label(&command.dimension),
-        matrix_count: compact_archive.matrix_count(),
+        matrix_count,
         workload: CompactVsCoreWorkloadSummary {
             seed: command.seed,
             hot_iterations: command.hot_iterations,
@@ -277,7 +277,7 @@ pub fn run_compact_vs_core_benchmark(
         },
         cold,
         notes: vec![
-            "Hot measurements exclude deterministic query-plan construction and execute an untimed symmetry warm-up through both engines.".to_owned(),
+            "Hot measurements exclude deterministic query-plan construction and execute an untimed symmetry warm-up through both facade APIs.".to_owned(),
             "Compact result_count counts action values materialized for the requested hand; core result_count counts actions returned by the core hand-strategy API. Proto excludes rows with hand_ev IS NULL, so result counts are informational rather than a cross-format equality gate.".to_owned(),
             "Cold runs use a fresh worker process per engine/run. process-cold refreshes process state but does not evict the OS page cache; the configured filler is used only by cache-eviction modes.".to_owned(),
             "Compact/core ratios below 1.0 mean CompactLineMatrix was faster for that metric.".to_owned(),
@@ -330,24 +330,29 @@ fn run_compact_cold_worker(
     timings: &mut ColdWorkerTimings,
 ) -> Result<(usize, MemorySnapshot, MemorySnapshot), ToolError> {
     let open_start = Instant::now();
-    let archive = CompactLineMatrixArchive::open_with_options(
+    let service = ProtoRangeStoreFacade::open(
         &command.compact_dir,
-        CompactArchiveOpenOptions {
-            verify_checksums: command.verify_checksums,
-            cache_capacity: 4096,
-        },
+        command.max_open_handles,
+        command.verify_checksums,
     )?;
-    assert_archive_dimension(&archive, &command.dimension)?;
     timings.service_open_ms = elapsed_ms(open_start);
 
     let memory_before = get_memory_snapshot();
+    let dimension = DimensionRef::new(
+        &command.dimension.strategy,
+        command.dimension.player_count,
+        command.dimension.depth_bb,
+    );
+    let prewarm_start = Instant::now();
+    service.prewarm(&dimension)?;
+    timings.dimension_prewarm_ms = elapsed_ms(prewarm_start);
     let query_start = Instant::now();
-    let result_count = compact_action_count(&archive, &command.query)?;
+    let result_count = compact_action_count(&service, &dimension, &command.query)?;
     timings.first_query_ms = elapsed_ms(query_start);
     let memory_after = get_memory_snapshot();
 
     let close_start = Instant::now();
-    drop(archive);
+    drop(service);
     timings.close_ms = elapsed_ms(close_start);
     Ok((result_count, memory_before, memory_after))
 }
@@ -387,27 +392,21 @@ fn run_core_cold_worker(
 }
 
 fn build_query_plan(
-    archive: &CompactLineMatrixArchive,
+    compact: &ProtoRangeStoreFacade,
+    dimension: &DimensionRef,
+    matrix_count: u64,
     command: &CompactVsCoreBenchmarkCommand,
 ) -> Result<Vec<CompactVsCoreQuery>, ToolError> {
     if let Some(query) = &command.fixed_query {
-        validate_query(archive, query)?;
+        validate_query(compact, dimension, query)?;
         return Ok(vec![query.clone(); command.hot_iterations]);
     }
 
     let mut state = command.seed.max(1);
     let mut queries = Vec::with_capacity(command.hot_iterations);
     for _ in 0..command.hot_iterations {
-        let concrete_line_id = next_random(&mut state) % archive.matrix_count() + 1;
-        let matrix = archive.read_matrix(concrete_line_id)?;
-        let valid_hands = valid_hand_ids(matrix.matrix());
-        let hand_id = *valid_hands
-            .get((next_random(&mut state) as usize) % valid_hands.len())
-            .ok_or_else(|| {
-                ToolError::invalid_format(format!(
-                    "Compact matrix {concrete_line_id} has no valid hands for benchmark"
-                ))
-            })?;
+        let concrete_line_id = next_random(&mut state) % matrix_count + 1;
+        let hand_id = find_valid_hand(compact, dimension, concrete_line_id, &mut state)?;
         queries.push(CompactVsCoreQuery {
             concrete_line_id,
             hand_id,
@@ -418,31 +417,29 @@ fn build_query_plan(
 }
 
 fn validate_query(
-    archive: &CompactLineMatrixArchive,
+    compact: &ProtoRangeStoreFacade,
+    dimension: &DimensionRef,
     query: &CompactVsCoreQuery,
 ) -> Result<(), ToolError> {
-    if usize::from(query.hand_id) >= HAND_COUNT_169 {
-        return Err(ToolError::invalid_argument("--hand-id must be in 0..=168"));
-    }
-    let matrix = archive.read_matrix(query.concrete_line_id)?;
-    if !is_valid_hand(matrix.matrix(), usize::from(query.hand_id)) {
-        return Err(ToolError::invalid_argument(format!(
-            "Hand {} is not present in compact line {}",
-            query.hand, query.concrete_line_id
-        )));
-    }
-    Ok(())
+    compact_action_count(compact, dimension, query)
+        .map(|_| ())
+        .map_err(|error| {
+            ToolError::invalid_argument(format!(
+                "Hand {} is not present in compact line {}: {}",
+                query.hand, query.concrete_line_id, error
+            ))
+        })
 }
 
 fn warmup_query_plan(
-    archive: &CompactLineMatrixArchive,
+    compact: &ProtoRangeStoreFacade,
     core: &StoreQueryService,
     dimension: &DimensionRef,
     queries: &[CompactVsCoreQuery],
 ) -> Result<usize, ToolError> {
     let mut mismatch_count = 0;
     for query in queries {
-        let compact_count = compact_action_count(archive, query)?;
+        let compact_count = compact_action_count(compact, dimension, query)?;
         let core_count = core_action_count(core, dimension, query)?;
         if compact_count != core_count {
             mismatch_count += 1;
@@ -452,21 +449,38 @@ fn warmup_query_plan(
 }
 
 fn compact_action_count(
-    archive: &CompactLineMatrixArchive,
+    compact: &ProtoRangeStoreFacade,
+    dimension: &DimensionRef,
     query: &CompactVsCoreQuery,
 ) -> Result<usize, ToolError> {
-    let matrix = archive.read_matrix(query.concrete_line_id)?;
-    Ok(matrix
-        .matrix()
-        .actions
-        .iter()
-        .enumerate()
-        .filter(|(action_index, _)| {
-            matrix
-                .action_value(*action_index, usize::from(query.hand_id))
-                .is_some()
-        })
-        .count())
+    let concrete_line_id = u32::try_from(query.concrete_line_id)
+        .map_err(|_| ToolError::invalid_argument("concrete_line_id exceeds core u32 range"))?;
+    compact
+        .query_hand_strategy(dimension, concrete_line_id, &query.hand)
+        .map(|result| result.actions.len())
+}
+
+fn find_valid_hand(
+    compact: &ProtoRangeStoreFacade,
+    dimension: &DimensionRef,
+    concrete_line_id: u64,
+    state: &mut u64,
+) -> Result<u8, ToolError> {
+    let concrete_line_id = u32::try_from(concrete_line_id)
+        .map_err(|_| ToolError::invalid_argument("concrete_line_id exceeds core u32 range"))?;
+    let first_hand_id = (next_random(state) as usize) % 169;
+    for offset in 0..169 {
+        let hand_id = ((first_hand_id + offset) % 169) as u8;
+        let hand = hand_code_from_id(hand_id);
+        match compact.query_hand_strategy(dimension, concrete_line_id, &hand) {
+            Ok(_) => return Ok(hand_id),
+            Err(error) if error.code() == "HAND_STRATEGY_NOT_FOUND" => continue,
+            Err(error) => return Err(error),
+        }
+    }
+    Err(ToolError::invalid_format(format!(
+        "Compact matrix {concrete_line_id} has no retained hands for benchmark"
+    )))
 }
 
 fn core_action_count(
@@ -673,8 +687,8 @@ fn render_markdown(report: &CompactVsCoreBenchmarkReport) -> String {
     markdown.push_str("## Scope\n\n");
     markdown.push_str(&format!("- Dimension: `{}`\n", report.dimension));
     markdown.push_str(&format!(
-        "- Compact archive: `{}`\n",
-        report.compact_archive_dir.display()
+        "- Proto storage root: `{}`\n",
+        report.compact_storage_root.display()
     ));
     markdown.push_str(&format!(
         "- Core data directory: `{}`\n",
@@ -776,41 +790,6 @@ fn cold_row(name: &str, result: &CompactVsCoreColdEngineSummary) -> Vec<String> 
         format_ms(result.timings.first_query_ms.p95_ms),
         result.error_count.to_string(),
     ]
-}
-
-fn assert_archive_dimension(
-    archive: &CompactLineMatrixArchive,
-    expected: &DimensionSpec,
-) -> Result<(), ToolError> {
-    let actual = archive.dimension();
-    if actual.strategy != expected.strategy
-        || actual.player_count != expected.player_count
-        || actual.depth_bb != expected.depth_bb
-    {
-        return Err(ToolError::invalid_argument(format!(
-            "Compact archive dimension {} does not match requested {}",
-            dimension_label(actual),
-            dimension_label(expected)
-        )));
-    }
-    Ok(())
-}
-
-fn valid_hand_ids(matrix: &crate::proto_range_storage::proto::CompactLineMatrix) -> Vec<u8> {
-    (0..HAND_COUNT_169)
-        .filter(|hand_id| is_valid_hand(matrix, *hand_id))
-        .map(|hand_id| hand_id as u8)
-        .collect()
-}
-
-fn is_valid_hand(
-    matrix: &crate::proto_range_storage::proto::CompactLineMatrix,
-    hand_id: usize,
-) -> bool {
-    matrix
-        .valid_hand_bitmap
-        .get(hand_id / 8)
-        .is_some_and(|byte| byte & (1 << (hand_id % 8)) != 0)
 }
 
 fn next_random(state: &mut u64) -> u64 {

@@ -572,7 +572,7 @@ Commands:
   verify-compact-line-matrix-archive --dir <dir>
         Verifies every Proto record checksum, payload, and compact index.
 
-  benchmark-compact-vs-core --compact-dir <compact-archive-dir> --core-dir <range-strata-dir>
+  benchmark-compact-vs-core --compact-dir <proto-range-storage-root> --core-dir <range-strata-dir>
         --dimension <strategy:player_count:depth_bb>
         [--hot-iterations <count>] [--warmup-iterations <count>]
         [--cold-runs <count>] [--cold-mode <process-cold|os-best-effort|linux-drop-cache>]

@@ -6,8 +6,15 @@ use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
     CompactLineMatrixArchive, CompactLineMatrixArchiveOptions, CompactLineMatrixArchivesOptions,
 };
 use poker_hands_storage_tools::proto_range_storage::proto::ActionType as CompactActionType;
-use range_store_core::dimension::DimensionSpec;
+use poker_hands_storage_tools::proto_range_storage::query_facade::ProtoRangeStoreFacade;
+use poker_hands_storage_tools::proto_range_storage::query_service::ProtoRangeQueryService;
+use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions};
+use range_store_core::dimension::{DimensionRef, DimensionSpec};
 use range_store_core::hole_cards::hand_code_from_id;
+use range_store_core::query::{
+    parse_action_filters, ActionFilter, ActionResult, FrequencyFilter, QueryBatchResult,
+    QueryResult, StoreQueryService,
+};
 use range_store_core::sqlite::{Connection, Value};
 
 #[test]
@@ -111,6 +118,369 @@ fn compact_archive_does_not_scan_null_ev_rows() {
 }
 
 #[test]
+fn proto_query_service_returns_core_query_shape_without_null_ev_actions() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("compact-archive");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export compact archive");
+
+    let service = ProtoRangeQueryService::open(&out_dir).expect("open query service");
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+    let aa: QueryResult = service
+        .query_hand_strategy(&dimension, 1, "AA")
+        .expect("query AA");
+
+    assert_eq!(aa.actions.len(), 2);
+    assert_eq!(aa.actions[0].action_name, "fold");
+    assert_eq!(aa.actions[0].action_size, 0.0);
+    assert_eq!(aa.actions[0].amount_bb, 0.0);
+    assert_eq!(aa.actions[0].frequency, 0.5);
+    assert_eq!(aa.actions[0].hand_ev, Some(-0.25));
+    assert_eq!(aa.actions[1].action_name, "call");
+    assert_eq!(aa.actions[1].frequency, 0.5);
+    assert_eq!(aa.actions[1].hand_ev, Some(0.5));
+
+    let aks = service
+        .query_hand_strategy(&dimension, 1, "AKs")
+        .expect("query AKs");
+    let action_names = aks
+        .actions
+        .iter()
+        .map(|action| action.action_name.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(action_names, ["fold", "raise"]);
+}
+
+#[test]
+fn proto_query_service_matches_core_after_null_ev_filtering() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let proto_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db: source_db.clone(),
+        out_dir: proto_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let core_dir = temp.path().join("core");
+    build_store(&BuildOptions {
+        source_db,
+        out_dir: core_dir.clone(),
+        dimensions: vec![DimensionSpec::parse("default:6:100").expect("dimension")],
+        max_concrete_lines_per_dimension: None,
+        overwrite: false,
+        resume: false,
+    })
+    .expect("build core store");
+
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+    let core = StoreQueryService::open(&core_dir, 2, true).expect("open core query service");
+    let proto = ProtoRangeQueryService::open(&proto_dir).expect("open Proto query service");
+
+    for (concrete_line_id, hand) in [(1, "AA"), (1, "AKs"), (1, "AQs"), (2, "AA")] {
+        let core_result = core
+            .query(&dimension, concrete_line_id, hand)
+            .expect("core query");
+        let proto_result = proto
+            .query_hand_strategy(&dimension, concrete_line_id, hand)
+            .expect("Proto query");
+        let retained_core = core_result
+            .actions
+            .iter()
+            .filter(|action| action.hand_ev.is_some())
+            .collect::<Vec<_>>();
+
+        assert_eq!(retained_core.len(), proto_result.actions.len());
+        for (core_action, proto_action) in retained_core.into_iter().zip(&proto_result.actions) {
+            assert_actions_match(core_action, proto_action);
+        }
+    }
+}
+
+#[test]
+fn proto_query_service_uses_core_style_not_found_codes() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let service = ProtoRangeQueryService::open(&out_dir).expect("open Proto query service");
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+
+    let error = service
+        .query_hand_strategy(&DimensionRef::with_default_strategy(9, 100), 1, "AA")
+        .expect_err("wrong dimension must fail");
+    assert_eq!(error.code(), "DIMENSION_NOT_FOUND");
+
+    let error = service
+        .query_hand_strategy(&dimension, 3, "AA")
+        .expect_err("missing line must fail");
+    assert_eq!(error.code(), "CONCRETE_LINE_NOT_FOUND");
+
+    let error = service
+        .query_hand_strategy(&dimension, 1, "22")
+        .expect_err("hand without retained actions must fail");
+    assert_eq!(error.code(), "HAND_STRATEGY_NOT_FOUND");
+}
+
+#[test]
+fn proto_query_service_batch_preserves_request_order_for_repeated_lines() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let service = ProtoRangeQueryService::open(&out_dir).expect("open Proto query service");
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+    let requests = vec![
+        (1, "AKs".to_owned()),
+        (2, "AA".to_owned()),
+        (1, "AA".to_owned()),
+    ];
+    let batch: QueryBatchResult = service
+        .query_batch(&dimension, &requests)
+        .expect("query batch");
+
+    assert_eq!(batch.results.len(), 3);
+    assert_eq!(batch.results[0].concrete_line_id, 1);
+    assert_eq!(batch.results[0].hole_cards, "AKs");
+    assert_eq!(batch.results[1].concrete_line_id, 2);
+    assert_eq!(batch.results[1].hole_cards, "AA");
+    assert_eq!(batch.results[2].concrete_line_id, 1);
+    assert_eq!(batch.results[2].hole_cards, "AA");
+    assert_eq!(
+        batch.results[0]
+            .actions
+            .iter()
+            .map(|action| action.action_name.as_str())
+            .collect::<Vec<_>>(),
+        ["fold", "raise"]
+    );
+    assert_eq!(batch.results[1].actions.len(), 2);
+    assert_eq!(batch.results[2].actions.len(), 2);
+}
+
+#[test]
+fn proto_query_service_batch_reports_the_lowest_failing_request() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let service = ProtoRangeQueryService::open(&out_dir).expect("open Proto query service");
+    let requests = vec![(3, "AA".to_owned()), (1, "not-a-hand".to_owned())];
+    let error = service
+        .query_batch(&DimensionRef::with_default_strategy(6, 100), &requests)
+        .expect_err("batch must fail");
+
+    assert_eq!(error.code(), "BATCH_ITEM_ERROR");
+    assert!(error.message().contains("requests[0]"));
+    assert!(error.message().contains("concrete_line_id=3"));
+}
+
+#[test]
+fn proto_query_service_batch_matches_core_after_null_ev_filtering() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let proto_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db: source_db.clone(),
+        out_dir: proto_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let core_dir = temp.path().join("core");
+    build_store(&BuildOptions {
+        source_db,
+        out_dir: core_dir.clone(),
+        dimensions: vec![DimensionSpec::parse("default:6:100").expect("dimension")],
+        max_concrete_lines_per_dimension: None,
+        overwrite: false,
+        resume: false,
+    })
+    .expect("build core store");
+
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+    let requests = vec![
+        (1, "AKs".to_owned()),
+        (2, "AA".to_owned()),
+        (1, "AA".to_owned()),
+    ];
+    let core = StoreQueryService::open(&core_dir, 2, true).expect("open core query service");
+    let proto = ProtoRangeQueryService::open(&proto_dir).expect("open Proto query service");
+    let core_batch = core
+        .query_batch(&dimension, &requests)
+        .expect("core batch query");
+    let proto_batch = proto
+        .query_batch(&dimension, &requests)
+        .expect("Proto batch query");
+
+    assert_eq!(core_batch.results.len(), proto_batch.results.len());
+    for (core_item, proto_item) in core_batch.results.iter().zip(&proto_batch.results) {
+        assert_eq!(core_item.concrete_line_id, proto_item.concrete_line_id);
+        assert_eq!(core_item.hole_cards, proto_item.hole_cards);
+        let retained_core = core_item
+            .actions
+            .iter()
+            .filter(|action| action.hand_ev.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(retained_core.len(), proto_item.actions.len());
+        for (core_action, proto_action) in retained_core.into_iter().zip(&proto_item.actions) {
+            assert_actions_match(core_action, proto_action);
+        }
+    }
+}
+
+#[test]
+fn proto_query_service_filters_hands_by_actions_with_core_semantics() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let service = ProtoRangeQueryService::open(&out_dir).expect("open Proto query service");
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+    let call = parse_action_filters(vec!["call".to_owned()]).expect("call filter");
+    let call_hands = service
+        .query_hands_by_actions(&dimension, 1, &call, Some(0.2))
+        .expect("filter call hands");
+    assert_eq!(call_hands.len(), 167);
+    assert!(call_hands.contains(&"AA".to_owned()));
+    assert!(!call_hands.contains(&"AKs".to_owned()));
+    assert!(call_hands.contains(&"AQs".to_owned()));
+    assert!(!call_hands.contains(&"22".to_owned()));
+
+    let raise = parse_action_filters(vec!["raise2".to_owned()]).expect("raise filter");
+    let raise_hands = service
+        .query_hands_by_actions(&dimension, 1, &raise, Some(0.2))
+        .expect("filter raise hands");
+    assert_eq!(raise_hands.len(), 167);
+    assert!(!raise_hands.contains(&"AA".to_owned()));
+    assert!(raise_hands.contains(&"AKs".to_owned()));
+
+    let any =
+        parse_action_filters(vec!["call".to_owned(), "raise2".to_owned()]).expect("OR filters");
+    let any_hands = service
+        .query_hands_by_actions(&dimension, 1, &any, Some(0.2))
+        .expect("filter OR hands");
+    assert_eq!(any_hands.len(), 168);
+    assert!(any_hands.contains(&"AA".to_owned()));
+    assert!(any_hands.contains(&"AKs".to_owned()));
+}
+
+#[test]
+fn proto_hands_by_actions_matches_core_after_null_ev_filtering() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let proto_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db: source_db.clone(),
+        out_dir: proto_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let core_dir = temp.path().join("core");
+    build_store(&BuildOptions {
+        source_db,
+        out_dir: core_dir.clone(),
+        dimensions: vec![DimensionSpec::parse("default:6:100").expect("dimension")],
+        max_concrete_lines_per_dimension: None,
+        overwrite: false,
+        resume: false,
+    })
+    .expect("build core store");
+
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+    let core = StoreQueryService::open(&core_dir, 2, true).expect("open core query service");
+    let proto = ProtoRangeQueryService::open(&proto_dir).expect("open Proto query service");
+    for filters in [
+        parse_action_filters(vec!["call".to_owned()]).expect("call filter"),
+        parse_action_filters(vec!["raise2".to_owned()]).expect("raise filter"),
+        parse_action_filters(vec!["call".to_owned(), "raise2".to_owned()]).expect("OR filters"),
+    ] {
+        let proto_hands = proto
+            .query_hands_by_actions(&dimension, 1, &filters, Some(0.2))
+            .expect("Proto hands by actions");
+        let core_hands =
+            core_hands_by_actions_without_null_ev(&core, &dimension, 1, &filters, Some(0.2));
+        assert_eq!(proto_hands, core_hands);
+    }
+}
+
+#[test]
+fn proto_query_service_accepts_raw_action_filter_names() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("proto");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto archive");
+
+    let service = ProtoRangeQueryService::open(&out_dir).expect("open Proto query service");
+    let hands = service
+        .query_hands_by_action_names(
+            &DimensionRef::with_default_strategy(6, 100),
+            1,
+            &["call".to_owned(), "raise2".to_owned()],
+            Some(0.2),
+        )
+        .expect("query hands by action names");
+
+    assert_eq!(hands.len(), 168);
+    assert!(hands.contains(&"AA".to_owned()));
+    assert!(hands.contains(&"AKs".to_owned()));
+}
+
+#[test]
 fn cli_exports_compact_default_6max_100bb_archive() {
     let temp = tempfile::tempdir().expect("temp dir");
     let source_db = temp.path().join("range.db");
@@ -185,6 +555,153 @@ fn exports_and_reports_all_discovered_compact_dimensions() {
         .join("default_8max_200BB")
         .join("matrices.lmidx")
         .is_file());
+}
+
+#[test]
+fn proto_range_store_facade_discovers_dimensions_and_limits_open_handles() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "CREATE TABLE concrete_lines_default_8max_200BB AS
+               SELECT * FROM concrete_lines_default_6max_100BB;
+             CREATE TABLE range_data_default_8max_200BB AS
+               SELECT * FROM range_data_default_6max_100BB;",
+        )
+        .expect("clone fixture dimension");
+    drop(connection);
+
+    let root_dir = temp.path().join("all-compact-archives");
+    export_all_compact_line_matrix_archives(&CompactLineMatrixArchivesOptions {
+        source_db,
+        out_dir: root_dir.clone(),
+        overwrite: false,
+    })
+    .expect("export all compact dimensions");
+
+    let facade = ProtoRangeStoreFacade::open(&root_dir, 1, true).expect("open Proto facade");
+    assert_eq!(
+        facade.known_dimensions(),
+        vec![
+            "default:6max:100BB".to_owned(),
+            "default:8max:200BB".to_owned()
+        ]
+    );
+    assert_eq!(facade.open_handle_count(), 0);
+
+    let six_max = DimensionRef::with_default_strategy(6, 100);
+    assert_eq!(
+        facade
+            .matrix_count(&six_max)
+            .expect("read 6max matrix count"),
+        2
+    );
+    assert_eq!(facade.open_handle_count(), 1);
+    let six_max_result = facade
+        .query_hand_strategy(&six_max, 1, "AA")
+        .expect("query 6max hand");
+    assert_eq!(six_max_result.actions.len(), 2);
+    assert_eq!(facade.open_handle_count(), 1);
+
+    let eight_max = DimensionRef::with_default_strategy(8, 200);
+    let eight_max_result = facade
+        .query_hand_strategy(&eight_max, 1, "AA")
+        .expect("query 8max hand");
+    assert_eq!(eight_max_result.actions.len(), 2);
+    assert_eq!(facade.open_handle_count(), 1);
+
+    facade.prewarm(&six_max).expect("prewarm 6max handle");
+    assert_eq!(facade.open_handle_count(), 1);
+
+    let error = facade
+        .query_hand_strategy(&DimensionRef::with_default_strategy(9, 100), 1, "AA")
+        .expect_err("unknown dimension must fail");
+    assert_eq!(error.code(), "DIMENSION_NOT_FOUND");
+}
+
+#[test]
+fn compact_vs_core_benchmark_uses_the_proto_storage_root() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "CREATE TABLE concrete_lines_default_8max_200BB AS
+               SELECT * FROM concrete_lines_default_6max_100BB;
+             CREATE TABLE range_data_default_8max_200BB AS
+               SELECT * FROM range_data_default_6max_100BB;",
+        )
+        .expect("clone fixture dimension");
+    drop(connection);
+
+    let proto_root = temp.path().join("proto-root");
+    export_all_compact_line_matrix_archives(&CompactLineMatrixArchivesOptions {
+        source_db: source_db.clone(),
+        out_dir: proto_root.clone(),
+        overwrite: false,
+    })
+    .expect("export all compact dimensions");
+
+    let core_dir = temp.path().join("core");
+    build_store(&BuildOptions {
+        source_db,
+        out_dir: core_dir.clone(),
+        dimensions: vec![
+            DimensionSpec::parse("default:6:100").expect("6max dimension"),
+            DimensionSpec::parse("default:8:200").expect("8max dimension"),
+        ],
+        max_concrete_lines_per_dimension: None,
+        overwrite: false,
+        resume: false,
+    })
+    .expect("build core store");
+
+    let report_path = temp.path().join("benchmark.json");
+    let markdown_path = temp.path().join("benchmark.md");
+    let output = Command::new(env!("CARGO_BIN_EXE_poker-hands-storage-tools"))
+        .args([
+            "benchmark-compact-vs-core",
+            "--compact-dir",
+            proto_root.to_str().expect("Proto root"),
+            "--core-dir",
+            core_dir.to_str().expect("core directory"),
+            "--dimension",
+            "default:6:100",
+            "--hot-iterations",
+            "2",
+            "--warmup-iterations",
+            "0",
+            "--cold-runs",
+            "1",
+            "--concrete-line-id",
+            "1",
+            "--hand-id",
+            "0",
+            "--out",
+            report_path.to_str().expect("report path"),
+            "--md",
+            markdown_path.to_str().expect("markdown path"),
+        ])
+        .output()
+        .expect("run compact/core benchmark");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(&report_path).expect("read benchmark report"))
+            .expect("parse benchmark report");
+    assert_eq!(
+        report["compactStorageRoot"],
+        proto_root.to_str().expect("Proto root")
+    );
+    assert_eq!(report["matrixCount"], 2);
+    assert!(markdown_path.is_file());
 }
 
 fn create_source_fixture(path: &std::path::Path) {
@@ -366,4 +883,46 @@ fn insert_row_for_line(
 
 fn bit_is_set(bitmap: &[u8], hand_idx: usize) -> bool {
     bitmap[hand_idx / 8] & (1u8 << (hand_idx % 8)) != 0
+}
+
+fn assert_actions_match(core: &ActionResult, proto: &ActionResult) {
+    assert_eq!(core.action_name, proto.action_name);
+    assert_eq!(core.action_size, proto.action_size);
+    assert_eq!(core.amount_bb, proto.amount_bb);
+    assert_eq!(core.frequency, proto.frequency);
+    assert_eq!(core.hand_ev, proto.hand_ev);
+}
+
+fn core_hands_by_actions_without_null_ev(
+    service: &StoreQueryService,
+    dimension: &DimensionRef,
+    concrete_line_id: u32,
+    filters: &[ActionFilter],
+    frequency: Option<f64>,
+) -> Vec<String> {
+    let frequency_filter = FrequencyFilter::from_request(frequency);
+    (0u8..=168)
+        .filter_map(|hand_id| {
+            let hand = hand_code_from_id(hand_id);
+            let result = service.query(dimension, concrete_line_id, &hand).ok()?;
+            let matches = result
+                .actions
+                .iter()
+                .filter(|action| action.hand_ev.is_some())
+                .any(|action| {
+                    frequency_filter.matches(action.frequency)
+                        && (filters.is_empty()
+                            || filters.iter().any(|filter| {
+                                action.action_name == filter.action_name.as_str()
+                                    && match filter.amount_bb {
+                                        Some(amount_bb) => {
+                                            (action.amount_bb - amount_bb).abs() <= f32::EPSILON
+                                        }
+                                        None => true,
+                                    }
+                            }))
+                });
+            matches.then_some(hand)
+        })
+        .collect()
 }

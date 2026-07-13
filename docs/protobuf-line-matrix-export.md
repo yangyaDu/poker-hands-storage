@@ -112,6 +112,47 @@ The nth record maps to `concrete_line_id = n + 1`. The reader memory-maps the
 data and index files, validates CRC32C, decodes a single payload on demand,
 and supports full-archive verification.
 
+## Query Service
+
+`ProtoRangeQueryService` provides the first core-compatible query shape:
+
+```text
+query_hand_strategy(dimension, concrete_line_id, hole_cards) -> QueryResult
+query_batch(dimension, requests) -> QueryBatchResult
+query_hands_by_actions(dimension, concrete_line_id, filters, frequency) -> Vec<String>
+query_hands_by_action_names(dimension, concrete_line_id, action_names, frequency) -> Vec<String>
+```
+
+It reuses `range_store_core::query::QueryResult` and `ActionResult`. The
+service checks the requested dimension, parses the hand with the core hand
+dictionary, reads one matrix, and converts each retained action to the core
+result representation. Batch requests are grouped by `concrete_line_id`, so
+the service reads each referenced matrix at most once before restoring input
+order in `QueryBatchResult`. Hands-by-actions reuses the core `ActionFilter`
+and `FrequencyFilter` semantics: strict frequency threshold, exact amount
+matching, and OR semantics across non-empty filters.
+
+Proto never stores `hand_ev IS NULL` cells. Therefore a strict core/Proto
+comparison filters core actions whose `hand_ev` is `None` before comparing
+action identity, frequency, and EV. The service returns core-style error codes
+for a missing dimension, concrete line, or retained hand strategy. Batch
+failures return `BATCH_ITEM_ERROR` for the lowest failing request index.
+For hands-by-actions comparisons, core results must apply the same NULL EV
+filter before evaluating action filters.
+
+`ProtoRangeStoreFacade` is the multi-dimension entry point for a root emitted
+by `export-all-compact-line-matrix-archives`. It discovers child directories
+from their manifests, selects the archive by the standard dimension key (for
+example `default:6max:100BB`), and keeps at most `max_open_handles` mapped
+archive readers through LRU eviction. Its query methods delegate to
+`ProtoRangeQueryService`; `prewarm` opens a selected dimension before requests
+arrive.
+
+`benchmark-compact-vs-core --compact-dir <proto-range-storage-root>` uses the
+same facade in its query-plan, hot-query, and cold-worker paths. The supplied
+directory must therefore be the export-all root, not a single dimension child
+directory.
+
 ## Commands
 
 ```text
