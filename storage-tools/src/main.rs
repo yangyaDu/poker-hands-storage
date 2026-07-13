@@ -19,12 +19,14 @@ use poker_hands_storage_tools::errors::ToolError;
 use poker_hands_storage_tools::proto_range_storage::cli::{
     parse_benchmark_compact_vs_core_args, parse_compact_vs_core_cold_worker_args,
     parse_export_all_compact_line_matrix_archives_args,
-    parse_export_compact_line_matrix_archive_args, parse_verify_compact_line_matrix_archive_args,
+    parse_export_compact_line_matrix_archive_args, parse_three_way_hot_benchmark_args,
+    parse_verify_compact_line_matrix_archive_args,
 };
 use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
     run_compact_vs_core_benchmark, run_compact_vs_core_cold_worker, CompactLineMatrixArchive,
 };
+use poker_hands_storage_tools::proto_range_storage::three_way_benchmark::run_three_way_hot_benchmark;
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_tools::verification::cli::parse_verify_args;
 use poker_hands_storage_tools::verification::cross::{run_cross_verify, CrossVerifyOptions};
@@ -54,6 +56,7 @@ fn run() -> Result<(), ToolError> {
             run_verify_compact_line_matrix_archive(args.collect())
         }
         Some("benchmark-compact-vs-core") => run_benchmark_compact_vs_core(args.collect()),
+        Some("benchmark-three-way-hot") => run_benchmark_three_way_hot(args.collect()),
         Some("compact-vs-core-cold-worker") => run_compact_vs_core_cold_worker_cmd(args.collect()),
         Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
@@ -97,6 +100,22 @@ fn run_benchmark_compact_vs_core(args: Vec<String>) -> Result<(), ToolError> {
         return Err(ToolError::new(
             "COMPACT_VS_CORE_BENCHMARK_FAILED",
             "compact/core benchmark had errors",
+        ));
+    }
+    Ok(())
+}
+
+fn run_benchmark_three_way_hot(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_three_way_hot_benchmark_args(args)?;
+    let report = run_three_way_hot_benchmark(&command)?;
+    println!("Core/Proto/SQLite hot benchmark complete.");
+    println!("  Cases: {}", report.cases.len());
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(ToolError::new(
+            "THREE_WAY_HOT_BENCHMARK_FAILED",
+            "three-way hot benchmark had errors",
         ));
     }
     Ok(())
@@ -578,6 +597,10 @@ Commands:
         [--cold-runs <count>] [--cold-mode <process-cold|os-best-effort|linux-drop-cache>]
         [--cache-filler-mb <mb>] [--seed <number>] [--max-open-handles <count>]
         [--concrete-line-id <id> --hand-id <0..168>] [--verify-checksum]
+
+  benchmark-three-way-hot --source <source.db> --proto-root <proto-range-storage-root>
+        --core-dir <range-strata-dir> [--core-meta <meta.db>] [--workload <path>]
+        [--write-workload <path>] [--dimension <strategy:players:depth>]
         [--out <report.json>] [--md <report.md>]
 
   verify --dir <dir> [--mode standalone|cross] [--source <range.db>]

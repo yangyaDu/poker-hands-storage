@@ -704,6 +704,132 @@ fn compact_vs_core_benchmark_uses_the_proto_storage_root() {
     assert!(markdown_path.is_file());
 }
 
+#[test]
+fn three_way_hot_benchmark_reports_shared_proto_v2_strategy_cases() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "CREATE TABLE concrete_lines_default_8max_200BB AS
+               SELECT * FROM concrete_lines_default_6max_100BB;
+             CREATE TABLE range_data_default_8max_200BB AS
+               SELECT * FROM range_data_default_6max_100BB;",
+        )
+        .expect("clone fixture dimension");
+    drop(connection);
+
+    let proto_root = temp.path().join("proto-root");
+    export_all_compact_line_matrix_archives(&CompactLineMatrixArchivesOptions {
+        source_db: source_db.clone(),
+        out_dir: proto_root.clone(),
+        overwrite: false,
+    })
+    .expect("export all compact dimensions");
+    let core_dir = temp.path().join("core");
+    build_store(&BuildOptions {
+        source_db: source_db.clone(),
+        out_dir: core_dir.clone(),
+        dimensions: vec![
+            DimensionSpec::parse("default:6:100").expect("6max dimension"),
+            DimensionSpec::parse("default:8:200").expect("8max dimension"),
+        ],
+        max_concrete_lines_per_dimension: None,
+        overwrite: false,
+        resume: false,
+    })
+    .expect("build core store");
+
+    let report_path = temp.path().join("three-way.json");
+    let markdown_path = temp.path().join("three-way.md");
+    let workload_path = temp.path().join("three-way-workload.json");
+    fs::write(
+        &workload_path,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "seed": 1,
+            "mode": "random",
+            "dimensions": ["default:6max:100BB"],
+            "handQueries": [
+                {"strategy": "default", "playerCount": 6, "depthBb": 100, "concreteLineId": 1, "holeCards": "AA"}
+            ],
+            "batchQueries": [
+                {"strategy": "default", "playerCount": 6, "depthBb": 100, "requests": [
+                    {"concreteLineId": 1, "holeCards": "AA"},
+                    {"concreteLineId": 1, "holeCards": "AQs"}
+                ]}
+            ],
+            "batchSize": 2,
+            "batchQueriesBySize": [
+                [1, [{"strategy": "default", "playerCount": 6, "depthBb": 100, "requests": [
+                    {"concreteLineId": 1, "holeCards": "AA"}
+                ]}]],
+                [2, [{"strategy": "default", "playerCount": 6, "depthBb": 100, "requests": [
+                    {"concreteLineId": 1, "holeCards": "AA"},
+                    {"concreteLineId": 1, "holeCards": "AQs"}
+                ]}]]
+            ],
+            "handsByActionsQueries": [
+                {"strategy": "default", "playerCount": 6, "depthBb": 100, "concreteLineId": 1, "actions": ["call"], "frequency": 0.2}
+            ],
+            "drillScenarioQueries": []
+        }))
+        .expect("serialize workload"),
+    )
+    .expect("write workload");
+    let output = Command::new(env!("CARGO_BIN_EXE_poker-hands-storage-tools"))
+        .args([
+            "benchmark-three-way-hot",
+            "--source",
+            source_db.to_str().expect("source path"),
+            "--proto-root",
+            proto_root.to_str().expect("Proto root"),
+            "--core-dir",
+            core_dir.to_str().expect("core directory"),
+            "--dimension",
+            "default:6:100",
+            "--workload",
+            workload_path.to_str().expect("workload path"),
+            "--warmup-iterations",
+            "0",
+            "--out",
+            report_path.to_str().expect("report path"),
+            "--md",
+            markdown_path.to_str().expect("markdown path"),
+        ])
+        .output()
+        .expect("run three-way hot benchmark");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(&report_path).expect("read three-way report"))
+            .expect("parse three-way report");
+    assert_eq!(report["semanticProfile"], "proto-v2-non-null-ev");
+    assert_eq!(report["cases"].as_array().expect("cases").len(), 5);
+    assert!(report["cases"]
+        .as_array()
+        .expect("cases")
+        .iter()
+        .all(|case| {
+            case["resultCountMatch"].as_bool() == Some(true)
+                && case["core"]["errorCount"].as_u64() == Some(0)
+                && case["proto"]["errorCount"].as_u64() == Some(0)
+                && case["sqlite"]["errorCount"].as_u64() == Some(0)
+        }));
+    assert_eq!(
+        report["excludedCases"]
+            .as_array()
+            .expect("excluded cases")
+            .len(),
+        2
+    );
+    assert!(markdown_path.is_file());
+}
+
 fn create_source_fixture(path: &std::path::Path) {
     let connection = Connection::open(path, false).expect("open fixture database");
     connection

@@ -123,6 +123,7 @@ poker-hands-storage/
 |   |   |   |-- line_matrix_store.rs   # archive writer and reader
 |   |   |   |-- query_service.rs       # single-dimension core-compatible query
 |   |   |   |-- query_facade.rs        # multi-dimension query and LRU handle pool
+|   |   |   |-- three_way_benchmark.rs # shared Core/Proto/SQLite hot benchmark
 |   |   |   |-- cli.rs                 # archive CLI argument parsing
 |   |   |   |-- format.rs              # archive binary layout
 |   |   |   `-- benchmark.rs           # Proto archive versus core benchmark

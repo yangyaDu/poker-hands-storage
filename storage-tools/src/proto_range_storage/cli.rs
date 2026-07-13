@@ -2,8 +2,11 @@ use range_store_core::dimension::DimensionSpec;
 use range_store_core::hole_cards::hand_code_from_id;
 use std::path::PathBuf;
 
-use crate::benchmark::cli::{next_value, parse_u32, parse_u64, parse_usize};
+use crate::benchmark::cli::{
+    next_value, parse_requested_dimension, parse_u32, parse_u64, parse_usize, parse_usize_list,
+};
 use crate::benchmark::cold::types::ColdStartMode;
+use crate::benchmark::types::{normalize_batch_sizes, WorkloadMode};
 use crate::errors::ToolError;
 
 use super::line_matrix_store::{
@@ -11,6 +14,120 @@ use super::line_matrix_store::{
     CompactVsCoreBenchmarkCommand, CompactVsCoreColdWorkerCommand, CompactVsCoreEngine,
     CompactVsCoreQuery,
 };
+use super::three_way_benchmark::ThreeWayHotBenchmarkCommand;
+
+pub fn parse_three_way_hot_benchmark_args(
+    args: Vec<String>,
+) -> Result<ThreeWayHotBenchmarkCommand, ToolError> {
+    let mut source_db = None;
+    let mut proto_root = None;
+    let mut core_dir = None;
+    let mut core_meta = None;
+    let mut out_path = PathBuf::from("reports/benchmark-core-proto-sqlite.json");
+    let mut md_path = PathBuf::from("reports/benchmark-core-proto-sqlite.md");
+    let mut workload_path = None;
+    let mut write_workload_path = None;
+    let mut seed = 42_u64;
+    let mut iterations = 1_000_usize;
+    let mut hand_iterations = None;
+    let mut batch_iterations = None;
+    let mut batch_size = 20_usize;
+    let mut batch_sizes = vec![1, 5, 10, 50, 100];
+    let mut requested_dimensions = Vec::new();
+    let mut requested_dimension_values = Vec::new();
+    let mut workload_mode = WorkloadMode::Random;
+    let mut warmup_iterations = 20_usize;
+    let mut max_open_handles = 16_usize;
+    let mut verify_checksums = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--source" => source_db = Some(PathBuf::from(next_value(&args, &mut index)?)),
+            "--proto-root" => proto_root = Some(PathBuf::from(next_value(&args, &mut index)?)),
+            "--core-dir" => core_dir = Some(PathBuf::from(next_value(&args, &mut index)?)),
+            "--core-meta" => core_meta = Some(PathBuf::from(next_value(&args, &mut index)?)),
+            "--out" => out_path = PathBuf::from(next_value(&args, &mut index)?),
+            "--md" => md_path = PathBuf::from(next_value(&args, &mut index)?),
+            "--workload" => workload_path = Some(PathBuf::from(next_value(&args, &mut index)?)),
+            "--write-workload" => {
+                write_workload_path = Some(PathBuf::from(next_value(&args, &mut index)?))
+            }
+            "--seed" => seed = parse_u64("--seed", next_value(&args, &mut index)?)?,
+            "--iterations" => {
+                iterations = parse_usize("--iterations", next_value(&args, &mut index)?)?
+            }
+            "--hand-iterations" => {
+                hand_iterations = Some(parse_usize(
+                    "--hand-iterations",
+                    next_value(&args, &mut index)?,
+                )?)
+            }
+            "--batch-iterations" => {
+                batch_iterations = Some(parse_usize(
+                    "--batch-iterations",
+                    next_value(&args, &mut index)?,
+                )?)
+            }
+            "--batch-size" => {
+                batch_size = parse_usize("--batch-size", next_value(&args, &mut index)?)?.max(1)
+            }
+            "--batch-sizes" => {
+                batch_sizes = parse_usize_list("--batch-sizes", next_value(&args, &mut index)?)?
+            }
+            "--dimension" => {
+                let value = next_value(&args, &mut index)?.to_owned();
+                requested_dimensions.push(parse_requested_dimension(&value)?);
+                requested_dimension_values.push(value);
+            }
+            "--workload-mode" => {
+                workload_mode = WorkloadMode::parse(next_value(&args, &mut index)?)?
+            }
+            "--warmup-iterations" => {
+                warmup_iterations =
+                    parse_usize("--warmup-iterations", next_value(&args, &mut index)?)?
+            }
+            "--max-open-handles" => {
+                max_open_handles =
+                    parse_usize("--max-open-handles", next_value(&args, &mut index)?)?
+            }
+            "--verify-checksum" => verify_checksums = true,
+            option => {
+                return Err(ToolError::invalid_argument(format!(
+                    "Unknown benchmark-three-way-hot option: {option}"
+                )))
+            }
+        }
+        index += 1;
+    }
+    if workload_path.is_some() && write_workload_path.is_some() {
+        return Err(ToolError::invalid_argument(
+            "--workload and --write-workload cannot be used together",
+        ));
+    }
+    let core_dir = core_dir.ok_or_else(|| ToolError::invalid_argument("--core-dir is required"))?;
+    Ok(ThreeWayHotBenchmarkCommand {
+        source_db: source_db.ok_or_else(|| ToolError::invalid_argument("--source is required"))?,
+        proto_root: proto_root
+            .ok_or_else(|| ToolError::invalid_argument("--proto-root is required"))?,
+        core_meta: core_meta.unwrap_or_else(|| core_dir.join("meta.db")),
+        core_dir,
+        out_path,
+        md_path,
+        workload_path,
+        write_workload_path,
+        seed,
+        hand_iterations: hand_iterations.unwrap_or(iterations),
+        batch_iterations: batch_iterations.unwrap_or(iterations.min(200)),
+        batch_size,
+        batch_sizes: normalize_batch_sizes(batch_size, &batch_sizes),
+        requested_dimensions,
+        requested_dimension_values,
+        workload_mode,
+        warmup_iterations,
+        max_open_handles: max_open_handles.max(1),
+        verify_checksums,
+    })
+}
 
 pub fn parse_export_compact_line_matrix_archive_args(
     args: Vec<String>,
@@ -311,5 +428,24 @@ mod tests {
         .expect_err("partial fixed query must fail");
 
         assert_eq!(error.code(), "INVALID_ARGUMENT");
+    }
+
+    #[test]
+    fn parses_three_way_hot_benchmark_defaults() {
+        let command = parse_three_way_hot_benchmark_args(vec![
+            "--source".to_owned(),
+            "source.db".to_owned(),
+            "--proto-root".to_owned(),
+            "proto-root".to_owned(),
+            "--core-dir".to_owned(),
+            "core".to_owned(),
+        ])
+        .expect("parse three-way benchmark command");
+
+        assert_eq!(command.hand_iterations, 1_000);
+        assert_eq!(command.batch_iterations, 200);
+        assert_eq!(command.batch_size, 20);
+        assert_eq!(command.batch_sizes, vec![1, 5, 10, 20, 50, 100]);
+        assert_eq!(command.core_meta, PathBuf::from("core").join("meta.db"));
     }
 }

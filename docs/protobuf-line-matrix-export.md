@@ -153,6 +153,14 @@ same facade in its query-plan, hot-query, and cold-worker paths. The supplied
 directory must therefore be the export-all root, not a single dimension child
 directory.
 
+`benchmark-three-way-hot` compares Core, Proto, and source SQLite from one
+workload. It covers `hand-strategy`, `batch-hand-strategy`, every configured
+batch size, and `hands-by-actions`. The report applies the Proto V2 profile to
+all three engines: `hand_ev IS NULL` cells are excluded and action frequencies
+are rounded to `x10000` before strict threshold matching. `concrete-lines-exact`
+and `drill-scenarios-metadata` are explicitly reported as deferred until the
+Proto metadata storage design is decided.
+
 ## Commands
 
 ```text
@@ -160,6 +168,7 @@ export-compact-line-matrix-archive
 export-all-compact-line-matrix-archives
 verify-compact-line-matrix-archive
 benchmark-compact-vs-core
+benchmark-three-way-hot
 ```
 
 The compact archive is the Proto storage format. The existing `.bin/.idx`
