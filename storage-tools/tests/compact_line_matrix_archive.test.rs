@@ -11,6 +11,7 @@ use poker_hands_storage_tools::proto_range_storage::query_service::ProtoRangeQue
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions};
 use range_store_core::dimension::{DimensionRef, DimensionSpec};
 use range_store_core::hole_cards::hand_code_from_id;
+use range_store_core::metadata::ConcreteLineFilter;
 use range_store_core::query::{
     parse_action_filters, ActionFilter, ActionResult, FrequencyFilter, QueryBatchResult,
     QueryResult, StoreQueryService,
@@ -619,6 +620,58 @@ fn proto_range_store_facade_discovers_dimensions_and_limits_open_handles() {
         .query_hand_strategy(&DimensionRef::with_default_strategy(9, 100), 1, "AA")
         .expect_err("unknown dimension must fail");
     assert_eq!(error.code(), "DIMENSION_NOT_FOUND");
+}
+
+#[test]
+fn proto_range_store_facade_reads_per_dimension_metadata() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open source metadata");
+    connection
+        .exec(
+            "CREATE TABLE drill_scenario_lines_default(
+               id INTEGER PRIMARY KEY,
+               drill_name TEXT NOT NULL,
+               abstract_line TEXT NOT NULL,
+               player_count INTEGER NOT NULL,
+               depth INTEGER NOT NULL
+             );
+             INSERT INTO drill_scenario_lines_default(
+               drill_name, abstract_line, player_count, depth
+             ) VALUES ('rfi', 'F-F-F', 6, 100);",
+        )
+        .expect("create source drill metadata");
+    drop(connection);
+    let proto_root = temp.path().join("proto-root");
+    let archive_dir = proto_root.join("default_6max_100BB");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: archive_dir,
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export compact archive");
+    let facade = ProtoRangeStoreFacade::open(&proto_root, 1, true).expect("open Proto facade");
+    let dimension = DimensionRef::with_default_strategy(6, 100);
+    let abstract_lines = facade
+        .get_concrete_lines(&dimension, ConcreteLineFilter::Abstract("F-F-F"))
+        .expect("find abstract lines");
+    assert_eq!(abstract_lines.len(), 1);
+    assert_eq!(abstract_lines[0].concrete_line_id, 1);
+    assert_eq!(abstract_lines[0].concrete_line, "F-F-F");
+
+    let concrete_lines = facade
+        .get_concrete_lines(&dimension, ConcreteLineFilter::Concrete("R2-F"))
+        .expect("find concrete lines");
+    assert_eq!(concrete_lines.len(), 1);
+    assert_eq!(concrete_lines[0].concrete_line_id, 2);
+    assert_eq!(
+        facade
+            .get_drill_scenario_lines("default", "rfi", 6, 100)
+            .expect("find drill lines"),
+        ["F-F-F"]
+    );
 }
 
 #[test]

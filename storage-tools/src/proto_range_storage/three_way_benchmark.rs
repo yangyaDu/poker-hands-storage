@@ -200,11 +200,11 @@ pub fn run_three_way_hot_benchmark(
         excluded_cases: vec![
             ExcludedBenchmarkCase {
                 name: "concrete-lines-exact".to_owned(),
-                reason: "Proto concrete-line metadata storage has not been designed yet.".to_owned(),
+                reason: "Available from the per-dimension lines.db; omitted from this strategy benchmark.".to_owned(),
             },
             ExcludedBenchmarkCase {
                 name: "drill-scenarios-metadata".to_owned(),
-                reason: "Proto drill-scenario metadata storage has not been designed yet.".to_owned(),
+                reason: "Available from the per-dimension lines.db; omitted from this strategy benchmark.".to_owned(),
             },
         ],
         memory: BenchmarkMemoryReport::new(memory_before, memory_after),

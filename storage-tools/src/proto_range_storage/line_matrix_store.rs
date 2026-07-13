@@ -6,7 +6,9 @@ use std::sync::Mutex;
 use memmap2::Mmap;
 use prost::Message;
 use range_store_core::crc32c::{assert_crc32c, crc32c};
-use range_store_core::dimension::{discover_dimensions, DimensionSpec};
+use range_store_core::dimension::{
+    discover_dimensions, get_drill_scenario_table_name, quote_identifier, DimensionSpec,
+};
 use range_store_core::sqlite::{Connection, Value};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -722,9 +724,10 @@ fn build_archive_files(
     write_header(&mut data, DATA_MAGIC, 0)?;
     write_header(&mut index, INDEX_MAGIC, 0)?;
     let metadata = Connection::open(metadata_tmp, false)?;
-    init_metadata_db(&metadata)?;
+    init_metadata_db(&metadata, &dimension.strategy)?;
     metadata.exec("BEGIN")?;
     let result = (|| {
+        copy_drill_scenario_lines(source, &metadata, &dimension.strategy)?;
         let mut offset = HEADER_SIZE as u64;
         let mut protobuf_bytes = 0u64;
         let mut action_value_count = 0u64;
@@ -843,8 +846,9 @@ fn prepare_output_dir(out_dir: &Path, overwrite: bool) -> Result<(), ToolError> 
     Ok(())
 }
 
-fn init_metadata_db(connection: &Connection) -> Result<(), ToolError> {
-    connection.exec(
+fn init_metadata_db(connection: &Connection, strategy: &str) -> Result<(), ToolError> {
+    let drill_table = quote_identifier(&get_drill_scenario_table_name(strategy))?;
+    connection.exec(&format!(
         "PRAGMA journal_mode = DELETE;
          PRAGMA synchronous = NORMAL;
          CREATE TABLE concrete_lines (
@@ -853,8 +857,55 @@ fn init_metadata_db(connection: &Connection) -> Result<(), ToolError> {
            concrete_line TEXT NOT NULL,
            UNIQUE(abstract_line, concrete_line)
          );
-         CREATE INDEX idx_concrete_lines_concrete_line ON concrete_lines(concrete_line);",
+         CREATE INDEX idx_concrete_lines_concrete_line ON concrete_lines(concrete_line);
+         CREATE TABLE {drill_table} (
+           id INTEGER PRIMARY KEY AUTOINCREMENT,
+           drill_name TEXT NOT NULL,
+           abstract_line TEXT NOT NULL,
+           player_count INTEGER NOT NULL,
+           drill_depth INTEGER NOT NULL DEFAULT 100,
+           UNIQUE(drill_name, player_count, drill_depth, abstract_line)
+         );"
+    ))?;
+    Ok(())
+}
+
+fn copy_drill_scenario_lines(
+    source: &Connection,
+    target: &Connection,
+    strategy: &str,
+) -> Result<(), ToolError> {
+    let raw_table = get_drill_scenario_table_name(strategy);
+    let mut exists = source.prepare(
+        "SELECT EXISTS(
+           SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = ?1
+         )",
     )?;
+    exists.start(&[Value::from(raw_table.as_str())])?;
+    if !exists.step_row()? || exists.column_i64(0) == 0 {
+        return Ok(());
+    }
+
+    let table = quote_identifier(&raw_table)?;
+    let mut select = source.prepare(&format!(
+        "SELECT drill_name, abstract_line, player_count, depth
+         FROM {table}
+         ORDER BY id"
+    ))?;
+    select.start(&[])?;
+    let mut insert = target.prepare(&format!(
+        "INSERT OR IGNORE INTO {table}(
+           drill_name, abstract_line, player_count, drill_depth
+         ) VALUES (?1, ?2, ?3, ?4)"
+    ))?;
+    while select.step_row()? {
+        insert.execute(&[
+            Value::from(select.column_text(0)?),
+            Value::from(select.column_text(1)?),
+            Value::from(select.column_u32(2)?),
+            Value::from(select.column_u32(3)?),
+        ])?;
+    }
     Ok(())
 }
 

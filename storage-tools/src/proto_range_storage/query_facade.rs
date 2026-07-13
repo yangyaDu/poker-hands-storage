@@ -3,11 +3,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
-use range_store_core::dimension::{dimension_key, DimensionRef};
+use range_store_core::dimension::{
+    dimension_key, get_drill_scenario_table_name, quote_identifier, DimensionRef,
+};
+use range_store_core::metadata::{ConcreteLineFilter, ConcreteLineRow};
 use range_store_core::query::{ActionFilter, QueryBatchResult, QueryResult};
+use range_store_core::sqlite::{Connection, Value};
 
 use crate::errors::ToolError;
 
+use super::format::METADATA_FILE_NAME;
 use super::line_matrix_store::{read_compact_archive_dimension, CompactArchiveOpenOptions};
 use super::query_service::ProtoRangeQueryService;
 
@@ -129,6 +134,94 @@ impl ProtoRangeStoreFacade {
         })
     }
 
+    pub fn get_concrete_lines(
+        &self,
+        dimension: &DimensionRef,
+        filter: ConcreteLineFilter<'_>,
+    ) -> Result<Vec<ConcreteLineRow>, ToolError> {
+        let metadata_path = self.metadata_path_for(dimension)?;
+        let connection = Connection::open(&metadata_path, true)?;
+        let (where_clause, values) = match filter {
+            ConcreteLineFilter::Abstract(abstract_line) => {
+                ("abstract_line = ?1", vec![Value::from(abstract_line)])
+            }
+            ConcreteLineFilter::Concrete(concrete_line) => {
+                ("concrete_line = ?1", vec![Value::from(concrete_line)])
+            }
+            ConcreteLineFilter::AbstractAndConcrete {
+                abstract_line,
+                concrete_line,
+            } => (
+                "abstract_line = ?1 AND concrete_line = ?2",
+                vec![Value::from(abstract_line), Value::from(concrete_line)],
+            ),
+        };
+        let sql = format!(
+            "SELECT concrete_line_id, abstract_line, concrete_line
+             FROM concrete_lines
+             WHERE {where_clause}
+             ORDER BY concrete_line_id"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        statement.start(&values)?;
+        let mut lines = Vec::new();
+        while statement.step_row()? {
+            lines.push(ConcreteLineRow {
+                concrete_line_id: statement.column_u32(0)?,
+                abstract_line: statement.column_text(1)?,
+                concrete_line: statement.column_text(2)?,
+            });
+        }
+        if lines.is_empty() {
+            return Err(ToolError::new(
+                "CONCRETE_LINE_NOT_FOUND",
+                format!(
+                    "No concrete lines match dimension {}",
+                    dimension_key(dimension)
+                ),
+            ));
+        }
+        Ok(lines)
+    }
+
+    pub fn get_drill_scenario_lines(
+        &self,
+        strategy: &str,
+        drill_name: &str,
+        player_count: u32,
+        drill_depth: u32,
+    ) -> Result<Vec<String>, ToolError> {
+        let dimension = DimensionRef::new(strategy, player_count, drill_depth);
+        let metadata_path = self.metadata_path_for(&dimension)?;
+        let table = quote_identifier(&get_drill_scenario_table_name(strategy))?;
+        let connection = Connection::open(&metadata_path, true)?;
+        let sql = format!(
+            "SELECT abstract_line
+             FROM {table}
+             WHERE drill_name = ?1 AND player_count = ?2 AND drill_depth = ?3
+             ORDER BY abstract_line"
+        );
+        let mut statement = connection.prepare(&sql)?;
+        statement.start(&[
+            Value::from(drill_name),
+            Value::from(player_count),
+            Value::from(drill_depth),
+        ])?;
+        let mut lines = Vec::new();
+        while statement.step_row()? {
+            lines.push(statement.column_text(0)?);
+        }
+        if lines.is_empty() {
+            return Err(ToolError::new(
+                "DRILL_SCENARIO_NOT_FOUND",
+                format!(
+                    "No abstract lines found for drill: strategy={strategy}, drill_name={drill_name}, player_count={player_count}, drill_depth={drill_depth}"
+                ),
+            ));
+        }
+        Ok(lines)
+    }
+
     fn with_service<T>(
         &self,
         dimension: &DimensionRef,
@@ -147,6 +240,17 @@ impl ProtoRangeStoreFacade {
             .expect("Proto handle pool lock poisoned");
         let service = handles.get_or_open(&key, archive_dir, self.verify_checksums)?;
         query(service)
+    }
+
+    fn metadata_path_for(&self, dimension: &DimensionRef) -> Result<PathBuf, ToolError> {
+        let key = dimension_key(dimension);
+        let archive_dir = self.archive_dirs.get(&key).ok_or_else(|| {
+            ToolError::new(
+                "DIMENSION_NOT_FOUND",
+                format!("Proto range storage does not contain dimension {key}"),
+            )
+        })?;
+        Ok(archive_dir.join(METADATA_FILE_NAME))
     }
 }
 

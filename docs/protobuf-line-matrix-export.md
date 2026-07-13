@@ -99,6 +99,12 @@ matrices.lmbin
 matrices.lmidx
 ```
 
+`lines.db` is the per-dimension SQLite metadata database. It contains the
+dimension's `concrete_lines` rows and a copied
+`drill_scenario_lines_{strategy}` table. During export, the source table's
+`depth` column is written as `drill_depth`, matching the runtime metadata
+query contract.
+
 `matrices.lmbin` stores one raw Proto payload after another. Each
 `matrices.lmidx` record is exactly 16 bytes:
 
@@ -157,9 +163,11 @@ directory.
 workload. It covers `hand-strategy`, `batch-hand-strategy`, every configured
 batch size, and `hands-by-actions`. The report applies the Proto V2 profile to
 all three engines: `hand_ev IS NULL` cells are excluded and action frequencies
-are rounded to `x10000` before strict threshold matching. `concrete-lines-exact`
-and `drill-scenarios-metadata` are explicitly reported as deferred until the
-Proto metadata storage design is decided.
+are rounded to `x10000` before strict threshold matching. The Proto facade now
+also provides `concrete-lines-exact` through each dimension's `lines.db` and
+`drill-scenarios-metadata` from that same file. They are intentionally omitted
+from the current three-way strategy benchmark until its metadata cases are
+added.
 
 ## Commands
 
