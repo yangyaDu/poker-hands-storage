@@ -1,206 +1,14 @@
 use std::fs;
 use std::process::Command;
 
-use poker_hands_storage_tools::compact_line_matrix::proto::ActionType as CompactActionType;
-use poker_hands_storage_tools::compact_line_matrix_archive::{
+use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
     CompactLineMatrixArchive, CompactLineMatrixArchiveOptions, CompactLineMatrixArchivesOptions,
 };
-use poker_hands_storage_tools::line_matrix_archive::{
-    export_line_matrix_archive, LineMatrixArchive, LineMatrixArchiveOptions,
-};
-use poker_hands_storage_tools::line_matrix_export::proto::{
-    ActionColumn, ActionType, HandEncoding, LineMatrix,
-};
-use poker_hands_storage_tools::line_matrix_export::{
-    export_line_matrix, ConcreteLineSelector, ExportLineMatrixOptions,
-};
-use prost::Message;
+use poker_hands_storage_tools::proto_range_storage::proto::ActionType as CompactActionType;
 use range_store_core::dimension::DimensionSpec;
 use range_store_core::hole_cards::hand_code_from_id;
 use range_store_core::sqlite::{Connection, Value};
-
-#[test]
-fn exports_sparse_action_columns_and_null_ev_from_id_and_text_selectors() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let source_db = temp.path().join("range.db");
-    create_source_fixture(&source_db);
-
-    let dimension = DimensionSpec::parse("default:6:100").expect("dimension");
-    let id_out = temp.path().join("by-id");
-    let summary = export_line_matrix(&ExportLineMatrixOptions {
-        source_db: source_db.clone(),
-        out_dir: id_out,
-        dimension: dimension.clone(),
-        selector: ConcreteLineSelector::Id(1),
-        gto_data_version: "fixture-001".to_owned(),
-        overwrite: false,
-    })
-    .expect("export by id");
-
-    assert_eq!(summary.concrete_line_id, 1);
-    assert_eq!(summary.action_count, 3);
-    assert_eq!(summary.source_row_count, 503);
-    assert_eq!(summary.null_ev_count, 1);
-    assert_eq!(summary.hands_with_actions, 168);
-    assert_eq!(summary.hands_without_actions, 1);
-    assert_eq!(summary.frequency_sum_mismatch_hand_count, 1);
-    assert_eq!(summary.max_frequency_error_x10000, 200);
-    assert!(summary.protobuf_bytes > 0);
-    assert!(summary.debug_json_path.is_file());
-    assert!(summary.verify_json_path.is_file());
-
-    let protobuf = fs::read(&summary.protobuf_path).expect("read protobuf");
-    let matrix = LineMatrix::decode(protobuf.as_slice()).expect("decode protobuf");
-    assert_eq!(matrix.schema_version, 1);
-    assert_eq!(matrix.gto_data_version, "fixture-001");
-    assert_eq!(matrix.hand_encoding, HandEncoding::HandEncoding169 as i32);
-    assert_eq!(matrix.invalid_hand_bitmap, vec![0; 22]);
-
-    let fold = action(&matrix, ActionType::Fold);
-    let call = action(&matrix, ActionType::Call);
-    let raise = action(&matrix, ActionType::Raise);
-    assert_eq!(fold.action_size_x10000, 0);
-    assert_eq!(fold.amount_centi_bb, 0);
-    assert_eq!(raise.action_size_x10000, 400_000);
-    assert_eq!(raise.amount_centi_bb, 200);
-    assert_eq!(raise.frequency_x10000.len(), 169);
-    assert_eq!(raise.ev_x10000.len(), 169);
-    assert_eq!(raise.action_hand_bitmap.len(), 22);
-    assert_eq!(raise.ev_null_bitmap.len(), 22);
-
-    // AA (hand_idx=0) has no raise, while every other hand does.
-    assert!(!bit_is_set(&raise.action_hand_bitmap, 0));
-    assert_eq!(raise.frequency_x10000[0], 0);
-    assert_eq!(raise.ev_x10000[0], 0);
-    assert!(bit_is_set(&raise.action_hand_bitmap, 1));
-
-    // AKs (hand_idx=1) has CALL with NULL EV.
-    assert!(bit_is_set(&call.action_hand_bitmap, 1));
-    assert!(bit_is_set(&call.ev_null_bitmap, 1));
-    assert_eq!(call.ev_x10000[1], 0);
-
-    // AQs (hand_idx=2) has a real EV of zero, distinct from NULL.
-    assert!(bit_is_set(&call.action_hand_bitmap, 2));
-    assert!(!bit_is_set(&call.ev_null_bitmap, 2));
-    assert_eq!(call.ev_x10000[2], 0);
-
-    let verify: serde_json::Value =
-        serde_json::from_slice(&fs::read(summary.verify_json_path).expect("read verify"))
-            .expect("parse verify");
-    assert_eq!(verify["pass"], true);
-    assert_eq!(verify["presentActionCellCount"], 503);
-    assert_eq!(verify["nullEvCount"], 1);
-    assert_eq!(verify["handsWithActions"], 168);
-    assert_eq!(verify["handsWithoutActions"], 1);
-    assert_eq!(verify["frequencySumMismatchHandCount"], 1);
-    assert_eq!(verify["maxFrequencyErrorX10000"], 200);
-    assert_eq!(
-        verify["checks"]["sourceFrequencySumsWithinRoundingTolerance"],
-        false
-    );
-    assert_eq!(verify["warnings"].as_array().expect("warnings").len(), 1);
-
-    let text_summary = export_line_matrix(&ExportLineMatrixOptions {
-        source_db,
-        out_dir: temp.path().join("by-text"),
-        dimension,
-        selector: ConcreteLineSelector::Text {
-            concrete_line: "F-F-F".to_owned(),
-            abstract_line: None,
-        },
-        gto_data_version: "fixture-001".to_owned(),
-        overwrite: false,
-    })
-    .expect("export by line text");
-    assert_eq!(text_summary.concrete_line_id, 1);
-}
-
-#[test]
-fn exports_default_6max_100bb_lines_as_a_dense_indexed_archive() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let source_db = temp.path().join("range.db");
-    create_source_fixture(&source_db);
-    let out_dir = temp.path().join("archive");
-
-    let summary = export_line_matrix_archive(&LineMatrixArchiveOptions {
-        source_db,
-        out_dir: out_dir.clone(),
-        gto_data_version: "fixture-001".to_owned(),
-        overwrite: false,
-    })
-    .expect("export archive");
-
-    assert_eq!(summary.matrix_count, 2);
-    assert_eq!(
-        summary.data_path.file_name().and_then(|name| name.to_str()),
-        Some("matrices.lmbin")
-    );
-    assert_eq!(
-        summary
-            .index_path
-            .file_name()
-            .and_then(|name| name.to_str()),
-        Some("matrices.lmidx")
-    );
-    assert!(summary.manifest_path.is_file());
-    assert!(summary.metadata_path.is_file());
-    assert_eq!(
-        fs::metadata(&summary.index_path)
-            .expect("index metadata")
-            .len(),
-        48
-    );
-
-    let archive = LineMatrixArchive::open(&out_dir).expect("open archive");
-    assert_eq!(archive.matrix_count(), 2);
-    let second = archive.read_matrix(2).expect("read second matrix");
-    assert_eq!(second.gto_data_version, "fixture-001");
-    assert_eq!(second.hand_encoding, HandEncoding::HandEncoding169 as i32);
-    assert_eq!(second.actions.len(), 2);
-
-    let metadata = Connection::open(&summary.metadata_path, true).expect("open archive metadata");
-    let mut statement = metadata
-        .prepare(
-            "SELECT abstract_line, concrete_line FROM concrete_lines WHERE concrete_line_id = ?1",
-        )
-        .expect("prepare metadata query");
-    statement
-        .start(&[Value::from(2u32)])
-        .expect("query metadata");
-    assert!(statement.step_row().expect("metadata row"));
-    assert_eq!(statement.column_text(0).expect("abstract line"), "R-F");
-    assert_eq!(statement.column_text(1).expect("concrete line"), "R2-F");
-}
-
-#[test]
-fn cli_exports_default_6max_100bb_archive() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let source_db = temp.path().join("range.db");
-    create_source_fixture(&source_db);
-    let out_dir = temp.path().join("archive");
-
-    let output = Command::new(env!("CARGO_BIN_EXE_poker-hands-storage-tools"))
-        .args([
-            "export-line-matrix-archive",
-            "--source-db",
-            source_db.to_str().expect("source path"),
-            "--out-dir",
-            out_dir.to_str().expect("output path"),
-            "--gto-data-version",
-            "fixture-001",
-        ])
-        .output()
-        .expect("run archive command");
-
-    assert!(
-        output.status.success(),
-        "stderr={}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    assert!(out_dir.join("manifest.json").is_file());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("LineMatrix archive export complete."));
-}
 
 #[test]
 fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
@@ -248,7 +56,7 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
     let call_index = matrix
         .actions
         .iter()
-        .position(|action| action.action_type == ActionType::Call as i32)
+        .position(|action| action.action_type == CompactActionType::Call as i32)
         .expect("call action");
     let call = &matrix.actions[call_index];
     assert_eq!(call.action_hand_bitmap.len(), 21);
@@ -260,7 +68,7 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
     assert_eq!(
         first.action_value(call_index, 2),
         Some(
-            poker_hands_storage_tools::compact_line_matrix_archive::HandActionValue {
+            poker_hands_storage_tools::proto_range_storage::line_matrix_store::HandActionValue {
                 frequency_x10000: 2_500,
                 ev_x10000: 0,
             }
@@ -297,7 +105,7 @@ fn compact_archive_does_not_scan_null_ev_rows() {
         dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
         overwrite: false,
     })
-    .expect("NULL EV rows must not be scanned by V2");
+    .expect("NULL EV rows must not be scanned by Proto");
 
     assert_eq!(summary.matrix_count, 2);
 }
@@ -554,14 +362,6 @@ fn insert_row_for_line(
             hand_ev,
         ])
         .expect("insert range row");
-}
-
-fn action(matrix: &LineMatrix, action_type: ActionType) -> &ActionColumn {
-    matrix
-        .actions
-        .iter()
-        .find(|action| action.action_type == action_type as i32)
-        .expect("action column")
 }
 
 fn bit_is_set(bitmap: &[u8], hand_idx: usize) -> bool {

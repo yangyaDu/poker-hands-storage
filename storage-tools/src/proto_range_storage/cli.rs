@@ -6,7 +6,7 @@ use crate::benchmark::cli::{next_value, parse_u32, parse_u64, parse_usize};
 use crate::benchmark::cold::types::ColdStartMode;
 use crate::errors::ToolError;
 
-use super::{
+use super::line_matrix_store::{
     CompactLineMatrixArchiveOptions, CompactLineMatrixArchivesOptions,
     CompactVsCoreBenchmarkCommand, CompactVsCoreColdWorkerCommand, CompactVsCoreEngine,
     CompactVsCoreQuery,

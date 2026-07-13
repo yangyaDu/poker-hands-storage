@@ -22,7 +22,7 @@
 | `range-store-core` | Rust 只读查询核心 | 负责 manifest、metadata、`.idx/.bin` reader、pack decode、CRC32C、LRU handle pool 和 `RangeStoreFacade` |
 | `service` | HTTP API 服务 | 提供 OpenAPI、请求校验、错误码映射、health/readiness、Docker 运行入口 |
 | `range-store-native` | Bun/Node 进程内 SDK | 通过 napi-rs 加载同一套 core 查询能力，成功返回直接 payload，失败抛出 `RangeStoreError` |
-| `storage-tools` | 离线工具 | 提供构建、单行动线 Protobuf 导出、standalone/cross verify、SQLite/Binary/native benchmark 和报告生成 |
+| `storage-tools` | 离线工具 | 提供构建、Proto LineMatrix archive、standalone/cross verify、SQLite/Binary/native benchmark 和报告生成 |
 | `.docker` | HTTP service 容器化 | Dockerfile 只构建 `range-store-core` + `service`，不包含 benchmark 或 native SDK |
 | `docs` | 项目文档 | 入口见 [docs/README.md](docs/README.md) |
 
@@ -116,7 +116,14 @@ poker-hands-storage/
 |   |   |-- errors.rs                  # ToolError 错误类型
 |   |   |-- metadata.rs                # 构建阶段写入 meta.db
 |   |   |-- range_store_builder.rs     # SQLite -> manifest/meta/idx/bin 构建流程
-|   |   |-- line_matrix_export/        # 单行动线 SQLite -> Protobuf、bitmap、校验和报告
+|   |   |-- proto_range_storage/       # Proto LineMatrix payload and archive storage
+|   |   |   |-- proto.rs               # Protobuf type definitions
+|   |   |   |-- line_matrix_codec.rs   # payload conversion and validation
+|   |   |   |-- sqlite_source.rs       # SQLite source query
+|   |   |   |-- line_matrix_store.rs   # archive writer and reader
+|   |   |   |-- cli.rs                 # archive CLI argument parsing
+|   |   |   |-- format.rs              # archive binary layout
+|   |   |   `-- benchmark.rs           # Proto archive versus core benchmark
 |   |   |-- verification/              # standalone/cross verify 和验证报告
 |   |   |   |-- mod.rs                 # verification 子模块入口，组织验证实现
 |   |   |   |-- cli.rs                 # verify --mode standalone|cross 参数解析
@@ -222,15 +229,13 @@ cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build 
   --overwrite
 ```
 
-导出指定行动线的 Protobuf 矩阵：
+导出 Proto LineMatrix archive：
 
 ```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- export-line-matrix `
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- export-compact-line-matrix-archive `
   --source-db data\sqlite\range.db `
+  --out-dir reports\line-matrix-compact-default-6max-100BB `
   --dimension default:6:100 `
-  --concrete-line-id 1 `
-  --gto-data-version poc-001 `
-  --out-dir reports\line-matrix-poc
 ```
 
 数据验证：

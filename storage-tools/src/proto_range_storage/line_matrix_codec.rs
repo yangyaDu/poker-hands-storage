@@ -3,9 +3,11 @@ use std::collections::{BTreeMap, HashSet};
 use range_store_core::hole_cards::get_hand_id;
 
 use crate::errors::ToolError;
-use crate::line_matrix_export::source::SourceRow;
+use crate::proto_range_storage::sqlite_source::SourceRow;
 
-use super::proto::{ActionType, CompactActionColumn, CompactLineMatrix, HandEncoding};
+use crate::proto_range_storage::proto::{
+    ActionType, CompactActionColumn, CompactLineMatrix, HandEncoding,
+};
 
 pub(crate) const HAND_COUNT_169: usize = 169;
 pub(crate) const BITMAP_BYTES_169: usize = HAND_COUNT_169.div_ceil(8);
@@ -119,7 +121,7 @@ pub(crate) fn validate_compact_line_matrix(matrix: &CompactLineMatrix) -> Result
         )));
     }
     if matrix.hand_encoding != HandEncoding::HandEncoding169 as i32 {
-        return Err(invalid_matrix("V2 exporter requires HAND_ENCODING_169"));
+        return Err(invalid_matrix("Proto exporter requires HAND_ENCODING_169"));
     }
     if matrix.actions.is_empty() {
         return Err(invalid_matrix("actions must not be empty"));

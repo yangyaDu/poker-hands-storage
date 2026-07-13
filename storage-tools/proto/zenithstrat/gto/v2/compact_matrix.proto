@@ -2,10 +2,24 @@ syntax = "proto3";
 
 package zenithstrat.gto.v2;
 
-import "zenithstrat/gto/v1/matrix.proto";
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_FOLD = 1;
+  ACTION_TYPE_CHECK = 2;
+  ACTION_TYPE_CALL = 3;
+  ACTION_TYPE_BET = 4;
+  ACTION_TYPE_RAISE = 5;
+  ACTION_TYPE_ALLIN = 6;
+}
+
+enum HandEncoding {
+  HAND_ENCODING_UNSPECIFIED = 0;
+  HAND_ENCODING_169 = 1;
+  HAND_ENCODING_1326_COMBO = 2;
+}
 
 message CompactActionColumn {
-  zenithstrat.gto.v1.ActionType action_type = 1;
+  ActionType action_type = 1;
 
   // Action 后该玩家在本轮的总投入额，单位：1 / 100 BB。
   uint32 amount_centi_bb = 2;
@@ -33,7 +47,7 @@ message CompactLineMatrix {
   // 固定为 2，表示此紧凑编码规范。
   uint32 schema_version = 1;
 
-  zenithstrat.gto.v1.HandEncoding hand_encoding = 2;
+  HandEncoding hand_encoding = 2;
 
   repeated CompactActionColumn actions = 3;
 

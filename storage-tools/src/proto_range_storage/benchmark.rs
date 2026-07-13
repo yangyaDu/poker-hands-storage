@@ -19,7 +19,7 @@ use crate::benchmark::report_support::{
 };
 use crate::errors::ToolError;
 
-use super::{CompactArchiveOpenOptions, CompactLineMatrixArchive};
+use super::line_matrix_store::{CompactArchiveOpenOptions, CompactLineMatrixArchive};
 
 const HAND_COUNT_169: usize = 169;
 
@@ -278,7 +278,7 @@ pub fn run_compact_vs_core_benchmark(
         cold,
         notes: vec![
             "Hot measurements exclude deterministic query-plan construction and execute an untimed symmetry warm-up through both engines.".to_owned(),
-            "Compact result_count counts action values materialized for the requested hand; core result_count counts actions returned by the core hand-strategy API. V2 excludes rows with hand_ev IS NULL, so result counts are informational rather than a cross-format equality gate.".to_owned(),
+            "Compact result_count counts action values materialized for the requested hand; core result_count counts actions returned by the core hand-strategy API. Proto excludes rows with hand_ev IS NULL, so result counts are informational rather than a cross-format equality gate.".to_owned(),
             "Cold runs use a fresh worker process per engine/run. process-cold refreshes process state but does not evict the OS page cache; the configured filler is used only by cache-eviction modes.".to_owned(),
             "Compact/core ratios below 1.0 mean CompactLineMatrix was faster for that metric.".to_owned(),
         ],
@@ -668,7 +668,7 @@ fn summarize_cold_runs(runs: &[ColdRun]) -> CompactVsCoreColdEngineSummary {
 }
 
 fn render_markdown(report: &CompactVsCoreBenchmarkReport) -> String {
-    let mut markdown = String::from("# CompactLineMatrix V2 vs Core Binary Benchmark Report\n\n");
+    let mut markdown = String::from("# Proto LineMatrix vs Core Binary Benchmark Report\n\n");
     markdown.push_str(&format!("Generated at: {}\n\n", report.generated_at));
     markdown.push_str("## Scope\n\n");
     markdown.push_str(&format!("- Dimension: `{}`\n", report.dimension));
@@ -705,7 +705,7 @@ fn render_markdown(report: &CompactVsCoreBenchmarkReport) -> String {
             "Result values",
         ],
         &[
-            hot_row("CompactLineMatrix V2", &report.hot.compact),
+            hot_row("Proto LineMatrix", &report.hot.compact),
             hot_row("Core .bin/.idx", &report.hot.core),
         ],
     ));
@@ -734,7 +734,7 @@ fn render_markdown(report: &CompactVsCoreBenchmarkReport) -> String {
             "Errors",
         ],
         &[
-            cold_row("CompactLineMatrix V2", &report.cold.compact),
+            cold_row("Proto LineMatrix", &report.cold.compact),
             cold_row("Core .bin/.idx", &report.cold.core),
         ],
     ));
@@ -796,7 +796,7 @@ fn assert_archive_dimension(
     Ok(())
 }
 
-fn valid_hand_ids(matrix: &crate::compact_line_matrix::proto::CompactLineMatrix) -> Vec<u8> {
+fn valid_hand_ids(matrix: &crate::proto_range_storage::proto::CompactLineMatrix) -> Vec<u8> {
     (0..HAND_COUNT_169)
         .filter(|hand_id| is_valid_hand(matrix, *hand_id))
         .map(|hand_id| hand_id as u8)
@@ -804,7 +804,7 @@ fn valid_hand_ids(matrix: &crate::compact_line_matrix::proto::CompactLineMatrix)
 }
 
 fn is_valid_hand(
-    matrix: &crate::compact_line_matrix::proto::CompactLineMatrix,
+    matrix: &crate::proto_range_storage::proto::CompactLineMatrix,
     hand_id: usize,
 ) -> bool {
     matrix

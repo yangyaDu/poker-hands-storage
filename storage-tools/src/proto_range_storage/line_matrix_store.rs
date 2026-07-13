@@ -11,24 +11,20 @@ use range_store_core::sqlite::{Connection, Value};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
-use crate::compact_line_matrix::convert::{
+use crate::errors::ToolError;
+use crate::proto_range_storage::line_matrix_codec::{
     build_compact_index_map, build_compact_line_matrix, count_bits, validate_compact_line_matrix,
     HAND_COUNT_169,
 };
-use crate::compact_line_matrix::proto::{ActionType, CompactLineMatrix, HandEncoding};
-use crate::errors::ToolError;
-use crate::line_matrix_export::source::{load_all_lines, load_rows_with_ev, ResolvedLine};
+use crate::proto_range_storage::proto::{ActionType, CompactLineMatrix, HandEncoding};
+use crate::proto_range_storage::sqlite_source::{load_all_lines, load_rows_with_ev, ResolvedLine};
 
-mod benchmark;
-pub mod cli;
-mod format;
-
-pub use benchmark::{
+pub use super::benchmark::{
     run_compact_vs_core_benchmark, run_compact_vs_core_cold_worker, CompactVsCoreBenchmarkCommand,
     CompactVsCoreColdWorkerCommand, CompactVsCoreEngine, CompactVsCoreQuery,
 };
 
-use format::{
+use super::format::{
     read_header, read_index_record_from_slice, write_header, write_index_record, IndexRecord,
     DATA_FILE_NAME, DATA_MAGIC, HEADER_SIZE, INDEX_FILE_NAME, INDEX_MAGIC, INDEX_RECORD_SIZE,
     MANIFEST_FILE_NAME, METADATA_FILE_NAME,

@@ -1,12 +1,12 @@
-# Compact LineMatrix V2 Design
+# Proto LineMatrix Archive Design
 
 ## Goal
 
-Store every line from each discovered 169-hand dimension as a separate random-access Protobuf archive while omitting SQLite rows where `hand_ev IS NULL`.
+Store every line from each discovered 169-hand dimension as a separate random-access Proto archive while omitting SQLite rows where `hand_ev IS NULL`.
 
 ## Compatibility
 
-V1 remains readable and unchanged. V2 uses package `zenithstrat.gto.v2`, a new exporter/reader module, archive header version `2`, and manifest payload schema `zenithstrat.gto.v2.CompactLineMatrix`.
+The old V1 LineMatrix exporter and archive are removed. The current Proto scheme uses package `zenithstrat.gto.v2`, archive header version `2`, and manifest payload schema `zenithstrat.gto.v2.CompactLineMatrix`.
 
 ## Encoding
 
