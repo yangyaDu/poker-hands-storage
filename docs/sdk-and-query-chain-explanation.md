@@ -12,7 +12,8 @@
 
 `range-store-native` 是 Bun / TypeScript 进程内只读 SDK，Node.js 运行时兼容：
 
-- Rust 侧通过 `napi-rs` 暴露 `PokerHandsRange`。
+- Rust 侧通过
+api-rs` 暴露 `PokerHandsRange`。
 - TypeScript 业务代码导入运行时入口 `index.js`；`index.d.ts` 只提供类型声明，由 TypeScript 自动解析。
 - SDK wrapper 通过 `index.js` 加载 `index.node`，把 native 异常转换成 `RangeStoreError`。
 - 查询语义复用 `range-store-core::query::RangeStoreFacade`，与 HTTP service 共用 core 业务路径。
@@ -148,7 +149,8 @@ bun run test:http-consistency
 | HTTP service   | 跨进程、跨语言、容器化服务 | `{ code, data, message }` envelope     | HTTP/JSON 序列化和 loopback/网络成本 |
 | Bun native SDK | Bun / TypeScript 业务进程内查询 | 直接 payload，失败抛 `RangeStoreError` | N-API 边界和 SDK 包装成本            |
 
-当前正式 benchmark 只保留 `core`、`native-sdk`、`http-service` 三组对比。Native SDK 的策略查询最终仍落到 `RangeStoreFacade -> StoreQueryService`；如果某次报告显示 SDK 和 core 有明显速度差异，应优先从 page cache、运行时上下文、计时精度和样本局部性解释，不应假设 SDK 绕过了 core 算法。
+当前正式 benchmark 只保留 `core`、
+ative-sdk`、`http-service` 三组对比。Native SDK 的策略查询最终仍落到 `RangeStoreFacade -> StoreQueryService`；如果某次报告显示 SDK 和 core 有明显速度差异，应优先从 page cache、运行时上下文、计时精度和样本局部性解释，不应假设 SDK 绕过了 core 算法。
 
 ## 生产接入边界
 
@@ -216,7 +218,8 @@ service route -> RangeStoreFacade -> HTTP { code, data, message } envelope
 
 ## 构造阶段
 
-业务 `.ts` 代码调用 `new PokerHandsRange(options)` 后，`index.js` wrapper 会把 `dataDir/maxOpenHandles/verifyChecksums` 传给 native 类：
+业务 `.ts` 代码调用
+ew PokerHandsRange(options)` 后，`index.js` wrapper 会把 `dataDir/maxOpenHandles/verifyChecksums` 传给 native 类：
 
 ```typescript
 new native.PokerHandsRange({
@@ -361,10 +364,9 @@ cache hit 时直接返回已有 `Arc<DimensionReader>` 并刷新 LRU 顺序。ca
 
 ### 2. IdxReader
 
-`.idx` 是 PFXI 文件，头部 16 字节，每条 record 22 字节：
+`.idx` 是 PFXI 文件，头部 16 字节，每条 record 18 字节：
 
 ```text
-concrete_line_id(4)
 action_schema_id(4)
 hand_count(2)
 offset(4)
@@ -372,15 +374,15 @@ byte_length(4)
 checksum(4)
 ```
 
-`IdxReader::open()` 会 mmap 文件、校验 PFXI header，并验证 `concrete_line_id` 是连续 dense layout。dense layout 成立后，查找就是固定偏移计算：
+`IdxReader::open()` 会 mmap 文件并校验 PFXI header。builder 与 standalone verify 保证 metadata id 为连续的 `1..N`；查找按固定偏移计算：
 
 ```rust
-let index = concrete_line_id.checked_sub(first_concrete_line_id)?;
+let index = concrete_line_id.checked_sub(1)?;
 let offset = index as usize * IDX_RECORD_SIZE;
 let record = decode_idx_record_at(records_base, offset);
 ```
 
-这里没有 SQL 解析、B-tree 遍历或行格式解析。边界仍会被检查：id 越界或 record 中的 `concrete_line_id` 不一致都会返回 `None`。
+这里没有 SQL 解析、B-tree 遍历或行格式解析。边界仍会被检查：id 为 0 或大于 record_count 时返回 `None`。
 
 ### 3. BinReader
 
@@ -446,7 +448,8 @@ frequency f32 + hand_ev f32
 4. 遍历 `action_id = 0..action_count`。
 5. 如果 mask 对应 bit 为 0，跳过该 action。
 6. 如果 bit 为 1，读取 frequency 和 EV。
-7. `hand_ev` 的 `NaN` 表示业务 null，返回到 Bun / TypeScript 调用方时是 `null`。
+7. `hand_ev` 的 `NaN` 表示业务 null，返回到 Bun / TypeScript 调用方时是
+ull`。
 
 最多 169 个 hand，所以二分查找不超过 8 次比较。由于 pack 是稀疏的，不能直接用 `hand_ids[target_hand_id]` 当固定下标。
 
@@ -481,7 +484,9 @@ ActionResult {
 }
 ```
 
-N-API 层把 `f32` 转成 JS runtime `number` / TypeScript `number` 可表达的 `f64`：
+N-API 层把 `f32` 转成 JS runtime
+umber` / TypeScript
+umber` 可表达的 `f64`：
 
 ```rust
 ActionResult {

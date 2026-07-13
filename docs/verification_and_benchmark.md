@@ -167,9 +167,9 @@ Standalone 验证只检查输出目录自身，不读取源 SQLite。
 - magic 为 `PFXI`。
 - version 为 `1`。
 - header size 为 `16`。
-- 文件长度覆盖 `record_count * 22`。
-- `concrete_line_id` 严格升序。
-- `concrete_line_id` 在同一维度内连续递增，满足 dense 下标 lookup 前提。
+- 文件长度必须精确等于 `16 + record_count * 18` 字节；多余或缺失字节都会失败，避免旧 22 字节布局被静默解析。
+- `meta.db.concrete_lines_*` 的 id 为 `1..record_count`。
+- `.idx` 的第 N 条 record 隐式映射 concrete_line_id=N+1。
 - `hand_count <= 169`。
 - `action_schema_id` 必须存在于 `meta.db.action_schemas`。
 

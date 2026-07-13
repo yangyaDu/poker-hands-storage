@@ -8,7 +8,7 @@ use arrayvec::ArrayVec;
 
 pub const IDX_MAGIC: &[u8; 4] = b"PFXI";
 pub const IDX_HEADER_SIZE: usize = 16;
-pub const IDX_RECORD_SIZE: usize = 22;
+pub const IDX_RECORD_SIZE: usize = 18;
 
 /// Parsed .idx file header.
 #[derive(Debug, Clone)]
@@ -16,10 +16,9 @@ pub struct IdxHeader {
     pub record_count: u32,
 }
 
-/// A single .idx record that maps a concreteLineId to its .bin payload location.
+/// A single .idx record that maps its one-based array position to a .bin payload location.
 #[derive(Debug, Clone)]
 pub struct IdxRecord {
-    pub concrete_line_id: u32,
     pub action_schema_id: u32,
     pub hand_count: u16,
     pub offset: u32,

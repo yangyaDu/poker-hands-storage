@@ -93,6 +93,41 @@ fn builds_queryable_store_from_sqlite() {
 }
 
 #[test]
+fn build_rejects_non_dense_concrete_line_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let source_path = dir.path().join("source.db");
+    let output_path = dir.path().join("output");
+    write_source_with_dimensions(&source_path, &[100]);
+
+    let source = Connection::open(&source_path, false).unwrap();
+    source
+        .execute(
+            "UPDATE concrete_lines_default_6max_100BB SET id = 2 WHERE id = 1",
+            &[],
+        )
+        .unwrap();
+    source
+        .execute(
+            "UPDATE range_data_default_6max_100BB SET concrete_line_id = 2 WHERE concrete_line_id = 1",
+            &[],
+        )
+        .unwrap();
+    drop(source);
+
+    let error = build_store(&BuildOptions {
+        source_db: source_path,
+        out_dir: output_path,
+        dimensions: Vec::new(),
+        max_concrete_lines_per_dimension: None,
+        overwrite: false,
+        resume: false,
+    })
+    .unwrap_err();
+
+    assert!(error.message().contains("must be dense and start at 1"));
+}
+
+#[test]
 fn build_writes_resume_state() {
     let dir = tempfile::tempdir().unwrap();
     let source_path = dir.path().join("source.db");

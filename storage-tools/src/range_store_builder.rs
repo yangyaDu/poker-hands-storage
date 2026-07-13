@@ -530,13 +530,6 @@ fn init_meta_db(connection: &Connection, dimensions: &[DimensionSpec]) -> Result
            action_blob BLOB NOT NULL,
            checksum INTEGER NOT NULL,
            schema_key TEXT NOT NULL UNIQUE
-         );
-         CREATE TABLE dimension_action_schemas (
-           strategy TEXT NOT NULL,
-           player_count INTEGER NOT NULL,
-           depth_bb INTEGER NOT NULL,
-           action_schema_id INTEGER NOT NULL,
-           PRIMARY KEY (strategy, player_count, depth_bb, action_schema_id)
          );",
     )?;
 
@@ -753,7 +746,6 @@ fn build_dimension_files(
     let mut pack_count = 0u32;
     let mut current_line_id = None;
     let mut current_rows = Vec::new();
-    let mut dimension_schema_ids = HashSet::new();
 
     let range_table = quote_identifier(&dimension.range_table())?;
     let mut statement = source.prepare(&format!(
@@ -780,11 +772,11 @@ fn build_dimension_files(
                 current_line_id = Some(range_row.concrete_line_id);
             }
             if current_line_id != Some(range_row.concrete_line_id) {
+                let concrete_line_id = current_line_id.expect("current line is set");
+                ensure_implicit_line_id(concrete_line_id, pack_count)?;
                 flush_pack(
                     meta,
                     schema_ids_by_key,
-                    &mut dimension_schema_ids,
-                    current_line_id.expect("current line is set"),
                     &current_rows,
                     &mut bin,
                     &mut idx,
@@ -802,31 +794,16 @@ fn build_dimension_files(
             current_rows.push(range_row);
         }
         if let Some(concrete_line_id) = current_line_id.filter(|_| !current_rows.is_empty()) {
+            ensure_implicit_line_id(concrete_line_id, pack_count)?;
             flush_pack(
                 meta,
                 schema_ids_by_key,
-                &mut dimension_schema_ids,
-                concrete_line_id,
                 &current_rows,
                 &mut bin,
                 &mut idx,
                 &mut bin_offset,
             )?;
             pack_count += 1;
-        }
-
-        for action_schema_id in dimension_schema_ids {
-            meta.execute(
-                "INSERT OR IGNORE INTO dimension_action_schemas(
-               strategy, player_count, depth_bb, action_schema_id
-             ) VALUES (?1, ?2, ?3, ?4)",
-                &[
-                    Value::from(dimension.strategy.as_str()),
-                    Value::from(dimension.player_count),
-                    Value::from(dimension.depth_bb),
-                    Value::from(action_schema_id),
-                ],
-            )?;
         }
         Ok::<(), ToolError>(())
     })();
@@ -837,12 +814,22 @@ fn build_dimension_files(
     Ok((pack_count, pack_count))
 }
 
+fn ensure_implicit_line_id(concrete_line_id: u32, pack_count: u32) -> Result<(), ToolError> {
+    let expected = pack_count
+        .checked_add(1)
+        .ok_or_else(|| ToolError::build("Too many concrete lines for implicit .idx ids"))?;
+    if concrete_line_id != expected {
+        return Err(ToolError::build(format!(
+            "concrete_line_id must be dense and start at 1 for implicit .idx ids: got {concrete_line_id}, expected {expected}"
+        )));
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 fn flush_pack(
     connection: &Connection,
     schema_ids_by_key: &mut HashMap<String, u32>,
-    dimension_schema_ids: &mut HashSet<u32>,
-    concrete_line_id: u32,
     rows: &[RangeRow],
     bin: &mut File,
     idx: &mut File,
@@ -857,8 +844,6 @@ fn flush_pack(
         encoded.action_count,
         &encoded.action_blob,
     )?;
-    dimension_schema_ids.insert(action_schema_id);
-
     let byte_length = u32::try_from(encoded.payload.len())
         .map_err(|_| ToolError::build("Range pack exceeds u32 byte length"))?;
     let checksum = crc32c(&encoded.payload);
@@ -867,7 +852,6 @@ fn flush_pack(
     idx.seek(SeekFrom::End(0))?;
     write_idx_record(
         idx,
-        concrete_line_id,
         action_schema_id,
         encoded.hand_count,
         *bin_offset,
@@ -1064,7 +1048,6 @@ fn write_idx_header(file: &mut File, record_count: u32) -> Result<(), ToolError>
 #[allow(clippy::too_many_arguments)]
 fn write_idx_record(
     file: &mut File,
-    concrete_line_id: u32,
     action_schema_id: u32,
     hand_count: u16,
     offset: u32,
@@ -1072,12 +1055,11 @@ fn write_idx_record(
     checksum: u32,
 ) -> Result<(), ToolError> {
     let mut record = [0u8; IDX_RECORD_SIZE];
-    record[0..4].copy_from_slice(&concrete_line_id.to_le_bytes());
-    record[4..8].copy_from_slice(&action_schema_id.to_le_bytes());
-    record[8..10].copy_from_slice(&hand_count.to_le_bytes());
-    record[10..14].copy_from_slice(&offset.to_le_bytes());
-    record[14..18].copy_from_slice(&byte_length.to_le_bytes());
-    record[18..22].copy_from_slice(&checksum.to_le_bytes());
+    record[0..4].copy_from_slice(&action_schema_id.to_le_bytes());
+    record[4..6].copy_from_slice(&hand_count.to_le_bytes());
+    record[6..10].copy_from_slice(&offset.to_le_bytes());
+    record[10..14].copy_from_slice(&byte_length.to_le_bytes());
+    record[14..18].copy_from_slice(&checksum.to_le_bytes());
     file.write_all(&record)?;
     Ok(())
 }

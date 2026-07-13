@@ -42,7 +42,6 @@ pub enum MetadataError {
     Sqlite(SqliteError),
     Naming(NamingError),
     ActionSchema(ActionSchemaError),
-    ActionSchemaNotFound(u32),
     AbstractLineNotFound {
         strategy: String,
         player_count: u32,
@@ -92,59 +91,6 @@ impl MetadataReader {
             schemas.insert(id, decode_action_blob(&action_blob, action_count)?);
         }
         Ok(schemas)
-    }
-
-    pub fn load_action_schema_ids(&self) -> Result<HashSet<u32>, MetadataError> {
-        let connection = self.open()?;
-        let mut statement = connection.prepare("SELECT id FROM action_schemas ORDER BY id")?;
-        statement.start(&[])?;
-        let mut ids = HashSet::new();
-        while statement.step_row()? {
-            ids.insert(statement.column_u32(0)?);
-        }
-        Ok(ids)
-    }
-
-    pub fn validate_dimension_schema_refs(
-        &self,
-        action_schema_ids: &HashSet<u32>,
-    ) -> Result<(), MetadataError> {
-        let connection = self.open()?;
-        let mut statement =
-            connection.prepare("SELECT DISTINCT action_schema_id FROM dimension_action_schemas")?;
-        statement.start(&[])?;
-        while statement.step_row()? {
-            let action_schema_id = statement.column_u32(0)?;
-            if !action_schema_ids.contains(&action_schema_id) {
-                return Err(MetadataError::ActionSchemaNotFound(action_schema_id));
-            }
-        }
-        Ok(())
-    }
-
-    pub fn dimension_action_schema_ids(
-        &self,
-        strategy: &str,
-        player_count: u32,
-        depth_bb: u32,
-    ) -> Result<Vec<u32>, MetadataError> {
-        let connection = self.open()?;
-        let mut statement = connection.prepare(
-            "SELECT action_schema_id
-             FROM dimension_action_schemas
-             WHERE strategy = ?1 AND player_count = ?2 AND depth_bb = ?3
-             ORDER BY action_schema_id",
-        )?;
-        statement.start(&[
-            Value::from(strategy),
-            Value::from(player_count),
-            Value::from(depth_bb),
-        ])?;
-        let mut ids = Vec::new();
-        while statement.step_row()? {
-            ids.push(statement.column_u32(0)?);
-        }
-        Ok(ids)
     }
 
     pub fn get_concrete_lines(
@@ -259,7 +205,6 @@ impl MetadataError {
             Self::Sqlite(_) => "META_DB_ERROR",
             Self::Naming(_) => "INVALID_ARGUMENT",
             Self::ActionSchema(_) => "INVALID_FORMAT",
-            Self::ActionSchemaNotFound(_) => "ACTION_SCHEMA_NOT_FOUND",
             Self::AbstractLineNotFound { .. } => "ABSTRACT_LINE_NOT_FOUND",
             Self::ConcreteLineValueNotFound { .. } | Self::ConcreteLineFilterNotFound { .. } => {
                 "CONCRETE_LINE_NOT_FOUND"
@@ -286,9 +231,6 @@ impl std::fmt::Display for MetadataError {
             Self::Sqlite(error) => write!(f, "SQLite metadata error: {error}"),
             Self::Naming(error) => write!(f, "{error}"),
             Self::ActionSchema(error) => write!(f, "Action schema decode error: {error}"),
-            Self::ActionSchemaNotFound(action_schema_id) => {
-                write!(f, "Missing action schema: {action_schema_id}")
-            }
             Self::AbstractLineNotFound {
                 strategy,
                 player_count,

@@ -13,7 +13,9 @@ use crate::verification::report::{
     write_json_report, write_markdown_report, DimensionVerifyDetail, RangeStrataVerifyReport,
     VerifyFailure, VerifyLayer, VerifyMode, VerifyOptionsSummary,
 };
+use range_store_core::dimension::{get_concrete_lines_table_name, quote_identifier};
 use range_store_core::manifest::{parse_manifest, BuildManifest, ManifestDimension, ManifestError};
+use range_store_core::sqlite::Connection;
 
 #[derive(Debug, Clone)]
 pub struct StandaloneVerifyOptions {
@@ -54,6 +56,7 @@ pub fn run_standalone_verify(
         &catalog.valid_action_schema_ids,
         &mut failures,
     );
+    check_implicit_line_id_layout(&options.dir, &manifest, &index_record_counts, &mut failures);
     check_pack_headers(&options.dir, &manifest, &mut failures);
     check_index_pack_cross(
         &options.dir,
@@ -191,7 +194,7 @@ fn check_index_headers(
             failures.push(VerifyFailure {
                 layer: VerifyLayer::IndexHeader,
                 check,
-                reason: "TRUNCATED".to_owned(),
+                reason: "INVALID_FILE_SIZE".to_owned(),
                 message: format!(
                     ".idx file {idx_file} is too small ({} bytes, min {IDX_HEADER_SIZE})",
                     raw.len()
@@ -233,58 +236,29 @@ fn check_index_headers(
             });
         }
         let expected_len = IDX_HEADER_SIZE + record_count as usize * IDX_RECORD_SIZE;
-        if raw.len() < expected_len {
+        if raw.len() != expected_len {
             failures.push(VerifyFailure {
                 layer: VerifyLayer::IndexHeader,
                 check,
-                reason: "TRUNCATED".to_owned(),
-                message: format!(
-                    ".idx file size {} < expected minimum {expected_len}",
-                    raw.len()
-                ),
+                reason: "INVALID_FILE_SIZE".to_owned(),
+                message: format!(".idx file size {} != expected {expected_len}", raw.len()),
                 context: None,
             });
             continue;
         }
 
-        let mut previous = None;
         for index in 0..record_count as usize {
+            let concrete_line_id = index as u32 + 1;
             let offset = IDX_HEADER_SIZE + index * IDX_RECORD_SIZE;
             let record = decode_idx_record(&raw[offset..offset + IDX_RECORD_SIZE]);
-            if let Some(previous_id) = previous {
-                if record.concrete_line_id <= previous_id {
-                    failures.push(VerifyFailure {
-                        layer: VerifyLayer::IndexHeader,
-                        check: check.clone(),
-                        reason: "OUT_OF_ORDER".to_owned(),
-                        message: format!(
-                            ".idx record {index}: concreteLineId={} is not strictly greater than previous {previous_id}",
-                            record.concrete_line_id
-                        ),
-                        context: None,
-                    });
-                } else if previous_id.checked_add(1) != Some(record.concrete_line_id) {
-                    failures.push(VerifyFailure {
-                        layer: VerifyLayer::IndexHeader,
-                        check: check.clone(),
-                        reason: "NON_DENSE_CONCRETE_LINE_ID".to_owned(),
-                        message: format!(
-                            ".idx record {index}: concreteLineId={} is not contiguous after previous {previous_id}",
-                            record.concrete_line_id
-                        ),
-                        context: None,
-                    });
-                }
-            }
-            previous = Some(record.concrete_line_id);
             if record.hand_count > 169 {
                 failures.push(VerifyFailure {
                     layer: VerifyLayer::IndexHeader,
                     check: check.clone(),
                     reason: "INVALID_HAND_COUNT".to_owned(),
                     message: format!(
-                        ".idx record concreteLineId={}: handCount={} out of range [0, 169]",
-                        record.concrete_line_id, record.hand_count
+                        ".idx record concreteLineId={concrete_line_id}: handCount={} out of range [0, 169]",
+                        record.hand_count
                     ),
                     context: None,
                 });
@@ -295,8 +269,8 @@ fn check_index_headers(
                     check: check.clone(),
                     reason: "DANGLING_FOREIGN_KEY".to_owned(),
                     message: format!(
-                        ".idx record concreteLineId={}: actionSchemaId={} not found in meta.db.action_schemas",
-                        record.concrete_line_id, record.action_schema_id
+                        ".idx record concreteLineId={concrete_line_id}: actionSchemaId={} not found in meta.db.action_schemas",
+                        record.action_schema_id
                     ),
                     context: None,
                 });
@@ -306,6 +280,117 @@ fn check_index_headers(
     record_counts
 }
 
+fn check_implicit_line_id_layout(
+    dir: &std::path::Path,
+    manifest: &BuildManifest,
+    record_counts: &HashMap<String, u32>,
+    failures: &mut Vec<VerifyFailure>,
+) {
+    let meta_path = dir.join("meta.db");
+    let connection = match Connection::open(&meta_path, true) {
+        Ok(connection) => connection,
+        Err(error) => {
+            failures.push(VerifyFailure {
+                layer: VerifyLayer::Catalog,
+                check: "meta.db".to_owned(),
+                reason: "IO_ERROR".to_owned(),
+                message: format!("Cannot open meta.db for implicit id validation: {error}"),
+                context: None,
+            });
+            return;
+        }
+    };
+
+    for dimension in successful_dimensions(manifest) {
+        let key = dimension_key(dimension);
+        let Some(&record_count) = record_counts.get(&key) else {
+            continue;
+        };
+        let table_name = get_concrete_lines_table_name(
+            &dimension.strategy,
+            dimension.player_count,
+            dimension.depth_bb,
+        );
+        let table = match quote_identifier(&table_name) {
+            Ok(table) => table,
+            Err(error) => {
+                failures.push(VerifyFailure {
+                    layer: VerifyLayer::Catalog,
+                    check: format!("dimension:{key}"),
+                    reason: "INVALID_TABLE_NAME".to_owned(),
+                    message: error.to_string(),
+                    context: None,
+                });
+                continue;
+            }
+        };
+        let sql = format!("SELECT concrete_line_id FROM {table} ORDER BY concrete_line_id");
+        let mut statement = match connection.prepare(&sql) {
+            Ok(statement) => statement,
+            Err(error) => {
+                failures.push(VerifyFailure {
+                    layer: VerifyLayer::Catalog,
+                    check: format!("dimension:{key}"),
+                    reason: "IO_ERROR".to_owned(),
+                    message: format!("Cannot read implicit concrete line ids: {error}"),
+                    context: None,
+                });
+                continue;
+            }
+        };
+        if let Err(error) = statement.start(&[]) {
+            failures.push(VerifyFailure {
+                layer: VerifyLayer::Catalog,
+                check: format!("dimension:{key}"),
+                reason: "IO_ERROR".to_owned(),
+                message: format!("Cannot iterate implicit concrete line ids: {error}"),
+                context: None,
+            });
+            continue;
+        }
+
+        let mut observed_count = 0u32;
+        while matches!(statement.step_row(), Ok(true)) {
+            let expected_id = observed_count + 1;
+            let actual_id = match statement.column_u32(0) {
+                Ok(id) => id,
+                Err(error) => {
+                    failures.push(VerifyFailure {
+                        layer: VerifyLayer::Catalog,
+                        check: format!("dimension:{key}"),
+                        reason: "INVALID_FORMAT".to_owned(),
+                        message: error.to_string(),
+                        context: None,
+                    });
+                    break;
+                }
+            };
+            if actual_id != expected_id {
+                failures.push(VerifyFailure {
+                    layer: VerifyLayer::Catalog,
+                    check: format!("dimension:{key}"),
+                    reason: "NON_DENSE_CONCRETE_LINE_ID".to_owned(),
+                    message: format!(
+                        "meta.db concrete line id at record {observed_count} is {actual_id}, expected {expected_id}"
+                    ),
+                    context: None,
+                });
+            }
+            observed_count += 1;
+        }
+        if observed_count != record_count {
+            failures.push(VerifyFailure {
+                layer: VerifyLayer::Catalog,
+                check: format!("dimension:{key}"),
+                reason: "CONCRETE_LINE_COUNT_MISMATCH".to_owned(),
+                message: format!(
+                    "meta.db has {observed_count} concrete lines but .idx declares {record_count} records"
+                ),
+                context: None,
+            });
+        }
+    }
+}
 fn check_pack_headers(
     dir: &std::path::Path,
     manifest: &BuildManifest,
@@ -335,7 +420,7 @@ fn check_pack_headers(
             failures.push(VerifyFailure {
                 layer: VerifyLayer::PackHeader,
                 check,
-                reason: "TRUNCATED".to_owned(),
+                reason: "INVALID_FILE_SIZE".to_owned(),
                 message: format!(
                     ".bin file {bin_file} is too small ({} bytes, min {PFSP_HEADER_SIZE})",
                     raw.len()
@@ -382,7 +467,7 @@ fn check_index_pack_cross(
         }
         let record_count = u32_from_le(&idx_raw[8..12]) as usize;
         let expected_idx_len = IDX_HEADER_SIZE + record_count * IDX_RECORD_SIZE;
-        if idx_raw.len() < expected_idx_len {
+        if idx_raw.len() != expected_idx_len {
             continue;
         }
 
@@ -390,6 +475,7 @@ fn check_index_pack_cross(
             let record_offset = IDX_HEADER_SIZE + index * IDX_RECORD_SIZE;
             let record =
                 decode_idx_record(&idx_raw[record_offset..record_offset + IDX_RECORD_SIZE]);
+            let concrete_line_id = index as u32 + 1;
             if record.offset < PFSP_HEADER_SIZE as u32 {
                 failures.push(VerifyFailure {
                     layer: VerifyLayer::IndexPackCross,
@@ -397,7 +483,7 @@ fn check_index_pack_cross(
                     reason: "INVALID_OFFSET".to_owned(),
                     message: format!(
                         ".idx record concreteLineId={}: offset={} is within .bin header",
-                        record.concrete_line_id, record.offset
+                        concrete_line_id, record.offset
                     ),
                     context: None,
                 });
@@ -410,7 +496,7 @@ fn check_index_pack_cross(
                     reason: "OUT_OF_BOUNDS".to_owned(),
                     message: format!(
                         ".idx record concreteLineId={}: offset+byteLength={} exceeds .bin file size {}",
-                        record.concrete_line_id,
+                        concrete_line_id,
                         pack_end,
                         bin_raw.len()
                     ),
@@ -428,7 +514,7 @@ fn check_index_pack_cross(
                         reason: "PACK_SIZE_MISMATCH".to_owned(),
                         message: format!(
                             ".idx record concreteLineId={}: byteLength={} != handCount*(5+{}*8)={expected_pack_len}",
-                            record.concrete_line_id, record.byte_length, action_count
+                            concrete_line_id, record.byte_length, action_count
                         ),
                         context: None,
                     });
@@ -447,19 +533,13 @@ fn check_index_pack_cross(
                         reason: "CHECKSUM_MISMATCH".to_owned(),
                         message: format!(
                             ".idx record concreteLineId={}: stored CRC {} != computed {actual_crc}",
-                            record.concrete_line_id, record.checksum
+                            concrete_line_id, record.checksum
                         ),
                         context: None,
                     });
                 }
             }
-            validate_pack_hand_ids(
-                &check,
-                record.concrete_line_id,
-                record.hand_count,
-                pack,
-                failures,
-            );
+            validate_pack_hand_ids(&check, concrete_line_id, record.hand_count, pack, failures);
         }
     }
 }
@@ -589,7 +669,6 @@ fn validate_bin_header(header: &[u8]) -> Option<String> {
 
 #[derive(Debug, Clone, Copy)]
 struct RawIdxRecord {
-    concrete_line_id: u32,
     action_schema_id: u32,
     hand_count: u16,
     offset: u32,
@@ -599,12 +678,11 @@ struct RawIdxRecord {
 
 fn decode_idx_record(bytes: &[u8]) -> RawIdxRecord {
     RawIdxRecord {
-        concrete_line_id: u32_from_le(&bytes[0..4]),
-        action_schema_id: u32_from_le(&bytes[4..8]),
-        hand_count: u16_from_le(&bytes[8..10]),
-        offset: u32_from_le(&bytes[10..14]),
-        byte_length: u32_from_le(&bytes[14..18]),
-        checksum: u32_from_le(&bytes[18..22]),
+        action_schema_id: u32_from_le(&bytes[0..4]),
+        hand_count: u16_from_le(&bytes[4..6]),
+        offset: u32_from_le(&bytes[6..10]),
+        byte_length: u32_from_le(&bytes[10..14]),
+        checksum: u32_from_le(&bytes[14..18]),
     }
 }
 

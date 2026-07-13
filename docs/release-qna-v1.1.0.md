@@ -13,7 +13,7 @@
 **回答**：dense index 的"连续"指的是 concrete_line_id 本身的序列连续，不是手牌连续。每个 concrete_line 对应一个独立的 pack，pack 内部的 hand_ids 才是稀疏的——用 action_mask 位掩码标记哪些手牌-动作组合存在。
 
 具体来说：
-- `.idx` 记录要求 `concrete_line_id` 从 `first_concrete_line_id` 开始严格递增、无跳跃。验证时在 open 阶段调用 `validate_dense_index_layout()`，如果发现 gap 会标记为 `NON_DENSE_CONCRETE_LINE_ID`。
+- `.idx` 不再保存 `concrete_line_id`：第 N 条 record 隐式对应 id=N+1。builder 在写入前要求源 id 严格为 `1..N`，standalone verify 再校验 `meta.db.concrete_lines_*` 的 id 连续性，并在 gap 时报告 `NON_DENSE_CONCRETE_LINE_ID`。
 - 但 pack 内部的 169 种手牌是稀疏存储的。实际出现在源数据中的手牌可能只有 100 种，pack 里只存这 100 个 hand_id，通过 `hand_count` 字段记录实际数量。
 - 查询时先通过 dense index O(1) 定位到 concrete_line_id 对应的 pack，然后在 pack 内部对 hand_ids 做 binary search（`binary_search_u8`）。
 

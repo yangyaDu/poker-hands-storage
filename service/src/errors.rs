@@ -253,9 +253,6 @@ impl From<MetadataError> for AppError {
             MetadataError::Sqlite(error) => Self::new("META_DB_ERROR", error.to_string()),
             MetadataError::Naming(error) => Self::invalid_argument(error.to_string()),
             MetadataError::ActionSchema(error) => Self::invalid_format(error.to_string()),
-            MetadataError::ActionSchemaNotFound(action_schema_id) => {
-                Self::action_schema_not_found(action_schema_id)
-            }
             MetadataError::AbstractLineNotFound {
                 strategy,
                 player_count,

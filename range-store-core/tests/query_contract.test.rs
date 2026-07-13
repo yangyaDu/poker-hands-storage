@@ -236,13 +236,6 @@ fn build_query_test_store(root: &Path) -> PathBuf {
            checksum INTEGER NOT NULL,
            schema_key TEXT NOT NULL UNIQUE
          );
-         CREATE TABLE dimension_action_schemas (
-           strategy TEXT NOT NULL,
-           player_count INTEGER NOT NULL,
-           depth_bb INTEGER NOT NULL,
-           action_schema_id INTEGER NOT NULL,
-           PRIMARY KEY (strategy, player_count, depth_bb, action_schema_id)
-         );
          CREATE TABLE \"concrete_lines_default_6max_100BB\" (
            concrete_line_id INTEGER PRIMARY KEY,
            abstract_line TEXT NOT NULL,
@@ -285,17 +278,6 @@ fn build_query_test_store(root: &Path) -> PathBuf {
             Value::Blob(action_blob),
             Value::from(i64::from(schema_checksum)),
             Value::from(schema_key.as_str()),
-        ],
-    )
-    .unwrap();
-
-    meta.execute(
-        "INSERT INTO dimension_action_schemas(strategy, player_count, depth_bb, action_schema_id) VALUES (?1, ?2, ?3, ?4)",
-        &[
-            Value::from("default"),
-            Value::from(6u32),
-            Value::from(100u32),
-            Value::from(1u32),
         ],
     )
     .unwrap();
@@ -351,11 +333,10 @@ fn build_query_test_store(root: &Path) -> PathBuf {
     let bin_offset = PFSP_HEADER_SIZE as u32;
     let mut record = [0u8; IDX_RECORD_SIZE];
     record[0..4].copy_from_slice(&1u32.to_le_bytes());
-    record[4..8].copy_from_slice(&1u32.to_le_bytes());
-    record[8..10].copy_from_slice(&(hand_ids.len() as u16).to_le_bytes());
-    record[10..14].copy_from_slice(&bin_offset.to_le_bytes());
-    record[14..18].copy_from_slice(&byte_length.to_le_bytes());
-    record[18..22].copy_from_slice(&pack_checksum.to_le_bytes());
+    record[4..6].copy_from_slice(&(hand_ids.len() as u16).to_le_bytes());
+    record[6..10].copy_from_slice(&bin_offset.to_le_bytes());
+    record[10..14].copy_from_slice(&byte_length.to_le_bytes());
+    record[14..18].copy_from_slice(&pack_checksum.to_le_bytes());
     idx.write_all(&record).unwrap();
     idx.sync_all().unwrap();
 

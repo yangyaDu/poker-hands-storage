@@ -94,14 +94,18 @@ fn cross_verify_full_counts_extra_binary_cells() {
 }
 
 #[test]
-fn cross_verify_reports_non_dense_idx_lookup_layout() {
+fn cross_verify_reports_non_dense_metadata_concrete_line_ids() {
     let directory = tempfile::tempdir().unwrap();
     let (source_path, output_path) = build_verify_fixture(directory.path());
-    let idx_path = output_path.join("ranges_default_6max_100BB.idx");
-    let mut raw = fs::read(&idx_path).unwrap();
-    let second_record = 16 + 22;
-    raw[second_record..second_record + 4].copy_from_slice(&3u32.to_le_bytes());
-    fs::write(&idx_path, raw).unwrap();
+    let meta = Connection::open(&output_path.join("meta.db"), false).unwrap();
+    meta.execute(
+        "UPDATE \"concrete_lines_default_6max_100BB\"
+         SET concrete_line_id = 3
+         WHERE concrete_line_id = 2",
+        &[],
+    )
+    .unwrap();
+    drop(meta);
 
     let report = run_cross_verify(&CrossVerifyOptions {
         dir: output_path,
@@ -118,14 +122,7 @@ fn cross_verify_reports_non_dense_idx_lookup_layout() {
         .failures
         .iter()
         .any(|failure| failure.reason == "NON_DENSE_CONCRETE_LINE_ID"));
-    assert!(report.failures.iter().any(|failure| {
-        failure.reason == "IO_ERROR"
-            && failure
-                .message
-                .contains("concreteLineId must be contiguous")
-    }));
 }
-
 #[test]
 fn cross_verify_writes_reports() {
     let directory = tempfile::tempdir().unwrap();

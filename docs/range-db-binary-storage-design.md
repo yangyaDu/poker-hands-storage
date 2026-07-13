@@ -119,23 +119,7 @@ N 个 action 的 `action_blob` 总长度 = `N * 9` 字节。
 
 `schema_key` 是构建期字段，不进入 `.idx`。构建器先用 `schema_key` 查找或插入 `action_schemas`，拿到稳定的 `id` 后，`.idx` record 只保存 `action_schema_id`。运行时不需要再次通过 `schema_key` 去重，只需要用这个 `id` 读取对应的 `action_blob` 并解释 action 语义。
 
-**运行时读取**：服务启动时通过 `SELECT id, action_count, action_blob FROM action_schemas ORDER BY id` 加载全部 schema 到内存 HashMap，key 为 `id`，value 为解码后的 `Vec<ActionDef>`。
-
-#### `dimension_action_schemas`
-
-维度与 action schema 的多对多关联表。一个维度（strategy + player_count + depth_bb）可能包含多个不同的 action schema（不同 concrete line 使用不同 action 组合）。
-
-| 字段               | 类型               | 说明                         |
-| ------------------ | ------------------ | ---------------------------- |
-| `strategy`         | `TEXT NOT NULL`    | 策略名称，如 `default`       |
-| `player_count`     | `INTEGER NOT NULL` | 玩家数量，如 6、8、9         |
-| `depth_bb`         | `INTEGER NOT NULL` | 深度（BB），如 100、200、300 |
-| `action_schema_id` | `INTEGER NOT NULL` | 引用 `action_schemas.id`     |
-
-主键：`(strategy, player_count, depth_bb, action_schema_id)` 复合主键。
-
-运行时通过 `SELECT action_schema_id FROM dimension_action_schemas WHERE strategy=? AND player_count=? AND depth_bb=? ORDER BY action_schema_id` 加载维度可用的全部 schema ID 列表。
-
+**运行时读取**：查询先从 `.idx` 得到 `action_schema_id`；`ActionSchemaCache` 再按该 id 从 `action_schemas` 懒加载并缓存解码后的 `Vec<ActionDef>`。
 #### `drill_scenario_lines_{strategy}`
 
 Drill scenario（训练场景）到 abstract line 的映射表。每个 strategy 一张表，表名格式 `drill_scenario_lines_{strategy}`。
@@ -210,36 +194,32 @@ Header 固定 16 字节：
 |    8 | record_count | `u32 LE` | 记录数（等于 concrete line 总数） |
 |   12 | header_size  | `u16 LE` | 当前为 `16`                       |
 
-Record 固定 22 字节，按 `concrete_line_id` 升序排列。当前正式数据要求同一维度内 `.idx` 的 `concrete_line_id` 连续递增（从 1 开始），每个 `concrete_line_id` 都对应一个 pack：
+Record 固定 18 字节，record 的一基数组下标就是 `concrete_line_id`。因此同一维度的 `concrete_line_id` 必须严格为 `1..=record_count`，每个 id 对应一个 pack：
 
 | 偏移 | 字段               | 类型     | 说明                                                                                       |
 | ---: | ------------------ | -------- | ------------------------------------------------------------------------------------------ |
-|    0 | `concrete_line_id` | `u32 LE` | concrete line id，从 1 开始连续递增(concrete_line_id甚至都可以不存入，直接 下标 + 1 == concrete_line_id)                                                        |
-|    4 | `action_schema_id` | `u32 LE` | 引用 `meta.db.action_schemas.id`，决定 pack 中 action 的语义                               |
-|    8 | `hand_count`       | `u16 LE` | pack 中包含的手牌数量，范围 1..=169                                                        |
-|   10 | `offset`           | `u32 LE` | pack payload 在 `.bin` 文件中的起始字节偏移（相对于 `.bin` 文件开头，跳过 16 字节 header） |
-|   14 | `byte_length`      | `u32 LE` | pack payload 的字节长度                                                                    |
-|   18 | `checksum`         | `u32 LE` | pack payload 的 CRC32C 校验和                                                              |
-
+|    0 | `action_schema_id` | `u32 LE` | 引用 `meta.db.action_schemas.id`，决定 pack 中 action 的语义                               |
+|    4 | `hand_count`       | `u16 LE` | pack 中包含的手牌数量，范围 1..=169                                                        |
+|    6 | `offset`           | `u32 LE` | pack payload 在 `.bin` 文件中的起始字节偏移（相对于 `.bin` 文件开头，跳过 16 字节 header） |
+|   10 | `byte_length`      | `u32 LE` | pack payload 的字节长度                                                                    |
+|   14 | `checksum`         | `u32 LE` | pack payload 的 CRC32C 校验和                                                              |
 这里的 `checksum` 校验对象是 `.bin` 中该 record 指向的整段 pack payload，也就是 `hand_ids + action_masks + cells`。它不校验 `action_schemas.action_blob`，而是保护这个 `concrete_line_id` 下的具体策略数据块是否损坏。
 
-运行时只走 dense 下标读取：
+运行时通过一基 id 直接计算数组下标：
 
 ```text
-index = concrete_line_id - first_concrete_line_id
-record_offset = header_size + index * 22
+index = concrete_line_id - 1
+record_offset = header_size + index * 18
 ```
 
-由于 `concrete_line_id` 连续递增（first_concrete_line_id = 1），`index = concrete_line_id - 1`，记录偏移可直接计算为 `16 + (concrete_line_id - 1) * 22`。这意味着 O(1) 随机访问，无需二分查找。
-
-`IdxReader::open()` 会校验 `.idx` 中 `concrete_line_id` 必须连续递增；不满足 dense 布局的 `.idx` 会被视为格式错误。读取 record 后仍会校验 `record.concrete_line_id == concrete_line_id`，但不会退回二分查找。standalone verify 也会检查正式 `.idx` 的 `concrete_line_id` 连续性，构建或发布前应先通过验证。
+因此记录偏移为 `16 + (concrete_line_id - 1) * 18`，这是 O(1) 随机访问，无需二分查找。`IdxReader` 只验证 header、长度和 id 边界；builder 写入前验证 source id 为 `1..N`，standalone verify 再验证 `meta.db.concrete_lines_*` 的 id 与 `.idx` record_count 一致且连续。
 
 `.idx` 不保存 `schema_key` 或 `action_blob`，只保存 `action_schema_id`，这是当前格式的刻意边界：
 
 | 不放入 `.idx` 的字段   | 原因                                                                              |
 | ---------------------- | --------------------------------------------------------------------------------- |
 | `schema_key`           | 只用于构建期去重；运行时已可通过 `action_schema_id` 直接定位 schema               |
-| `action_blob`          | 是变长 metadata，长度为 `action_count * 9`；放入 `.idx` 会破坏 22 字节定长 record |
+| `action_blob`          | 是变长 metadata，长度为 `action_count * 9`；放入 `.idx` 会破坏 18 字节定长 record |
 | action schema 全量定义 | 同一个 schema 会被大量 concrete line 复用；放入每条 `.idx` record 会重复存储      |
 
 因此 `.idx` 的职责保持为 hot path 定位信息：`concrete_line_id -> action_schema_id + offset + byte_length + checksum`。`action_schemas` 则放在 `meta.db` 中，负责保存可变长、可去重、可跨维度复用的动作定义。
@@ -388,7 +368,7 @@ byte_length = 169 * (5 + 32 * 8) = 169 * 261 = 44,109 字节 <= 44KB
 
 业务侧如果只有具体行动线字符串，应先通过 `meta.db` 的 `concrete_lines_*` 表精确查询 `concrete_line_id`，再进入上述 `.idx/.bin` 查询流程。
 
-## 当前维度文件大小
+## 迁移前维度文件大小
 
 | 维度                 | concrete lines | `.bin` bytes | `.idx` bytes |  合计 bytes | `.idx` 占维度 |
 | -------------------- | -------------: | -----------: | -----------: | ----------: | ------------: |
@@ -402,7 +382,7 @@ byte_length = 169 * (5 + 32 * 8) = 169 * 261 = 44,109 字节 <= 44KB
 | `default:9max:200BB` |        203,028 |  108,969,070 |    4,466,632 | 113,435,702 |         3.94% |
 | `default:9max:300BB` |         95,114 |   63,216,112 |    2,092,524 |  65,308,636 |         3.20% |
 
-`.idx` 体积很小，因为每个 concrete line 只有一条 22 字节记录。主要体积仍在 `.bin` 的手牌/action 矩阵 payload。
+下表为迁移前 22B record 构建结果；按当前 18B 格式重建后，每个维度的 `.idx` 将减少 `4 * concrete_line_count` 字节。主要体积仍在 `.bin` 的手牌/action 矩阵 payload。
 
 ## 构建流程
 

@@ -28,13 +28,6 @@ pub fn build_api_test_store(root: &Path) -> PathBuf {
            checksum INTEGER NOT NULL,
            schema_key TEXT NOT NULL UNIQUE
          );
-         CREATE TABLE dimension_action_schemas (
-           strategy TEXT NOT NULL,
-           player_count INTEGER NOT NULL,
-           depth_bb INTEGER NOT NULL,
-           action_schema_id INTEGER NOT NULL,
-           PRIMARY KEY (strategy, player_count, depth_bb, action_schema_id)
-         );
          CREATE TABLE \"concrete_lines_default_6max_100BB\" (
            concrete_line_id INTEGER PRIMARY KEY,
            abstract_line TEXT NOT NULL,
@@ -78,16 +71,6 @@ pub fn build_api_test_store(root: &Path) -> PathBuf {
             Value::Blob(action_blob),
             Value::from(i64::from(schema_checksum)),
             Value::from(schema_key.as_str()),
-        ],
-    ).unwrap();
-
-    meta.execute(
-        "INSERT INTO dimension_action_schemas(strategy, player_count, depth_bb, action_schema_id) VALUES (?1, ?2, ?3, ?4)",
-        &[
-            Value::from("default"),
-            Value::from(6u32),
-            Value::from(100u32),
-            Value::from(1u32),
         ],
     ).unwrap();
 
@@ -154,16 +137,15 @@ pub fn build_api_test_store(root: &Path) -> PathBuf {
     idx_header[12..14].copy_from_slice(&(IDX_HEADER_SIZE as u16).to_le_bytes());
     idx.write_all(&idx_header).unwrap();
 
-    // IDX record: concrete_line_id(u32) + action_schema_id(u32) + hand_count(u16) + bin_offset(u32) + byte_length(u32) + checksum(u32) = 22 bytes
+    // IDX record: action_schema_id(u32) + hand_count(u16) + bin_offset(u32) + byte_length(u32) + checksum(u32) = 18 bytes
     let byte_length = payload.len() as u32;
     let bin_offset = PFSP_HEADER_SIZE as u32;
     let mut record = [0u8; IDX_RECORD_SIZE];
-    record[0..4].copy_from_slice(&1u32.to_le_bytes()); // concrete_line_id
-    record[4..8].copy_from_slice(&1u32.to_le_bytes()); // action_schema_id
-    record[8..10].copy_from_slice(&(hand_ids.len() as u16).to_le_bytes());
-    record[10..14].copy_from_slice(&bin_offset.to_le_bytes());
-    record[14..18].copy_from_slice(&byte_length.to_le_bytes());
-    record[18..22].copy_from_slice(&pack_checksum.to_le_bytes());
+    record[0..4].copy_from_slice(&1u32.to_le_bytes()); // action_schema_id
+    record[4..6].copy_from_slice(&(hand_ids.len() as u16).to_le_bytes());
+    record[6..10].copy_from_slice(&bin_offset.to_le_bytes());
+    record[10..14].copy_from_slice(&byte_length.to_le_bytes());
+    record[14..18].copy_from_slice(&pack_checksum.to_le_bytes());
     idx.write_all(&record).unwrap();
     idx.sync_all().unwrap();
 
@@ -223,12 +205,7 @@ pub fn build_empty_store(root: &Path) -> PathBuf {
            action_count INTEGER NOT NULL,
            action_blob BLOB NOT NULL
          );
-         CREATE TABLE dimension_action_schemas (
-           strategy TEXT NOT NULL,
-           player_count INTEGER NOT NULL,
-           depth_bb INTEGER NOT NULL,
-           action_schema_id INTEGER NOT NULL
-         );",
+",
     )
     .unwrap();
     output_path

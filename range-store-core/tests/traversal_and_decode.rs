@@ -20,12 +20,11 @@ fn make_test_idx(dir: &Path, name: &str, records: &[IdxRecord]) -> PathBuf {
 
     for record in records {
         let mut buf = [0u8; IDX_RECORD_SIZE];
-        buf[0..4].copy_from_slice(&record.concrete_line_id.to_le_bytes());
-        buf[4..8].copy_from_slice(&record.action_schema_id.to_le_bytes());
-        buf[8..10].copy_from_slice(&record.hand_count.to_le_bytes());
-        buf[10..14].copy_from_slice(&record.offset.to_le_bytes());
-        buf[14..18].copy_from_slice(&record.byte_length.to_le_bytes());
-        buf[18..22].copy_from_slice(&record.checksum.to_le_bytes());
+        buf[0..4].copy_from_slice(&record.action_schema_id.to_le_bytes());
+        buf[4..6].copy_from_slice(&record.hand_count.to_le_bytes());
+        buf[6..10].copy_from_slice(&record.offset.to_le_bytes());
+        buf[10..14].copy_from_slice(&record.byte_length.to_le_bytes());
+        buf[14..18].copy_from_slice(&record.checksum.to_le_bytes());
         file.write_all(&buf).unwrap();
     }
 
@@ -91,7 +90,6 @@ fn idx_reader_record_at_and_records_iterate_in_file_order() {
     let dir = tempfile::TempDir::new().unwrap();
     let records = vec![
         IdxRecord {
-            concrete_line_id: 10,
             action_schema_id: 1,
             hand_count: 2,
             offset: 16,
@@ -99,7 +97,6 @@ fn idx_reader_record_at_and_records_iterate_in_file_order() {
             checksum: 100,
         },
         IdxRecord {
-            concrete_line_id: 11,
             action_schema_id: 2,
             hand_count: 3,
             offset: 58,
@@ -110,15 +107,15 @@ fn idx_reader_record_at_and_records_iterate_in_file_order() {
     let path = make_test_idx(dir.path(), "test.idx", &records);
     let reader = IdxReader::open(&path).unwrap();
 
-    assert_eq!(reader.record_at(0).unwrap().concrete_line_id, 10);
-    assert_eq!(reader.record_at(1).unwrap().concrete_line_id, 11);
+    assert_eq!(reader.record_at(0).unwrap().action_schema_id, 1);
+    assert_eq!(reader.record_at(1).unwrap().action_schema_id, 2);
     assert!(reader.record_at(2).is_none());
     assert_eq!(
         reader
             .records()
-            .map(|record| record.concrete_line_id)
+            .map(|record| record.action_schema_id)
             .collect::<Vec<_>>(),
-        vec![10, 11]
+        vec![1, 2]
     );
 }
 
