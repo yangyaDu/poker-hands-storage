@@ -15,6 +15,7 @@
 1. [V2 格式规范](v2-format.md)：字段、位图、量化、文件布局和校验。
 2. [运行时与查询](runtime-and-query.md)：解码索引、缓存、metadata 和 core 接口。
 3. [导出与基准](export-and-benchmark.md)：导出、验证、三方基准及报告口径。
+4. [Cache 与 Decode 优化实践方案](cache-and-decode-optimization-plan.md)：观测、容量扫描、预热与 decode accelerator 的决策门槛。
 
 术语：**Proto V2 存储**是某一维度目录中的 `manifest.json`、`lines.db`、
 `matrices.lmbin` 和 `matrices.lmidx`。`archive` 仅保留在现有 CLI/Rust 类型历史命名中，
