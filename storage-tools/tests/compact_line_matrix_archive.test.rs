@@ -647,7 +647,7 @@ fn proto_range_store_facade_reads_per_dimension_metadata() {
     let archive_dir = proto_root.join("default_6max_100BB");
     export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
         source_db,
-        out_dir: archive_dir,
+        out_dir: archive_dir.clone(),
         dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
         overwrite: false,
     })
@@ -660,16 +660,31 @@ fn proto_range_store_facade_reads_per_dimension_metadata() {
     assert_eq!(abstract_lines.len(), 1);
     assert_eq!(abstract_lines[0].concrete_line_id, 1);
     assert_eq!(abstract_lines[0].concrete_line, "F-F-F");
+    assert_eq!(facade.open_handle_count(), 1);
 
     let concrete_lines = facade
         .get_concrete_lines(&dimension, ConcreteLineFilter::Concrete("R2-F"))
         .expect("find concrete lines");
     assert_eq!(concrete_lines.len(), 1);
     assert_eq!(concrete_lines[0].concrete_line_id, 2);
+    let drill_lines = facade
+        .get_drill_scenario_lines("default", "rfi", 6, 100)
+        .expect("find drill lines");
+    assert_eq!(drill_lines, ["F-F-F"]);
+    let connection = Connection::open(&archive_dir.join("lines.db"), false)
+        .expect("open exported drill metadata");
+    connection
+        .exec(
+            "INSERT INTO drill_scenario_lines_default(
+               drill_name, abstract_line, player_count, drill_depth
+             ) VALUES ('rfi', 'R-F', 6, 100);",
+        )
+        .expect("mutate exported drill metadata");
+    drop(connection);
     assert_eq!(
         facade
             .get_drill_scenario_lines("default", "rfi", 6, 100)
-            .expect("find drill lines"),
+            .expect("read cached drill lines"),
         ["F-F-F"]
     );
 }
@@ -768,7 +783,17 @@ fn three_way_hot_benchmark_reports_shared_proto_v2_strategy_cases() {
             "CREATE TABLE concrete_lines_default_8max_200BB AS
                SELECT * FROM concrete_lines_default_6max_100BB;
              CREATE TABLE range_data_default_8max_200BB AS
-               SELECT * FROM range_data_default_6max_100BB;",
+               SELECT * FROM range_data_default_6max_100BB;
+             CREATE TABLE drill_scenario_lines_default(
+               id INTEGER PRIMARY KEY,
+               drill_name TEXT NOT NULL,
+               abstract_line TEXT NOT NULL,
+               player_count INTEGER NOT NULL,
+               depth INTEGER NOT NULL
+             );
+             INSERT INTO drill_scenario_lines_default(
+               drill_name, abstract_line, player_count, depth
+             ) VALUES ('rfi', 'F-F-F', 6, 100);",
         )
         .expect("clone fixture dimension");
     drop(connection);
@@ -825,7 +850,9 @@ fn three_way_hot_benchmark_reports_shared_proto_v2_strategy_cases() {
             "handsByActionsQueries": [
                 {"strategy": "default", "playerCount": 6, "depthBb": 100, "concreteLineId": 1, "actions": ["call"], "frequency": 0.2}
             ],
-            "drillScenarioQueries": []
+            "drillScenarioQueries": [
+                {"strategy": "default", "drillName": "rfi", "playerCount": 6, "drillDepth": 100}
+            ]
         }))
         .expect("serialize workload"),
     )
@@ -862,7 +889,7 @@ fn three_way_hot_benchmark_reports_shared_proto_v2_strategy_cases() {
         serde_json::from_slice(&fs::read(&report_path).expect("read three-way report"))
             .expect("parse three-way report");
     assert_eq!(report["semanticProfile"], "proto-v2-non-null-ev");
-    assert_eq!(report["cases"].as_array().expect("cases").len(), 5);
+    assert_eq!(report["cases"].as_array().expect("cases").len(), 7);
     assert!(report["cases"]
         .as_array()
         .expect("cases")
@@ -873,13 +900,102 @@ fn three_way_hot_benchmark_reports_shared_proto_v2_strategy_cases() {
                 && case["proto"]["errorCount"].as_u64() == Some(0)
                 && case["sqlite"]["errorCount"].as_u64() == Some(0)
         }));
-    assert_eq!(
-        report["excludedCases"]
-            .as_array()
-            .expect("excluded cases")
-            .len(),
-        2
+    assert!(report["excludedCases"]
+        .as_array()
+        .expect("excluded cases")
+        .is_empty());
+    assert!(report["memory"]["core"]["total"]["after"].is_object());
+    assert!(report["memory"]["proto"]["total"]["after"].is_object());
+    assert!(report["memory"]["sqlite"]["total"]["after"].is_object());
+    assert!(markdown_path.is_file());
+}
+
+#[test]
+fn three_way_cold_benchmark_reports_phase_and_memory_deltas() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open source drill metadata");
+    connection
+        .exec(
+            "CREATE TABLE drill_scenario_lines_default(
+               id INTEGER PRIMARY KEY,
+               drill_name TEXT NOT NULL,
+               abstract_line TEXT NOT NULL,
+               player_count INTEGER NOT NULL,
+               depth INTEGER NOT NULL
+             );
+             INSERT INTO drill_scenario_lines_default(
+               drill_name, abstract_line, player_count, depth
+             ) VALUES ('rfi', 'F-F-F', 6, 100);",
+        )
+        .expect("create source drill metadata");
+    drop(connection);
+    let proto_root = temp.path().join("proto-root");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db: source_db.clone(),
+        out_dir: proto_root.join("default_6max_100BB"),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export Proto storage");
+    let core_dir = temp.path().join("core");
+    build_store(&BuildOptions {
+        source_db: source_db.clone(),
+        out_dir: core_dir.clone(),
+        dimensions: vec![DimensionSpec::parse("default:6:100").expect("dimension")],
+        max_concrete_lines_per_dimension: None,
+        overwrite: false,
+        resume: false,
+    })
+    .expect("build core store");
+    let report_path = temp.path().join("three-way-cold.json");
+    let markdown_path = temp.path().join("three-way-cold.md");
+
+    let output = Command::new(env!("CARGO_BIN_EXE_poker-hands-storage-tools"))
+        .args([
+            "benchmark-three-way-cold",
+            "--source",
+            source_db.to_str().expect("source path"),
+            "--proto-root",
+            proto_root.to_str().expect("Proto root"),
+            "--core-dir",
+            core_dir.to_str().expect("core directory"),
+            "--dimension",
+            "default:6:100",
+            "--operation",
+            "drill-scenarios-metadata",
+            "--drill-name",
+            "rfi",
+            "--drill-depth",
+            "100",
+            "--runs",
+            "2",
+            "--out",
+            report_path.to_str().expect("report path"),
+            "--md",
+            markdown_path.to_str().expect("markdown path"),
+        ])
+        .output()
+        .expect("run three-way cold benchmark");
+
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
     );
+    let report: serde_json::Value =
+        serde_json::from_slice(&fs::read(&report_path).expect("read cold report"))
+            .expect("parse cold report");
+    assert_eq!(report["runsPerEngine"], 2);
+    assert_eq!(report["operation"], "drill-scenarios-metadata");
+    assert_eq!(report["query"], "rfi / 6max / 100BB");
+    assert!(report["core"]["memory"]["totalRssBytes"].is_object());
+    assert!(report["proto"]["memory"]["totalRssBytes"].is_object());
+    assert!(report["sqlite"]["memory"]["totalRssBytes"].is_object());
+    assert_eq!(report["core"]["errorCount"], 0);
+    assert_eq!(report["proto"]["errorCount"], 0);
+    assert_eq!(report["sqlite"]["errorCount"], 0);
     assert!(markdown_path.is_file());
 }
 

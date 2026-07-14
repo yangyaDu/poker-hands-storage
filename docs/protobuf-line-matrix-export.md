@@ -165,9 +165,26 @@ batch size, and `hands-by-actions`. The report applies the Proto V2 profile to
 all three engines: `hand_ev IS NULL` cells are excluded and action frequencies
 are rounded to `x10000` before strict threshold matching. The Proto facade now
 also provides `concrete-lines-exact` through each dimension's `lines.db` and
-`drill-scenarios-metadata` from that same file. They are intentionally omitted
-from the current three-way strategy benchmark until its metadata cases are
-added.
+`drill-scenarios-metadata` from that same file; both are included in the
+three-way report. Memory is measured by starting one fresh tool process per
+engine. The report separates the RSS delta for opening the reader, the
+increment caused by representative prewarm queries, and the total delta. OS
+page cache remains shared across sequential workers and is called out in the
+report notes.
+
+`benchmark-three-way-cold` measures either one fixed `concrete_line_id +
+hand_id` `hand-strategy` query or one `drill-scenarios-metadata` lookup in a
+fresh process for each run. It reports open, applicable dimension-prewarm, and
+first-query latency together with RSS deltas for each phase. Drill metadata
+does not prewarm a matrix, so its first-query time includes opening and
+querying the metadata storage. This is `process-cold`: it refreshes process
+state but intentionally does not claim to evict the operating system page
+cache.
+
+`ProtoRangeStoreFacade` keeps each dimension's lazily opened `lines.db`
+connection and successful concrete-line/drill lookup results inside the same
+per-dimension LRU handle as the matrix reader. Proto archives are immutable at
+runtime, so cached metadata remains valid until the handle is evicted.
 
 ## Commands
 
@@ -177,6 +194,7 @@ export-all-compact-line-matrix-archives
 verify-compact-line-matrix-archive
 benchmark-compact-vs-core
 benchmark-three-way-hot
+benchmark-three-way-cold
 ```
 
 The compact archive is the Proto storage format. The existing `.bin/.idx`

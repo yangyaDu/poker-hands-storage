@@ -26,7 +26,13 @@ use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
     run_compact_vs_core_benchmark, run_compact_vs_core_cold_worker, CompactLineMatrixArchive,
 };
-use poker_hands_storage_tools::proto_range_storage::three_way_benchmark::run_three_way_hot_benchmark;
+use poker_hands_storage_tools::proto_range_storage::three_way_benchmark::{
+    run_three_way_hot_benchmark, run_three_way_memory_worker_from_stdin,
+};
+use poker_hands_storage_tools::proto_range_storage::three_way_cold_benchmark::{
+    parse_three_way_cold_benchmark_args, run_three_way_cold_benchmark,
+    run_three_way_cold_worker_from_stdin,
+};
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_tools::verification::cli::parse_verify_args;
 use poker_hands_storage_tools::verification::cross::{run_cross_verify, CrossVerifyOptions};
@@ -57,6 +63,9 @@ fn run() -> Result<(), ToolError> {
         }
         Some("benchmark-compact-vs-core") => run_benchmark_compact_vs_core(args.collect()),
         Some("benchmark-three-way-hot") => run_benchmark_three_way_hot(args.collect()),
+        Some("benchmark-three-way-cold") => run_benchmark_three_way_cold(args.collect()),
+        Some("three-way-memory-worker") => run_three_way_memory_worker_cmd(args.collect()),
+        Some("three-way-cold-worker") => run_three_way_cold_worker_cmd(args.collect()),
         Some("compact-vs-core-cold-worker") => run_compact_vs_core_cold_worker_cmd(args.collect()),
         Some("verify") => run_verify(args.collect()),
         Some("benchmark") => run_benchmark(args.collect()),
@@ -117,6 +126,50 @@ fn run_benchmark_three_way_hot(args: Vec<String>) -> Result<(), ToolError> {
             "THREE_WAY_HOT_BENCHMARK_FAILED",
             "three-way hot benchmark had errors",
         ));
+    }
+    Ok(())
+}
+
+fn run_three_way_memory_worker_cmd(args: Vec<String>) -> Result<(), ToolError> {
+    if !args.is_empty() {
+        return Err(ToolError::invalid_argument(
+            "three-way-memory-worker does not accept command-line options",
+        ));
+    }
+    println!("{}", run_three_way_memory_worker_from_stdin()?);
+    Ok(())
+}
+
+fn run_benchmark_three_way_cold(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_three_way_cold_benchmark_args(args)?;
+    let report = run_three_way_cold_benchmark(&command)?;
+    println!("Core/Proto/SQLite cold benchmark complete.");
+    println!("  Runs per engine: {}", report.runs_per_engine);
+    println!("  JSON report: {}", command.out_path.display());
+    println!("  Markdown report: {}", command.md_path.display());
+    if report.has_errors() {
+        return Err(ToolError::new(
+            "THREE_WAY_COLD_BENCHMARK_FAILED",
+            "three-way cold benchmark had errors",
+        ));
+    }
+    Ok(())
+}
+
+fn run_three_way_cold_worker_cmd(args: Vec<String>) -> Result<(), ToolError> {
+    if !args.is_empty() {
+        return Err(ToolError::invalid_argument(
+            "three-way-cold-worker does not accept command-line options",
+        ));
+    }
+    let output = run_three_way_cold_worker_from_stdin()?;
+    println!(
+        "{}",
+        serde_json::to_string(&output)
+            .map_err(|error| ToolError::invalid_format(error.to_string()))?
+    );
+    if !output.ok {
+        std::process::exit(1);
     }
     Ok(())
 }

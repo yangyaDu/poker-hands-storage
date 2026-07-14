@@ -124,6 +124,7 @@ poker-hands-storage/
 |   |   |   |-- query_service.rs       # single-dimension core-compatible query
 |   |   |   |-- query_facade.rs        # multi-dimension query and LRU handle pool
 |   |   |   |-- three_way_benchmark.rs # shared Core/Proto/SQLite hot benchmark
+|   |   |   |-- three_way_cold_benchmark.rs # fresh-process Core/Proto/SQLite cold benchmark
 |   |   |   |-- cli.rs                 # archive CLI argument parsing
 |   |   |   |-- format.rs              # archive binary layout
 |   |   |   `-- benchmark.rs           # Proto archive versus core benchmark
