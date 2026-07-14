@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::Instant;
 
 use range_store_core::dimension::{
     dimension_key, get_drill_scenario_table_name, quote_identifier, DimensionRef,
@@ -14,7 +15,7 @@ use crate::errors::ToolError;
 
 use super::format::METADATA_FILE_NAME;
 use super::line_matrix_store::{read_compact_archive_dimension, CompactArchiveOpenOptions};
-use super::query_service::ProtoRangeQueryService;
+use super::query_service::{ProfiledHandStrategyResult, ProtoRangeQueryService};
 
 const MATRIX_CACHE_CAPACITY_PER_HANDLE: usize = 1024;
 
@@ -22,6 +23,12 @@ pub struct ProtoRangeStoreFacade {
     archive_dirs: BTreeMap<String, PathBuf>,
     verify_checksums: bool,
     handles: Mutex<HandlePool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FacadeProfiledHandStrategyResult {
+    pub profiled: ProfiledHandStrategyResult,
+    pub facade_total_ms: f64,
 }
 
 impl ProtoRangeStoreFacade {
@@ -92,6 +99,22 @@ impl ProtoRangeStoreFacade {
     ) -> Result<QueryResult, ToolError> {
         self.with_service(dimension, |service| {
             service.query_hand_strategy(dimension, concrete_line_id, hole_cards)
+        })
+    }
+
+    pub fn profile_hand_strategy(
+        &self,
+        dimension: &DimensionRef,
+        concrete_line_id: u32,
+        hole_cards: &str,
+    ) -> Result<FacadeProfiledHandStrategyResult, ToolError> {
+        let started = Instant::now();
+        let profiled = self.with_service(dimension, |service| {
+            service.profile_hand_strategy(dimension, concrete_line_id, hole_cards)
+        })?;
+        Ok(FacadeProfiledHandStrategyResult {
+            profiled,
+            facade_total_ms: started.elapsed().as_secs_f64() * 1000.0,
         })
     }
 

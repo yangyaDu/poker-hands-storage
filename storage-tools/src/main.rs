@@ -33,6 +33,9 @@ use poker_hands_storage_tools::proto_range_storage::three_way_cold_benchmark::{
     parse_three_way_cold_benchmark_args, run_three_way_cold_benchmark,
     run_three_way_cold_worker_from_stdin,
 };
+use poker_hands_storage_tools::proto_range_storage::three_way_stability_benchmark::{
+    parse_three_way_stability_benchmark_args, run_three_way_stability_benchmark,
+};
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_tools::verification::cli::parse_verify_args;
 use poker_hands_storage_tools::verification::cross::{run_cross_verify, CrossVerifyOptions};
@@ -63,6 +66,7 @@ fn run() -> Result<(), ToolError> {
         }
         Some("benchmark-compact-vs-core") => run_benchmark_compact_vs_core(args.collect()),
         Some("benchmark-three-way-hot") => run_benchmark_three_way_hot(args.collect()),
+        Some("benchmark-three-way-stability") => run_benchmark_three_way_stability(args.collect()),
         Some("benchmark-three-way-cold") => run_benchmark_three_way_cold(args.collect()),
         Some("three-way-memory-worker") => run_three_way_memory_worker_cmd(args.collect()),
         Some("three-way-cold-worker") => run_three_way_cold_worker_cmd(args.collect()),
@@ -127,6 +131,16 @@ fn run_benchmark_three_way_hot(args: Vec<String>) -> Result<(), ToolError> {
             "three-way hot benchmark had errors",
         ));
     }
+    Ok(())
+}
+
+fn run_benchmark_three_way_stability(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_three_way_stability_benchmark_args(args)?;
+    let report = run_three_way_stability_benchmark(&command)?;
+    println!("Core/Proto/SQLite stability benchmark complete.");
+    println!("  Repetitions: {}", report.runs);
+    println!("  JSON report: {}", command.hot.out_path.display());
+    println!("  Markdown report: {}", command.hot.md_path.display());
     Ok(())
 }
 

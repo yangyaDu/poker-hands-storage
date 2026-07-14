@@ -12,11 +12,12 @@
 | 文档职责和阅读路径 | `docs/README.md` |
 | 当前剩余工作和验收标准 | `docs/roadmap.md` |
 | 文件格式、pack 编码、查询流程 | `docs/range-db-binary-storage-design.md` |
-| 单行动线 Protobuf schema、字段语义、导出与校验 | `docs/protobuf-line-matrix-export.md` |
+| Proto V2 schema、字段语义、导出、查询与基准 | `docs/proto/README.md` |
 | HTTP API 请求/响应、错误码、业务语义 | `docs/api-business-contract.md` |
 | Bun/Node native SDK API、构建测试、生产接入边界和查询链路 | `docs/sdk-and-query-chain-explanation.md` |
 | standalone/cross verify、Float32、checksum、发布前验证、benchmark 脚本介绍 | `docs/verification_and_benchmark.md` |
-| 性能、体积、内存、benchmark 方法和结论 | `docs/binary-vs-sqlite-benchmark-and-verification-report.md` |
+| Range Strata Binary 的性能、体积、内存和 benchmark 结论 | `docs/binary-vs-sqlite-benchmark-and-verification-report.md` |
+| Proto V2 的格式、查询、导出与 benchmark 口径 | `docs/proto/README.md` |
 | Docker/Compose/Kubernetes、发布、回滚、prewarm | `docs/docker-deployment-guide.md` |
 | 代码级构建和查询数据流速查 | `docs/data-flow-overview.md` |
 
@@ -53,7 +54,7 @@
 存储格式和数据流：
 
 1. `range-db-binary-storage-design.md`
-2. `protobuf-line-matrix-export.md`
+2. `proto/README.md`
 3. `data-flow-overview.md`
 4. `verification_and_benchmark.md`
 
@@ -82,7 +83,8 @@
 
 ## 报告口径
 
-- benchmark 数字只在 `binary-vs-sqlite-benchmark-and-verification-report.md` 更新。
+- Range Strata Binary benchmark 数字只在 `binary-vs-sqlite-benchmark-and-verification-report.md` 更新。
+- Proto V2 benchmark 口径在 `proto/export-and-benchmark.md`，当前运行数字在 `reports/proto-v2-nine-dimension-performance-report.md` 更新。
 - verification 覆盖面和命令只在 `verification_and_benchmark.md` 更新。
 - API 语义只在 `api-business-contract.md` 更新。
 - 生产部署和回滚只在 `docker-deployment-guide.md` 更新。

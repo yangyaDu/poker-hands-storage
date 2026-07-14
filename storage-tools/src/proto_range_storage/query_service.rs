@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Instant;
 
 use range_store_core::dimension::DimensionRef;
 use range_store_core::hole_cards::{hand_code_from_id, parse_hole_cards};
@@ -12,11 +14,33 @@ use crate::errors::ToolError;
 
 use super::line_matrix_store::{
     CompactArchiveOpenOptions, CompactLineMatrixArchive, DecodedCompactLineMatrix,
+    ProfiledMatrixRead,
 };
 use super::proto::ActionType;
 
 pub struct ProtoRangeQueryService {
     store: CompactLineMatrixArchive,
+}
+
+#[derive(Debug, Clone)]
+pub struct HandStrategyPhaseProfile {
+    pub dimension_check_ms: f64,
+    pub parse_hand_ms: f64,
+    pub matrix_read_ms: f64,
+    pub matrix_cache_hit: bool,
+    pub matrix_cache_lookup_ms: f64,
+    pub matrix_index_payload_ms: f64,
+    pub matrix_protobuf_decode_ms: f64,
+    pub matrix_compact_index_ms: f64,
+    pub matrix_cache_insert_ms: f64,
+    pub action_materialization_ms: f64,
+    pub service_total_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfiledHandStrategyResult {
+    pub result: QueryResult,
+    pub profile: HandStrategyPhaseProfile,
 }
 
 impl ProtoRangeQueryService {
@@ -39,18 +63,51 @@ impl ProtoRangeQueryService {
         concrete_line_id: u32,
         hole_cards: &str,
     ) -> Result<QueryResult, ToolError> {
+        Ok(self
+            .profile_hand_strategy(dimension, concrete_line_id, hole_cards)?
+            .result)
+    }
+
+    pub fn profile_hand_strategy(
+        &self,
+        dimension: &DimensionRef,
+        concrete_line_id: u32,
+        hole_cards: &str,
+    ) -> Result<ProfiledHandStrategyResult, ToolError> {
+        let total_started = Instant::now();
+        let stage_started = Instant::now();
         self.require_dimension(dimension)?;
+        let dimension_check_ms = elapsed_ms(stage_started);
+        let stage_started = Instant::now();
         let hand = parse_hole_cards(hole_cards)?;
-        let matrix = self.read_matrix(dimension, concrete_line_id)?;
+        let parse_hand_ms = elapsed_ms(stage_started);
+        let stage_started = Instant::now();
+        let matrix = self.read_matrix_profiled(dimension, concrete_line_id)?;
+        let matrix_read_ms = elapsed_ms(stage_started);
+        let stage_started = Instant::now();
         let actions = self.actions_for_hand(
-            &matrix,
+            &matrix.matrix,
             usize::from(hand.hand_id),
             &hand.hand_code,
             dimension,
             concrete_line_id,
         )?;
-
-        Ok(QueryResult { actions })
+        Ok(ProfiledHandStrategyResult {
+            result: QueryResult { actions },
+            profile: HandStrategyPhaseProfile {
+                dimension_check_ms,
+                parse_hand_ms,
+                matrix_read_ms,
+                matrix_cache_hit: matrix.profile.cache_hit,
+                matrix_cache_lookup_ms: matrix.profile.cache_lookup_ms,
+                matrix_index_payload_ms: matrix.profile.index_payload_ms,
+                matrix_protobuf_decode_ms: matrix.profile.protobuf_decode_ms,
+                matrix_compact_index_ms: matrix.profile.compact_index_ms,
+                matrix_cache_insert_ms: matrix.profile.cache_insert_ms,
+                action_materialization_ms: elapsed_ms(stage_started),
+                service_total_ms: elapsed_ms(total_started),
+            },
+        })
     }
 
     pub fn matrix_count(&self, dimension: &DimensionRef) -> Result<u64, ToolError> {
@@ -200,9 +257,19 @@ impl ProtoRangeQueryService {
         &self,
         dimension: &DimensionRef,
         concrete_line_id: u32,
-    ) -> Result<DecodedCompactLineMatrix, ToolError> {
+    ) -> Result<Arc<DecodedCompactLineMatrix>, ToolError> {
         self.store
             .read_matrix(u64::from(concrete_line_id))
+            .map_err(|error| map_line_error(error, dimension, concrete_line_id))
+    }
+
+    fn read_matrix_profiled(
+        &self,
+        dimension: &DimensionRef,
+        concrete_line_id: u32,
+    ) -> Result<ProfiledMatrixRead, ToolError> {
+        self.store
+            .read_matrix_profiled(u64::from(concrete_line_id))
             .map_err(|error| map_line_error(error, dimension, concrete_line_id))
     }
 
@@ -269,6 +336,10 @@ impl ProtoRangeQueryService {
             ),
         ))
     }
+}
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
 }
 
 fn action_matches_filter(action: &ActionResult, filter: &ActionFilter) -> bool {

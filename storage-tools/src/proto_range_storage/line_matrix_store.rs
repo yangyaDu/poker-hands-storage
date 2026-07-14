@@ -1,7 +1,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use memmap2::Mmap;
 use prost::Message;
@@ -35,6 +36,10 @@ use super::format::{
 const ARCHIVE_FORMAT: &str = "LMSP";
 const ARCHIVE_VERSION: u32 = 2;
 const PAYLOAD_SCHEMA: &str = "zenithstrat.gto.v2.CompactLineMatrix";
+
+fn elapsed_ms(started: Instant) -> f64 {
+    started.elapsed().as_secs_f64() * 1000.0
+}
 
 #[derive(Debug, Clone)]
 pub struct CompactLineMatrixArchiveOptions {
@@ -148,11 +153,36 @@ pub struct DecodedCompactLineMatrix {
     action_global_to_local_index: Vec<i16>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatrixCacheStats {
+    pub hits: u64,
+    pub misses: u64,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MatrixReadPhaseProfile {
+    pub cache_hit: bool,
+    pub cache_lookup_ms: f64,
+    pub index_payload_ms: f64,
+    pub protobuf_decode_ms: f64,
+    pub compact_index_ms: f64,
+    pub cache_insert_ms: f64,
+    pub total_ms: f64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProfiledMatrixRead {
+    pub matrix: Arc<DecodedCompactLineMatrix>,
+    pub profile: MatrixReadPhaseProfile,
+}
+
 #[derive(Debug)]
 struct SimpleLru {
     capacity: usize,
-    data: std::collections::HashMap<u64, (DecodedCompactLineMatrix, u64)>,
+    data: std::collections::HashMap<u64, (Arc<DecodedCompactLineMatrix>, u64)>,
     counter: u64,
+    hits: u64,
+    misses: u64,
 }
 
 impl SimpleLru {
@@ -161,17 +191,24 @@ impl SimpleLru {
             capacity: capacity.max(1),
             data: std::collections::HashMap::new(),
             counter: 0,
+            hits: 0,
+            misses: 0,
         }
     }
 
-    fn get(&mut self, key: u64) -> Option<&DecodedCompactLineMatrix> {
+    fn get(&mut self, key: u64) -> Option<Arc<DecodedCompactLineMatrix>> {
         let entry = self.data.get_mut(&key)?;
         self.counter = self.counter.wrapping_add(1);
         entry.1 = self.counter;
-        Some(&entry.0)
+        self.hits = self.hits.wrapping_add(1);
+        Some(Arc::clone(&entry.0))
     }
 
-    fn put(&mut self, key: u64, value: DecodedCompactLineMatrix) {
+    fn record_miss(&mut self) {
+        self.misses = self.misses.wrapping_add(1);
+    }
+
+    fn put(&mut self, key: u64, value: Arc<DecodedCompactLineMatrix>) {
         self.counter = self.counter.wrapping_add(1);
         if self.data.contains_key(&key) {
             self.data.insert(key, (value, self.counter));
@@ -183,6 +220,13 @@ impl SimpleLru {
             }
         }
         self.data.insert(key, (value, self.counter));
+    }
+
+    fn stats(&self) -> MatrixCacheStats {
+        MatrixCacheStats {
+            hits: self.hits,
+            misses: self.misses,
+        }
     }
 }
 
@@ -539,23 +583,65 @@ impl CompactLineMatrixArchive {
         self.matrix_count
     }
 
+    pub fn matrix_cache_stats(&self) -> MatrixCacheStats {
+        self.cache
+            .lock()
+            .expect("compact cache lock poisoned")
+            .stats()
+    }
+
     pub fn read_matrix(
         &self,
         concrete_line_id: u64,
-    ) -> Result<DecodedCompactLineMatrix, ToolError> {
+    ) -> Result<Arc<DecodedCompactLineMatrix>, ToolError> {
+        Ok(self.read_matrix_profiled(concrete_line_id)?.matrix)
+    }
+
+    pub fn read_matrix_profiled(
+        &self,
+        concrete_line_id: u64,
+    ) -> Result<ProfiledMatrixRead, ToolError> {
+        let total_started = Instant::now();
+        let stage_started = Instant::now();
         {
             let mut cache = self.cache.lock().expect("compact cache lock poisoned");
             if let Some(decoded) = cache.get(concrete_line_id) {
-                return Ok(decoded.clone());
+                return Ok(ProfiledMatrixRead {
+                    matrix: decoded,
+                    profile: MatrixReadPhaseProfile {
+                        cache_hit: true,
+                        cache_lookup_ms: elapsed_ms(stage_started),
+                        index_payload_ms: 0.0,
+                        protobuf_decode_ms: 0.0,
+                        compact_index_ms: 0.0,
+                        cache_insert_ms: 0.0,
+                        total_ms: elapsed_ms(total_started),
+                    },
+                });
             }
+            cache.record_miss();
         }
-        let decoded = self.decode_matrix_uncached(concrete_line_id, self.verify_checksums)?;
-        let cached = decoded.clone();
+        let cache_lookup_ms = elapsed_ms(stage_started);
+        let (decoded, index_payload_ms, protobuf_decode_ms, compact_index_ms) =
+            self.decode_matrix_uncached_profiled(concrete_line_id, self.verify_checksums)?;
+        let decoded = Arc::new(decoded);
+        let stage_started = Instant::now();
         {
             let mut cache = self.cache.lock().expect("compact cache lock poisoned");
-            cache.put(concrete_line_id, cached);
+            cache.put(concrete_line_id, Arc::clone(&decoded));
         }
-        Ok(decoded)
+        Ok(ProfiledMatrixRead {
+            matrix: decoded,
+            profile: MatrixReadPhaseProfile {
+                cache_hit: false,
+                cache_lookup_ms,
+                index_payload_ms,
+                protobuf_decode_ms,
+                compact_index_ms,
+                cache_insert_ms: elapsed_ms(stage_started),
+                total_ms: elapsed_ms(total_started),
+            },
+        })
     }
 
     fn decode_matrix_uncached(
@@ -563,6 +649,17 @@ impl CompactLineMatrixArchive {
         concrete_line_id: u64,
         verify: bool,
     ) -> Result<DecodedCompactLineMatrix, ToolError> {
+        Ok(self
+            .decode_matrix_uncached_profiled(concrete_line_id, verify)?
+            .0)
+    }
+
+    fn decode_matrix_uncached_profiled(
+        &self,
+        concrete_line_id: u64,
+        verify: bool,
+    ) -> Result<(DecodedCompactLineMatrix, f64, f64, f64), ToolError> {
+        let stage_started = Instant::now();
         if concrete_line_id == 0 || concrete_line_id > self.matrix_count {
             return Err(ToolError::new(
                 "LINE_NOT_FOUND",
@@ -590,9 +687,19 @@ impl CompactLineMatrixArchive {
         if verify {
             assert_crc32c(payload, record.crc32c).map_err(ToolError::invalid_format)?;
         }
+        let index_payload_ms = elapsed_ms(stage_started);
+        let stage_started = Instant::now();
         let matrix = CompactLineMatrix::decode(payload)
             .map_err(|error| ToolError::new("PROTOBUF_DECODE_ERROR", error.to_string()))?;
-        DecodedCompactLineMatrix::new(matrix)
+        let protobuf_decode_ms = elapsed_ms(stage_started);
+        let stage_started = Instant::now();
+        let decoded = DecodedCompactLineMatrix::new(matrix)?;
+        Ok((
+            decoded,
+            index_payload_ms,
+            protobuf_decode_ms,
+            elapsed_ms(stage_started),
+        ))
     }
 
     pub fn verify_all(&self) -> Result<CompactLineMatrixArchiveVerificationSummary, ToolError> {

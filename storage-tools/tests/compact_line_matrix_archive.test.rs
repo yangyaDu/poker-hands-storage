@@ -1,5 +1,6 @@
 use std::fs;
 use std::process::Command;
+use std::sync::Arc;
 
 use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
@@ -55,6 +56,10 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
     assert_eq!(verification.action_count, 5);
     assert_eq!(verification.action_value_count, 504);
     let first = archive.read_matrix(1).expect("read first compact matrix");
+    let second = archive.read_matrix(1).expect("read cached compact matrix");
+    assert!(Arc::ptr_eq(&first, &second));
+    assert_eq!(archive.matrix_cache_stats().hits, 1);
+    assert_eq!(archive.matrix_cache_stats().misses, 1);
     let matrix = first.matrix();
     assert_eq!(matrix.schema_version, 2);
     assert_eq!(matrix.valid_hand_bitmap.len(), 22);
@@ -908,6 +913,67 @@ fn three_way_hot_benchmark_reports_shared_proto_v2_strategy_cases() {
     assert!(report["memory"]["proto"]["total"]["after"].is_object());
     assert!(report["memory"]["sqlite"]["total"]["after"].is_object());
     assert!(markdown_path.is_file());
+
+    let stability_report_path = temp.path().join("three-way-stability.json");
+    let stability_markdown_path = temp.path().join("three-way-stability.md");
+    let output = Command::new(env!("CARGO_BIN_EXE_poker-hands-storage-tools"))
+        .args([
+            "benchmark-three-way-stability",
+            "--runs",
+            "2",
+            "--source",
+            source_db.to_str().expect("source path"),
+            "--proto-root",
+            proto_root.to_str().expect("Proto root"),
+            "--core-dir",
+            core_dir.to_str().expect("core directory"),
+            "--dimension",
+            "default:6:100",
+            "--workload",
+            workload_path.to_str().expect("workload path"),
+            "--warmup-iterations",
+            "0",
+            "--out",
+            stability_report_path
+                .to_str()
+                .expect("stability report path"),
+            "--md",
+            stability_markdown_path
+                .to_str()
+                .expect("stability markdown path"),
+        ])
+        .output()
+        .expect("run three-way stability benchmark");
+    assert!(
+        output.status.success(),
+        "stderr={}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stability: serde_json::Value =
+        serde_json::from_slice(&fs::read(&stability_report_path).expect("read stability report"))
+            .expect("parse stability report");
+    assert_eq!(stability["runs"], 2);
+    assert_eq!(
+        stability["cases"]
+            .as_array()
+            .expect("stability cases")
+            .len(),
+        7
+    );
+    assert_eq!(
+        stability["metadataCache"]["postEvictionQueryMs"],
+        serde_json::Value::Null
+    );
+    assert_eq!(stability["handStrategyProfile"]["samples"], 1);
+    assert!(stability["handStrategyProfile"]["matrixReadMs"].is_object());
+    assert_eq!(
+        stability["handStrategyProfile"]["slowest"]
+            .as_array()
+            .expect("slowest")
+            .len(),
+        1
+    );
+    assert!(stability_markdown_path.is_file());
 }
 
 #[test]
