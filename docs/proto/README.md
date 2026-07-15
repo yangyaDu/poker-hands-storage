@@ -16,6 +16,8 @@
 2. [运行时与查询](runtime-and-query.md)：解码索引、缓存、metadata 和 core 接口。
 3. [导出与基准](export-and-benchmark.md)：导出、验证、三方基准及报告口径。
 4. [Cache 与 Decode 优化实践方案](cache-and-decode-optimization-plan.md)：观测、容量扫描、预热与 decode accelerator 的决策门槛。
+5. [Replay 内存基准设计](replay-memory-benchmark-design.md)：尚未实施的真实业务 replay、等价缓存和 RSS 测量设计。
+6. [Proto V2 存储方案汇报稿](protobuf-v2-storage-report-outline.md)：面向汇报的 9 页叙事、真实业务时序图和存储图。
 
 术语：**Proto V2 存储**是某一维度目录中的 `manifest.json`、`lines.db`、
 `matrices.lmbin` 和 `matrices.lmidx`。`archive` 仅保留在现有 CLI/Rust 类型历史命名中，

@@ -84,7 +84,7 @@
 ## 报告口径
 
 - Range Strata Binary benchmark 数字只在 `binary-vs-sqlite-benchmark-and-verification-report.md` 更新。
-- Proto V2 benchmark 口径在 `proto/export-and-benchmark.md`，当前运行数字在 `reports/proto-v2-nine-dimension-performance-report.md` 更新。
+- Proto V2 benchmark 口径在 `proto/export-and-benchmark.md`；旧三方性能报告已撤回，正式 replay 基线设计见 `proto/replay-memory-benchmark-design.md`。
 - verification 覆盖面和命令只在 `verification_and_benchmark.md` 更新。
 - API 语义只在 `api-business-contract.md` 更新。
 - 生产部署和回滚只在 `docker-deployment-guide.md` 更新。

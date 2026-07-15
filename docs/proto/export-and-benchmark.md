@@ -40,7 +40,7 @@ cold 是 **process-cold**：每次使用新工具进程，报告 open/prewarm/fi
 RSS，但不会清空 OS page cache，不能宣称 OS-cache-cold。stability 至少重复两次固定 workload，
 输出跨运行 P50/P95，以及 Proto 的 matrix 分段 profile 与 metadata 首次/命中/LRU 淘汰后访问。
 
-当前 9 维度结果及原始报告索引见
-[`reports/proto-v2-nine-dimension-performance-report.md`](../../reports/proto-v2-nine-dimension-performance-report.md)。
-这是 2026-07-14 的可复跑测量记录，不是格式 SLA；重跑时必须写明 workload、平台、checksum
-配置和 process-cold 的 page-cache 限制。
+当前三方 benchmark 仅用于开发观测，不能作为 Proto / SQLite 正式性能或内存基线：它尚未校验
+完整策略返回值，且当前预热与缓存 profile 不对等。正式对照设计见
+[`replay-memory-benchmark-design.md`](replay-memory-benchmark-design.md)；实现前不得生成或引用
+Proto 快于 SQLite、或 Proto 更省 RSS 的结论。

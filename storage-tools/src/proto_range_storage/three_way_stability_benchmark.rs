@@ -1,10 +1,11 @@
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use range_store_core::dimension::{get_concrete_lines_table_name, quote_identifier, DimensionRef};
 use range_store_core::sqlite::Connection;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::benchmark::cli::{next_value, parse_usize, parse_usize_list};
 use crate::benchmark::cold::types::LatencySummary;
@@ -13,7 +14,7 @@ use crate::benchmark::report_support::{
     generated_at_utc, markdown_table, write_json_report, write_markdown_report,
 };
 use crate::benchmark::types::{
-    BenchmarkWorkload, DrillScenarioBenchmarkItem, HandBenchmarkItem, WorkloadOptions,
+    BenchmarkWorkload, DrillScenarioBenchmarkItem, HandBenchmarkItem, WorkloadMode, WorkloadOptions,
 };
 use crate::benchmark::workload::{create_benchmark_workload, read_workload_json};
 use crate::errors::ToolError;
@@ -21,7 +22,8 @@ use crate::errors::ToolError;
 use super::cli::parse_three_way_hot_benchmark_args;
 use super::query_facade::{ProtoRangeStoreFacade, ProtoRangeStoreFacadeOptions};
 use super::three_way_benchmark::{
-    run_three_way_hot_benchmark, ThreeWayHotBenchmarkCommand, ThreeWayHotBenchmarkReport,
+    run_three_way_hot_benchmark, run_three_way_hot_benchmark_with_workload,
+    ThreeWayHotBenchmarkCommand, ThreeWayHotBenchmarkReport,
 };
 
 #[derive(Debug, Clone)]
@@ -32,6 +34,7 @@ pub struct ThreeWayStabilityBenchmarkCommand {
     pub matrix_cache_byte_budgets: Vec<Option<usize>>,
     pub line_transition_start: Option<String>,
     pub line_transition_sessions: usize,
+    pub line_transition_replay_path: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -41,10 +44,11 @@ pub struct ThreeWayStabilityBenchmarkReport {
     pub runs: usize,
     pub raw_report_paths: Vec<String>,
     pub cases: Vec<ThreeWayStabilityCase>,
-    pub metadata_cache: MetadataCachePhaseReport,
+    pub metadata_cache: Option<MetadataCachePhaseReport>,
     pub hand_strategy_profile: ProtoHandStrategyProfileReport,
     pub matrix_cache_sweep: Vec<MatrixCacheSweepReport>,
     pub line_transition_sweep: Option<LineTransitionSweepReport>,
+    pub line_transition_replay_sweep: Option<LineTransitionReplaySweepReport>,
     pub notes: Vec<String>,
 }
 
@@ -143,6 +147,38 @@ pub struct LineTransitionSweepReport {
     pub cache_configs: Vec<MatrixCacheSweepReport>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineTransitionReplaySweepReport {
+    pub replay_path: String,
+    pub sessions: usize,
+    pub steps: usize,
+    pub dimensions: Vec<String>,
+    pub cache_configs: Vec<LineTransitionReplayCacheConfigReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LineTransitionReplayCacheConfigReport {
+    pub config: MatrixCacheConfig,
+    pub session_total_ms: LatencySummary,
+    pub hand_strategy_profile: ProtoHandStrategyProfileReport,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalLineReplay {
+    schema_version: u32,
+    sessions: Vec<CanonicalLineReplaySession>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CanonicalLineReplaySession {
+    name: String,
+    requests: Vec<HandBenchmarkItem>,
+}
+
 #[derive(Debug, Clone)]
 struct LineTransitionSourceLine {
     concrete_line_id: u32,
@@ -162,6 +198,30 @@ struct LineTransitionWorkload {
     skipped_no_retained_hand_leaf_count: usize,
 }
 
+#[derive(Debug, Clone)]
+struct LineTransitionReplayWorkload {
+    replay_path: PathBuf,
+    sessions: Vec<CanonicalLineReplaySession>,
+    requests: Vec<HandBenchmarkItem>,
+    dimensions: Vec<String>,
+}
+
+impl LineTransitionReplayWorkload {
+    fn as_benchmark_workload(&self, seed: u64) -> BenchmarkWorkload {
+        BenchmarkWorkload {
+            seed,
+            mode: WorkloadMode::Random,
+            dimensions: self.dimensions.clone(),
+            hand_queries: self.requests.clone(),
+            batch_queries: Vec::new(),
+            batch_size: 0,
+            batch_queries_by_size: Vec::new(),
+            hands_by_actions_queries: Vec::new(),
+            drill_scenario_queries: Vec::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct WorkloadMatrixKey {
     dimension: String,
@@ -176,6 +236,7 @@ pub fn parse_three_way_stability_benchmark_args(
     let mut matrix_cache_byte_budgets = vec![None];
     let mut line_transition_start = None;
     let mut line_transition_sessions = 0usize;
+    let mut line_transition_replay_path = None;
     let mut hot_args = Vec::with_capacity(args.len());
     let mut index = 0;
     while index < args.len() {
@@ -196,6 +257,9 @@ pub fn parse_three_way_stability_benchmark_args(
                 line_transition_sessions =
                     parse_usize("--line-transition-sessions", next_value(&args, &mut index)?)?
             }
+            "--line-transition-replay" => {
+                line_transition_replay_path = Some(PathBuf::from(next_value(&args, &mut index)?))
+            }
             _ => hot_args.push(args[index].clone()),
         }
         index += 1;
@@ -208,6 +272,23 @@ pub fn parse_three_way_stability_benchmark_args(
             "--line-transition-start is required when --line-transition-sessions is set",
         ));
     }
+    if line_transition_replay_path.is_some()
+        && (line_transition_start.is_some() || line_transition_sessions > 0)
+    {
+        return Err(ToolError::invalid_argument(
+            "--line-transition-replay cannot be combined with --line-transition-start or --line-transition-sessions",
+        ));
+    }
+    if line_transition_replay_path.is_some()
+        && (hot_args.iter().any(|argument| argument == "--workload")
+            || hot_args
+                .iter()
+                .any(|argument| argument == "--write-workload"))
+    {
+        return Err(ToolError::invalid_argument(
+            "--line-transition-replay supplies the hand-strategy workload and cannot be combined with --workload or --write-workload",
+        ));
+    }
     Ok(ThreeWayStabilityBenchmarkCommand {
         hot: parse_three_way_hot_benchmark_args(hot_args)?,
         runs,
@@ -215,6 +296,7 @@ pub fn parse_three_way_stability_benchmark_args(
         matrix_cache_byte_budgets,
         line_transition_start,
         line_transition_sessions,
+        line_transition_replay_path,
     })
 }
 
@@ -262,35 +344,68 @@ fn parse_cache_byte_budgets(value: &str) -> Result<Vec<Option<usize>>, ToolError
 pub fn run_three_way_stability_benchmark(
     command: &ThreeWayStabilityBenchmarkCommand,
 ) -> Result<ThreeWayStabilityBenchmarkReport, ToolError> {
+    let replay_workload = command
+        .line_transition_replay_path
+        .as_ref()
+        .map(|path| load_line_transition_replay(path))
+        .transpose()?;
+    let benchmark_workload = replay_workload
+        .as_ref()
+        .map(|workload| workload.as_benchmark_workload(command.hot.seed));
     let mut reports = Vec::with_capacity(command.runs);
     let mut raw_report_paths = Vec::with_capacity(command.runs);
     for run_index in 1..=command.runs {
         let mut run_command = command.hot.clone();
         run_command.out_path = per_run_path(&command.hot.out_path, run_index);
         run_command.md_path = per_run_path(&command.hot.md_path, run_index);
-        let report = run_three_way_hot_benchmark(&run_command)?;
+        let report = if let Some(workload) = &benchmark_workload {
+            run_three_way_hot_benchmark_with_workload(
+                &run_command,
+                workload,
+                crate::benchmark::types::WorkloadSource::Loaded,
+                command
+                    .line_transition_replay_path
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+            )?
+        } else {
+            run_three_way_hot_benchmark(&run_command)?
+        };
         raw_report_paths.push(run_command.out_path.display().to_string());
         reports.push(report);
     }
-    let matrix_cache_sweep = profile_matrix_cache_sweep(command)?;
+    let profile_workload = benchmark_workload
+        .as_ref()
+        .cloned()
+        .unwrap_or(load_workload(&command.hot)?);
+    let matrix_cache_sweep = profile_matrix_cache_sweep(command, &profile_workload)?;
     let hand_strategy_profile = matrix_cache_sweep
         .first()
         .expect("cache sweep contains at least one configuration")
         .hand_strategy_profile
         .clone();
     let line_transition_sweep = profile_line_transition_sweep(command)?;
+    let line_transition_replay_sweep = replay_workload
+        .as_ref()
+        .map(|workload| profile_line_transition_replay_sweep(command, workload))
+        .transpose()?;
     let report = ThreeWayStabilityBenchmarkReport {
         generated_at: generated_at_utc(),
         runs: command.runs,
         raw_report_paths,
         cases: summarize_cases(&reports),
-        metadata_cache: measure_metadata_cache_phases(&command.hot)?,
+        metadata_cache: replay_workload
+            .is_none()
+            .then(|| measure_metadata_cache_phases(&command.hot))
+            .transpose()?,
         hand_strategy_profile,
         matrix_cache_sweep,
         line_transition_sweep,
+        line_transition_replay_sweep,
         notes: vec![
+            "Development observation only: the underlying three-way runner validates result counts and does not use equivalent SQLite / Proto cache profiles; do not treat this summary as a formal performance or RSS baseline.".to_owned(),
             "Every run uses the same workload seed or supplied workload file; raw reports are retained beside this summary.".to_owned(),
-            "Metadata phases use one Proto facade with max_open_handles=1: first query, cache hit, then optional query after LRU eviction.".to_owned(),
+            "Metadata phases use one Proto facade with max_open_handles=1: first query, cache hit, then optional query after LRU eviction when the workload includes drill metadata.".to_owned(),
             "Run-to-run statistics measure process and scheduling variation; they do not evict the OS page cache.".to_owned(),
         ],
     };
@@ -398,6 +513,7 @@ fn measure_metadata_cache_phases(
 
 fn profile_matrix_cache_sweep(
     command: &ThreeWayStabilityBenchmarkCommand,
+    workload: &BenchmarkWorkload,
 ) -> Result<Vec<MatrixCacheSweepReport>, ToolError> {
     let mut reports = Vec::new();
     for &entry_capacity in &command.matrix_cache_capacities {
@@ -407,25 +523,17 @@ fn profile_matrix_cache_sweep(
                 byte_budget_bytes,
             };
             reports.push(MatrixCacheSweepReport {
-                hand_strategy_profile: profile_hand_strategy_tail(&command.hot, config.clone())?,
+                hand_strategy_profile: profile_hand_strategy_requests(
+                    &command.hot,
+                    &workload.hand_queries,
+                    command.hot.warmup_iterations,
+                    config.clone(),
+                )?,
                 config,
             });
         }
     }
     Ok(reports)
-}
-
-fn profile_hand_strategy_tail(
-    command: &ThreeWayHotBenchmarkCommand,
-    cache_config: MatrixCacheConfig,
-) -> Result<ProtoHandStrategyProfileReport, ToolError> {
-    let workload = load_workload(command)?;
-    profile_hand_strategy_requests(
-        command,
-        &workload.hand_queries,
-        command.warmup_iterations,
-        cache_config,
-    )
 }
 
 fn profile_hand_strategy_requests(
@@ -634,6 +742,120 @@ fn profile_line_transition_sweep(
             .then(|| LatencySummary::from_values(&workload.child_fanout)),
         cache_configs,
     }))
+}
+
+fn profile_line_transition_replay_sweep(
+    command: &ThreeWayStabilityBenchmarkCommand,
+    workload: &LineTransitionReplayWorkload,
+) -> Result<LineTransitionReplaySweepReport, ToolError> {
+    let mut cache_configs = Vec::new();
+    for &entry_capacity in &command.matrix_cache_capacities {
+        for &byte_budget_bytes in &command.matrix_cache_byte_budgets {
+            let config = MatrixCacheConfig {
+                entry_capacity,
+                byte_budget_bytes,
+            };
+            let hand_strategy_profile = profile_hand_strategy_requests(
+                &command.hot,
+                &workload.requests,
+                0,
+                config.clone(),
+            )?;
+            let session_total_ms = measure_replay_session_totals(&command.hot, workload, &config)?;
+            cache_configs.push(LineTransitionReplayCacheConfigReport {
+                config,
+                session_total_ms,
+                hand_strategy_profile,
+            });
+        }
+    }
+    Ok(LineTransitionReplaySweepReport {
+        replay_path: workload.replay_path.display().to_string(),
+        sessions: workload.sessions.len(),
+        steps: workload.requests.len(),
+        dimensions: workload.dimensions.clone(),
+        cache_configs,
+    })
+}
+
+fn measure_replay_session_totals(
+    command: &ThreeWayHotBenchmarkCommand,
+    workload: &LineTransitionReplayWorkload,
+    config: &MatrixCacheConfig,
+) -> Result<LatencySummary, ToolError> {
+    let facade = ProtoRangeStoreFacade::open_with_options(
+        &command.proto_root,
+        ProtoRangeStoreFacadeOptions {
+            max_open_handles: command.max_open_handles,
+            matrix_cache_capacity: config.entry_capacity,
+            matrix_cache_byte_budget: config.byte_budget_bytes,
+            verify_checksums: command.verify_checksums,
+        },
+    )?;
+    let mut totals = Vec::with_capacity(workload.sessions.len());
+    for session in &workload.sessions {
+        let started = Instant::now();
+        for request in &session.requests {
+            facade.query_hand_strategy(
+                &request.dimension(),
+                request.concrete_line_id,
+                &request.hole_cards,
+            )?;
+        }
+        totals.push(started.elapsed().as_secs_f64() * 1000.0);
+    }
+    Ok(LatencySummary::from_values(&totals))
+}
+
+fn load_line_transition_replay(path: &Path) -> Result<LineTransitionReplayWorkload, ToolError> {
+    let bytes = fs::read(path)?;
+    let replay: CanonicalLineReplay = serde_json::from_slice(&bytes).map_err(|error| {
+        ToolError::invalid_format(format!("invalid canonical replay JSON: {error}"))
+    })?;
+    if replay.schema_version != 1 {
+        return Err(ToolError::invalid_format(format!(
+            "unsupported canonical replay schemaVersion {} (expected 1)",
+            replay.schema_version
+        )));
+    }
+    if replay.sessions.is_empty() {
+        return Err(ToolError::invalid_format(
+            "canonical replay must contain at least one session",
+        ));
+    }
+
+    let mut requests = Vec::new();
+    let mut dimensions = Vec::new();
+    for (session_index, session) in replay.sessions.iter().enumerate() {
+        if session.name.trim().is_empty() {
+            return Err(ToolError::invalid_format(format!(
+                "canonical replay session {session_index} has an empty name"
+            )));
+        }
+        if session.requests.is_empty() {
+            return Err(ToolError::invalid_format(format!(
+                "canonical replay session {} has no requests",
+                session.name
+            )));
+        }
+        for request in &session.requests {
+            let dimension = format!(
+                "{}:{}max:{}BB",
+                request.strategy, request.player_count, request.depth_bb
+            );
+            if !dimensions.contains(&dimension) {
+                dimensions.push(dimension);
+            }
+            requests.push(request.clone());
+        }
+    }
+    let workload = LineTransitionReplayWorkload {
+        replay_path: path.to_owned(),
+        sessions: replay.sessions,
+        requests,
+        dimensions,
+    };
+    Ok(workload)
 }
 
 fn build_line_transition_workload(
@@ -973,8 +1195,13 @@ fn per_run_path(path: &Path, run_index: usize) -> PathBuf {
 }
 
 fn render_markdown(report: &ThreeWayStabilityBenchmarkReport) -> String {
-    let mut markdown = String::from("# Core vs Proto vs SQLite Stability Benchmark Report\n\n");
+    let mut markdown = String::from(
+        "# Core vs Proto vs SQLite Stability Development Observation (Not a Formal Baseline)\n\n",
+    );
     markdown.push_str(&format!("- Repetitions: `{}`\n\n", report.runs));
+    markdown.push_str(
+        "> Underlying runs validate result counts only and do not use equivalent SQLite / Proto cache profiles. The ratios below are not formal performance or RSS evidence.\n\n",
+    );
     let rows = report
         .cases
         .iter()
@@ -1003,29 +1230,30 @@ fn render_markdown(report: &ThreeWayStabilityBenchmarkReport) -> String {
         ],
         &rows,
     ));
-    markdown.push_str("\n## Proto Metadata Cache Phases\n\n");
-    markdown.push_str(&markdown_table(
-        &[
-            "first ms",
-            "cache hit ms",
-            "post-eviction ms",
-            "first RSS delta",
-            "cache-hit RSS delta",
-            "post-eviction RSS delta",
-        ],
-        &[vec![
-            format!("{:.4}", report.metadata_cache.first_query_ms),
-            format!("{:.4}", report.metadata_cache.cache_hit_ms),
-            report
-                .metadata_cache
-                .post_eviction_query_ms
-                .map(|value| format!("{value:.4}"))
-                .unwrap_or_else(|| "n/a".to_owned()),
-            format_optional_bytes(report.metadata_cache.first_query_rss_delta_bytes),
-            format_optional_bytes(report.metadata_cache.cache_hit_rss_delta_bytes),
-            format_optional_bytes(report.metadata_cache.post_eviction_rss_delta_bytes),
-        ]],
-    ));
+    if let Some(metadata_cache) = &report.metadata_cache {
+        markdown.push_str("\n## Proto Metadata Cache Phases\n\n");
+        markdown.push_str(&markdown_table(
+            &[
+                "first ms",
+                "cache hit ms",
+                "post-eviction ms",
+                "first RSS delta",
+                "cache-hit RSS delta",
+                "post-eviction RSS delta",
+            ],
+            &[vec![
+                format!("{:.4}", metadata_cache.first_query_ms),
+                format!("{:.4}", metadata_cache.cache_hit_ms),
+                metadata_cache
+                    .post_eviction_query_ms
+                    .map(|value| format!("{value:.4}"))
+                    .unwrap_or_else(|| "n/a".to_owned()),
+                format_optional_bytes(metadata_cache.first_query_rss_delta_bytes),
+                format_optional_bytes(metadata_cache.cache_hit_rss_delta_bytes),
+                format_optional_bytes(metadata_cache.post_eviction_rss_delta_bytes),
+            ]],
+        ));
+    }
     let profile = &report.hand_strategy_profile;
     markdown.push_str("\n## Proto Hand Strategy Phase Profile\n\n");
     markdown.push_str(&markdown_table(
@@ -1216,6 +1444,56 @@ fn render_markdown(report: &ThreeWayStabilityBenchmarkReport) -> String {
             &transition_rows,
         ));
     }
+    if let Some(replay) = &report.line_transition_replay_sweep {
+        markdown.push_str("\n## Canonical Replay Session Sweep\n\n");
+        markdown.push_str(&markdown_table(
+            &["replay", "sessions", "steps", "dimensions"],
+            &[vec![
+                replay.replay_path.clone(),
+                replay.sessions.to_string(),
+                replay.steps.to_string(),
+                replay.dimensions.join(", "),
+            ]],
+        ));
+        let replay_rows = replay
+            .cache_configs
+            .iter()
+            .map(|item| {
+                let profile = &item.hand_strategy_profile;
+                vec![
+                    item.config.entry_capacity.to_string(),
+                    format_optional_usize(item.config.byte_budget_bytes),
+                    format!(
+                        "{:.4}/{:.4}",
+                        item.session_total_ms.p50_ms, item.session_total_ms.p95_ms
+                    ),
+                    format!(
+                        "{}/{}",
+                        profile.matrix_cache_hits, profile.matrix_cache_misses
+                    ),
+                    format!(
+                        "{}/{}",
+                        profile.matrix_first_seen_misses,
+                        profile.matrix_revisit_after_eviction_misses
+                    ),
+                    profile
+                        .max_observed_peak_resident_estimated_bytes
+                        .to_string(),
+                ]
+            })
+            .collect::<Vec<_>>();
+        markdown.push_str(&markdown_table(
+            &[
+                "entry capacity",
+                "byte budget",
+                "session total P50/P95 ms",
+                "hits/misses",
+                "first/revisit misses",
+                "peak estimate B",
+            ],
+            &replay_rows,
+        ));
+    }
     let slow_rows = profile
         .slowest
         .iter()
@@ -1324,6 +1602,58 @@ mod tests {
 
         assert_eq!(command.line_transition_start.as_deref(), Some("F-F"));
         assert_eq!(command.line_transition_sessions, 20);
+    }
+
+    #[test]
+    fn parses_canonical_line_transition_replay_option() {
+        let command = parse_three_way_stability_benchmark_args(vec![
+            "--source".to_owned(),
+            "source.db".to_owned(),
+            "--proto-root".to_owned(),
+            "proto".to_owned(),
+            "--core-dir".to_owned(),
+            "core".to_owned(),
+            "--line-transition-replay".to_owned(),
+            "replay.json".to_owned(),
+        ])
+        .expect("parse canonical replay command");
+
+        assert_eq!(
+            command.line_transition_replay_path,
+            Some(PathBuf::from("replay.json"))
+        );
+    }
+
+    #[test]
+    fn canonical_replay_converts_only_ordered_hand_strategy_requests() {
+        let replay = LineTransitionReplayWorkload {
+            replay_path: PathBuf::from("replay.json"),
+            sessions: vec![CanonicalLineReplaySession {
+                name: "three-bet-branch".to_owned(),
+                requests: vec![HandBenchmarkItem {
+                    strategy: "default".to_owned(),
+                    player_count: 6,
+                    depth_bb: 100,
+                    concrete_line_id: 42,
+                    hole_cards: "AKs".to_owned(),
+                }],
+            }],
+            requests: vec![HandBenchmarkItem {
+                strategy: "default".to_owned(),
+                player_count: 6,
+                depth_bb: 100,
+                concrete_line_id: 42,
+                hole_cards: "AKs".to_owned(),
+            }],
+            dimensions: vec!["default:6max:100BB".to_owned()],
+        };
+
+        let workload = replay.as_benchmark_workload(7);
+        assert_eq!(workload.seed, 7);
+        assert_eq!(workload.hand_queries, replay.requests);
+        assert!(workload.batch_queries.is_empty());
+        assert!(workload.hands_by_actions_queries.is_empty());
+        assert!(workload.drill_scenario_queries.is_empty());
     }
 
     #[test]

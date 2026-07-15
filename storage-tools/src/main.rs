@@ -674,6 +674,7 @@ Commands:
         [--matrix-cache-capacities <entries_csv>]
         [--matrix-cache-byte-budgets <none|bytes|MiB_csv>]
         [--line-transition-start <concrete_line> --line-transition-sessions <count>]
+        [--line-transition-replay <canonical_replay.json>]
 
   verify --dir <dir> [--mode standalone|cross] [--source <range.db>]
          [--verify-checksum] [--sample-size <n>] [--max-failures <n>]

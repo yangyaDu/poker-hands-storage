@@ -172,13 +172,27 @@ pub fn run_three_way_hot_benchmark(
     command: &ThreeWayHotBenchmarkCommand,
 ) -> Result<ThreeWayHotBenchmarkReport, ToolError> {
     let (workload, workload_source) = load_or_create_workload(command)?;
+    let workload_path = command
+        .workload_path
+        .as_ref()
+        .or(command.write_workload_path.as_ref())
+        .map(|path| path.display().to_string());
+    run_three_way_hot_benchmark_with_workload(command, &workload, workload_source, workload_path)
+}
+
+pub fn run_three_way_hot_benchmark_with_workload(
+    command: &ThreeWayHotBenchmarkCommand,
+    workload: &BenchmarkWorkload,
+    workload_source: WorkloadSource,
+    workload_path: Option<String>,
+) -> Result<ThreeWayHotBenchmarkReport, ToolError> {
     let sqlite = Connection::open(&command.source_db, true)?;
     let concrete_line_queries = build_concrete_line_lookup_queries(
         &sqlite,
         &workload.hand_queries,
         ConcreteLineIdColumn::SourceId,
     )?;
-    let memory = run_memory_workers(command, &workload, &concrete_line_queries)?;
+    let memory = run_memory_workers(command, workload, &concrete_line_queries)?;
     let core = RangeStoreFacade::open_with_meta(
         &command.core_dir,
         &command.core_meta,
@@ -191,31 +205,37 @@ pub fn run_three_way_hot_benchmark(
         command.max_open_handles,
         command.verify_checksums,
     )?;
-    prewarm_dimensions(&core, &proto, &workload)?;
+    prewarm_dimensions(&core, &proto, workload)?;
 
     let mut cases = Vec::new();
-    cases.push(measure_concrete_lines_case(
-        &core,
-        &proto,
-        &sqlite,
-        &concrete_line_queries,
-        command.warmup_iterations,
-    ));
-    cases.push(measure_hand_case(
-        &core,
-        &proto,
-        &sqlite,
-        &workload,
-        command.warmup_iterations,
-    ));
-    cases.push(measure_batch_case(
-        &core,
-        &proto,
-        &sqlite,
-        "batch-hand-strategy",
-        &workload.batch_queries,
-        command.warmup_iterations,
-    ));
+    if !concrete_line_queries.is_empty() {
+        cases.push(measure_concrete_lines_case(
+            &core,
+            &proto,
+            &sqlite,
+            &concrete_line_queries,
+            command.warmup_iterations,
+        ));
+    }
+    if !workload.hand_queries.is_empty() {
+        cases.push(measure_hand_case(
+            &core,
+            &proto,
+            &sqlite,
+            workload,
+            command.warmup_iterations,
+        ));
+    }
+    if !workload.batch_queries.is_empty() {
+        cases.push(measure_batch_case(
+            &core,
+            &proto,
+            &sqlite,
+            "batch-hand-strategy",
+            &workload.batch_queries,
+            command.warmup_iterations,
+        ));
+    }
     for (size, queries) in &workload.batch_queries_by_size {
         cases.push(measure_batch_case(
             &core,
@@ -226,20 +246,24 @@ pub fn run_three_way_hot_benchmark(
             command.warmup_iterations,
         ));
     }
-    cases.push(measure_hands_by_actions_case(
-        &core,
-        &proto,
-        &sqlite,
-        &workload.hands_by_actions_queries,
-        command.warmup_iterations,
-    ));
-    cases.push(measure_drill_scenarios_case(
-        &core,
-        &proto,
-        &sqlite,
-        &workload.drill_scenario_queries,
-        command.warmup_iterations,
-    ));
+    if !workload.hands_by_actions_queries.is_empty() {
+        cases.push(measure_hands_by_actions_case(
+            &core,
+            &proto,
+            &sqlite,
+            &workload.hands_by_actions_queries,
+            command.warmup_iterations,
+        ));
+    }
+    if !workload.drill_scenario_queries.is_empty() {
+        cases.push(measure_drill_scenarios_case(
+            &core,
+            &proto,
+            &sqlite,
+            &workload.drill_scenario_queries,
+            command.warmup_iterations,
+        ));
+    }
     let report = ThreeWayHotBenchmarkReport {
         generated_at: generated_at_utc(),
         semantic_profile: "proto-v2-non-null-ev".to_owned(),
@@ -259,13 +283,9 @@ pub fn run_three_way_hot_benchmark(
             verify_results: false,
             workload_mode: command.workload_mode,
         },
-        workload: workload_summary(&workload),
+        workload: workload_summary(workload),
         workload_source: workload_source.to_string(),
-        workload_path: command
-            .workload_path
-            .as_ref()
-            .or(command.write_workload_path.as_ref())
-            .map(|path| path.display().to_string()),
+        workload_path,
         totals: ThreeWayBenchmarkTotals {
             core: build_totals(&cases.iter().map(|case| case.core.clone()).collect::<Vec<_>>()),
             proto: build_totals(&cases.iter().map(|case| case.proto.clone()).collect::<Vec<_>>()),
@@ -275,6 +295,7 @@ pub fn run_three_way_hot_benchmark(
         excluded_cases: Vec::new(),
         memory,
         notes: vec![
+            "Development observation only: this runner validates result counts, not complete action payload equality; do not treat its ratios or RSS as a formal Proto / SQLite baseline.".to_owned(),
             "All three engines use the Proto V2 business profile: only action cells with hand_ev IS NOT NULL are retained.".to_owned(),
             "Core hands-by-actions applies a post-filter to its public query result because the core store still exposes NULL EV cells.".to_owned(),
             "Cases with mismatched result counts or non-zero errors are not valid performance evidence.".to_owned(),
@@ -1087,8 +1108,13 @@ fn workload_summary(workload: &BenchmarkWorkload) -> BenchmarkWorkloadSummary {
 }
 
 fn render_markdown(report: &ThreeWayHotBenchmarkReport) -> String {
-    let mut markdown = String::from("# Core vs Proto vs SQLite Hot Benchmark Report\n\n");
+    let mut markdown = String::from(
+        "# Core vs Proto vs SQLite Development Observation (Not a Formal Baseline)\n\n",
+    );
     markdown.push_str(&format!("Generated at: {}\n\n", report.generated_at));
+    markdown.push_str(
+        "> This runner only checks result counts and uses non-equivalent cache and memory profiles. Do not use these ratios or RSS values as Proto / SQLite performance evidence.\n\n",
+    );
     markdown.push_str(&format!(
         "- Semantic profile: `{}`\n",
         report.semantic_profile
@@ -1129,12 +1155,12 @@ fn render_markdown(report: &ThreeWayHotBenchmarkReport) -> String {
             "proto/sqlite avg",
             "proto/core p95",
             "proto/sqlite p95",
-            "result match",
+            "result count match",
             "errors C/P/S",
         ],
         &rows,
     ));
-    markdown.push_str("\nRatios below 1.0 mean Proto was faster.\n\n");
+    markdown.push_str("\nRatios are descriptive development observations only.\n\n");
     if !report.excluded_cases.is_empty() {
         markdown.push_str("## Excluded Cases\n\n");
         for case in &report.excluded_cases {

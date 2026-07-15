@@ -15,11 +15,12 @@ workload 的 cache hit rate。当前随机 500 请求样本有 20 次 matrix cac
 - `.lmbin + .lmidx` 仍是唯一策略数据事实来源；`lines.db` 仍是 metadata 事实来源。
 - `hand_ev IS NULL` 继续在导出时过滤，所有对比继续使用同样的 NULL 过滤与 `x10000` 量化。
 - cache hit 路径继续返回 `Arc<DecodedCompactLineMatrix>`，不复制已解码 payload 或紧凑索引。
-- 所有候选优化必须同时报告延迟、RSS/估算缓存字节和 Core/SQLite 结果一致性。
+- 所有候选优化必须同时报告延迟、RSS/估算缓存字节和 Core/SQLite 全量策略值一致性，不能只比较结果数。
 
-## 阶段 0：冻结可比较基线
+## 阶段 0：重建可比较基线
 
-在现有 `benchmark-three-way-stability` 的固定 workload 上保留原始 JSON/Markdown。至少覆盖：
+旧三方报告已删除：它们只校验结果数，且 SQLite 与 Proto 的预热、缓存 profile 不对等。正式
+replay 基线以 [`replay-memory-benchmark-design.md`](replay-memory-benchmark-design.md) 为准。至少覆盖：
 
 1. `random` workload：检验随机 line 访问下的真实首次访问比例。
 2. `abstract-local` workload：检验同一抽象线附近的复用。
@@ -80,10 +81,8 @@ cargo run -p poker-hands-storage-tools --release -- benchmark-three-way-stabilit
 未传参数时保持原行为：`1024` entries、无限 byte budget。每个组合单独打开 facade，报告中
 保留一份 `matrixCacheSweep` profile，不与三方 hot 的原始报告混合。
 
-2026-07-15 的单维度 smoke 以 30 条随机 hand-strategy 请求验证了输出链路：30 条请求对应
-30 个不同 matrix，因而 30 次均为 `first_seen_miss`、0 次重复 miss 和 0 次 hit。entry capacity
-从 1 增至 4 只将 LRU eviction 从 29 降至 26，未产生 hit；这符合随机 workload 的低复用特性，
-不能据此引入 SLRU。原始报告为 `reports/proto-cache-sweep-smoke.md`。
+随机 hand-strategy smoke 仅用于验证 cache 观测链路；它的三方原始报告已随旧性能基线撤回，
+不得据此引入 SLRU 或推导 Proto / SQLite 性能结论。
 
 ## 行动线 Session 观测
 
@@ -137,9 +136,52 @@ Protobuf decode P50/P95 以及端到端 facade P50/P95。
 容量为：6max `8-12 entries`、8max `12 entries`、9max `12-16 entries`；最大已解码峰值为
 9max:300BB 的 16 entries / 106.3 KiB。
 
-完整表格及逐维原始报告路径见
-[`reports/proto-line-transition-9dimensions-summary.md`](../../reports/proto-line-transition-9dimensions-summary.md)。
-该结果只代表 `F-F` 起点的确定性 traversal，不能直接作为全局 cache default。
+完整表格见 [`reports/proto-line-transition-9dimensions-summary.md`](../../reports/proto-line-transition-9dimensions-summary.md)。
+它是 Proto cache 的 `F-F` 确定性 traversal 观测，不含 SQLite 对比，不能直接作为全局 cache default。
+
+## 业务 Canonical Replay
+
+当业务端已经将多人底池和默认弃牌规则解析为 canonical `concreteLineId` 后，可以使用
+`--line-transition-replay` 测量真实 session 的查询顺序。storage 不接收或推导 concrete line
+字符串，replay 中每一步只包含维度、`concreteLineId` 和 `holeCards`：
+
+```json
+{
+  "schemaVersion": 1,
+  "sessions": [
+    {
+      "name": "three-bet-branch",
+      "requests": [
+        {
+          "strategy": "default",
+          "playerCount": 6,
+          "depthBb": 100,
+          "concreteLineId": 42,
+          "holeCards": "AKs"
+        }
+      ]
+    }
+  ]
+}
+```
+
+运行命令：
+
+```powershell
+cargo run -p poker-hands-storage-tools --release -- benchmark-three-way-stability `
+  --runs 2 --source data/sqlite/range.db `
+  --proto-root reports/proto-range-storage `
+  --core-dir reports/range-strata-current `
+  --line-transition-replay reports/business-replay.json `
+  --matrix-cache-capacities 8,12,16 `
+  --out reports/business-replay-benchmark.json `
+  --md reports/business-replay-benchmark.md
+```
+
+该模式目前只输出开发观测，尚不能产生正式 Core / Proto / SQLite 对比；实现全量策略值校验和
+等价 SQLite cache profile 后，才输出各 profile 的 session P50/P95、命中/未命中、淘汰后重读和
+已解码 matrix 内存。它不能与 source 推导的 `--line-transition-start` /
+`--line-transition-sessions` 或通用 `--workload` 同时使用。
 
 ### 1.3 决策规则
 
@@ -227,7 +269,7 @@ warmup。只有在总成本和 RSS 都在预算内、且用户可感知的首个
 1. 实施阶段 1 observer、decoded byte estimate、open options 和 capacity sweep。
 2. 在 9 维度的 random/abstract-local/replay workload 上生成报告，选择缓存分支。
 3. 若需要，实施 SLRU 或显式 prewarm；不同时实施两者，避免无法归因。
-4. 再运行稳定性、冷启动和三方 hot benchmark；确认所有 Core/Proto/SQLite 结果数和错误数一致。
+4. 再运行稳定性、冷启动和三方 hot benchmark；确认所有 Core/Proto/SQLite 全量策略值一致且错误数为零。
 5. 仅在 decoder 门槛满足后，单独撰写 sidecar 或 wire decoder 的格式设计与 rollout/rollback 方案。
 
 每个阶段至少执行：
