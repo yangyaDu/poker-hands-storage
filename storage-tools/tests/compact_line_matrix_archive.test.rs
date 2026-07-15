@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
-    CompactLineMatrixArchive, CompactLineMatrixArchiveOptions, CompactLineMatrixArchivesOptions,
+    CompactArchiveOpenOptions, CompactLineMatrixArchive, CompactLineMatrixArchiveOptions,
+    CompactLineMatrixArchivesOptions,
 };
 use poker_hands_storage_tools::proto_range_storage::proto::ActionType as CompactActionType;
 use poker_hands_storage_tools::proto_range_storage::query_facade::ProtoRangeStoreFacade;
@@ -60,6 +61,8 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
     assert!(Arc::ptr_eq(&first, &second));
     assert_eq!(archive.matrix_cache_stats().hits, 1);
     assert_eq!(archive.matrix_cache_stats().misses, 1);
+    assert_eq!(archive.matrix_cache_stats().entries, 1);
+    assert!(archive.matrix_cache_stats().resident_estimated_bytes > 0);
     let matrix = first.matrix();
     assert_eq!(matrix.schema_version, 2);
     assert_eq!(matrix.valid_hand_bitmap.len(), 22);
@@ -95,6 +98,49 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
         first.action_value_by_identity(CompactActionType::Allin, 0, 0, 2),
         None
     );
+}
+
+#[test]
+fn compact_archive_respects_matrix_cache_byte_budget() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("compact-archive");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export compact archive");
+
+    let probe = CompactLineMatrixArchive::open(&out_dir).expect("open archive");
+    let first_bytes = probe
+        .read_matrix(1)
+        .expect("read first matrix")
+        .estimated_heap_bytes();
+    let second_bytes = probe
+        .read_matrix(2)
+        .expect("read second matrix")
+        .estimated_heap_bytes();
+    let byte_budget = first_bytes.max(second_bytes);
+
+    let archive = CompactLineMatrixArchive::open_with_options(
+        &out_dir,
+        CompactArchiveOpenOptions {
+            verify_checksums: true,
+            cache_capacity: 2,
+            cache_byte_budget: Some(byte_budget),
+        },
+    )
+    .expect("open archive with byte budget");
+    archive.read_matrix(1).expect("read first matrix");
+    archive.read_matrix(2).expect("read second matrix");
+    let stats = archive.matrix_cache_stats();
+    assert_eq!(stats.entries, 1);
+    assert_eq!(stats.evictions, 1);
+    assert!(stats.resident_estimated_bytes <= byte_budget);
+    assert!(stats.peak_resident_estimated_bytes <= byte_budget);
 }
 
 #[test]

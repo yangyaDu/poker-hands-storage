@@ -14,7 +14,7 @@ use crate::errors::ToolError;
 
 use super::line_matrix_store::{
     CompactArchiveOpenOptions, CompactLineMatrixArchive, DecodedCompactLineMatrix,
-    ProfiledMatrixRead,
+    MatrixCacheStats, ProfiledMatrixRead,
 };
 use super::proto::ActionType;
 
@@ -113,6 +113,10 @@ impl ProtoRangeQueryService {
     pub fn matrix_count(&self, dimension: &DimensionRef) -> Result<u64, ToolError> {
         self.require_dimension(dimension)?;
         Ok(self.store.matrix_count())
+    }
+
+    pub fn matrix_cache_stats(&self) -> MatrixCacheStats {
+        self.store.matrix_cache_stats()
     }
 
     pub fn query_batch(

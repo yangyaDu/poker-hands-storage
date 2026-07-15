@@ -40,3 +40,24 @@ hands-by-actions 复用 core filter 语义：频率阈值严格比较，非空 a
 使用量化后精确匹配。缺少维度、concrete line 或保留手牌时，分别返回
 `DIMENSION_NOT_FOUND`、`CONCRETE_LINE_NOT_FOUND`、`HAND_STRATEGY_NOT_FOUND`；batch 失败返回
 带最小失败下标的 `BATCH_ITEM_ERROR`。
+
+## Concrete Line 语法
+
+具体行动线由 `-` 连接的 action token 组成。当前 token 枚举为 `F`、`C`、`R`、`A`、`X`、`B`。
+其中 `R`、`A`、`X` 的数值是同一个 token 的后缀，例如 `R2`、`A100`；数值不是单独的
+`-` 分段。reader、metadata lookup 与 line-transition benchmark 都把 token 作为不透明字符串，
+只通过移除最后一个 `-<token>` 得到父节点。
+
+空字符串 `""` 是根节点，表示第一个人尚未行动前的 169 手牌矩阵预测。它是顶层 token
+（例如 `F`、`C`、`R...`）的父节点，因此从根节点开始的路径形如
+`"" -> F -> F-F -> F-F-R2`。本文不为这些 token 推断额外业务语义；其规范以导出数据为准。
+
+### Line-transition 规范化
+
+6-max 的 source 数据会省略一轮末尾的默认弃牌。例如 `F-F-R2-R7.5-A100` 不单独存储，
+其可查询 matrix 是 `F-F-R2-R7.5-A100-F`。line-transition benchmark 对每个 token prefix
+先精确查找；若不存在，仅依次追加最多 `player_count` 个 `F`，并且只有追加结果实际存在于
+source concrete-lines 表时才视为规范节点。相邻 prefix 解析到同一规范节点时只查询一次。
+
+该规则用于构造 benchmark 的行动线拓扑，不会在 reader 中凭空制造 concrete line；实际
+Protobuf / SQLite 查询仍以 metadata 中存在的 canonical concrete line 为准。

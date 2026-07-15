@@ -19,7 +19,9 @@ use crate::proto_range_storage::line_matrix_codec::{
     build_compact_index_map, build_compact_line_matrix, count_bits, validate_compact_line_matrix,
     HAND_COUNT_169,
 };
-use crate::proto_range_storage::proto::{ActionType, CompactLineMatrix, HandEncoding};
+use crate::proto_range_storage::proto::{
+    ActionType, CompactActionColumn, CompactLineMatrix, HandEncoding,
+};
 use crate::proto_range_storage::sqlite_source::{load_all_lines, load_rows_with_ev, ResolvedLine};
 
 pub use super::benchmark::{
@@ -36,6 +38,7 @@ use super::format::{
 const ARCHIVE_FORMAT: &str = "LMSP";
 const ARCHIVE_VERSION: u32 = 2;
 const PAYLOAD_SCHEMA: &str = "zenithstrat.gto.v2.CompactLineMatrix";
+pub const DEFAULT_MATRIX_CACHE_CAPACITY: usize = 1024;
 
 fn elapsed_ms(started: Instant) -> f64 {
     started.elapsed().as_secs_f64() * 1000.0
@@ -128,13 +131,15 @@ pub struct CompactLineMatrixArchive {
 pub struct CompactArchiveOpenOptions {
     pub verify_checksums: bool,
     pub cache_capacity: usize,
+    pub cache_byte_budget: Option<usize>,
 }
 
 impl Default for CompactArchiveOpenOptions {
     fn default() -> Self {
         Self {
             verify_checksums: true,
-            cache_capacity: 1024,
+            cache_capacity: DEFAULT_MATRIX_CACHE_CAPACITY,
+            cache_byte_budget: None,
         }
     }
 }
@@ -157,6 +162,12 @@ pub struct DecodedCompactLineMatrix {
 pub struct MatrixCacheStats {
     pub hits: u64,
     pub misses: u64,
+    pub entries: usize,
+    pub resident_estimated_bytes: usize,
+    pub peak_resident_estimated_bytes: usize,
+    pub evictions: u64,
+    pub evicted_estimated_bytes: u64,
+    pub oversized_skips: u64,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -179,29 +190,48 @@ pub struct ProfiledMatrixRead {
 #[derive(Debug)]
 struct SimpleLru {
     capacity: usize,
-    data: std::collections::HashMap<u64, (Arc<DecodedCompactLineMatrix>, u64)>,
+    byte_budget: Option<usize>,
+    data: std::collections::HashMap<u64, CachedMatrix>,
     counter: u64,
     hits: u64,
     misses: u64,
+    resident_estimated_bytes: usize,
+    peak_resident_estimated_bytes: usize,
+    evictions: u64,
+    evicted_estimated_bytes: u64,
+    oversized_skips: u64,
+}
+
+#[derive(Debug)]
+struct CachedMatrix {
+    value: Arc<DecodedCompactLineMatrix>,
+    last_access: u64,
+    estimated_bytes: usize,
 }
 
 impl SimpleLru {
-    fn new(capacity: usize) -> Self {
+    fn new(capacity: usize, byte_budget: Option<usize>) -> Self {
         Self {
-            capacity: capacity.max(1),
+            capacity,
+            byte_budget,
             data: std::collections::HashMap::new(),
             counter: 0,
             hits: 0,
             misses: 0,
+            resident_estimated_bytes: 0,
+            peak_resident_estimated_bytes: 0,
+            evictions: 0,
+            evicted_estimated_bytes: 0,
+            oversized_skips: 0,
         }
     }
 
     fn get(&mut self, key: u64) -> Option<Arc<DecodedCompactLineMatrix>> {
         let entry = self.data.get_mut(&key)?;
         self.counter = self.counter.wrapping_add(1);
-        entry.1 = self.counter;
+        entry.last_access = self.counter;
         self.hits = self.hits.wrapping_add(1);
-        Some(Arc::clone(&entry.0))
+        Some(Arc::clone(&entry.value))
     }
 
     fn record_miss(&mut self) {
@@ -209,23 +239,76 @@ impl SimpleLru {
     }
 
     fn put(&mut self, key: u64, value: Arc<DecodedCompactLineMatrix>) {
-        self.counter = self.counter.wrapping_add(1);
-        if self.data.contains_key(&key) {
-            self.data.insert(key, (value, self.counter));
+        if self.capacity == 0 {
+            self.oversized_skips = self.oversized_skips.wrapping_add(1);
             return;
         }
-        if self.data.len() >= self.capacity {
-            if let Some((&lru_key, _)) = self.data.iter().min_by_key(|(_, (_, seq))| *seq) {
-                self.data.remove(&lru_key);
+        let estimated_bytes = value.estimated_heap_bytes();
+        if self
+            .byte_budget
+            .is_some_and(|budget| estimated_bytes > budget)
+        {
+            self.oversized_skips = self.oversized_skips.wrapping_add(1);
+            return;
+        }
+        self.counter = self.counter.wrapping_add(1);
+        if let Some(previous) = self.data.remove(&key) {
+            self.resident_estimated_bytes = self
+                .resident_estimated_bytes
+                .saturating_sub(previous.estimated_bytes);
+        }
+        while self.data.len() >= self.capacity
+            || self.byte_budget.is_some_and(|budget| {
+                self.resident_estimated_bytes
+                    .saturating_add(estimated_bytes)
+                    > budget
+            })
+        {
+            let Some(lru_key) = self
+                .data
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_access)
+                .map(|(key, _)| *key)
+            else {
+                self.oversized_skips = self.oversized_skips.wrapping_add(1);
+                return;
+            };
+            if let Some(evicted) = self.data.remove(&lru_key) {
+                self.resident_estimated_bytes = self
+                    .resident_estimated_bytes
+                    .saturating_sub(evicted.estimated_bytes);
+                self.evictions = self.evictions.wrapping_add(1);
+                self.evicted_estimated_bytes = self
+                    .evicted_estimated_bytes
+                    .wrapping_add(evicted.estimated_bytes as u64);
             }
         }
-        self.data.insert(key, (value, self.counter));
+        self.resident_estimated_bytes = self
+            .resident_estimated_bytes
+            .saturating_add(estimated_bytes);
+        self.peak_resident_estimated_bytes = self
+            .peak_resident_estimated_bytes
+            .max(self.resident_estimated_bytes);
+        self.data.insert(
+            key,
+            CachedMatrix {
+                value,
+                last_access: self.counter,
+                estimated_bytes,
+            },
+        );
     }
 
     fn stats(&self) -> MatrixCacheStats {
         MatrixCacheStats {
             hits: self.hits,
             misses: self.misses,
+            entries: self.data.len(),
+            resident_estimated_bytes: self.resident_estimated_bytes,
+            peak_resident_estimated_bytes: self.peak_resident_estimated_bytes,
+            evictions: self.evictions,
+            evicted_estimated_bytes: self.evicted_estimated_bytes,
+            oversized_skips: self.oversized_skips,
         }
     }
 }
@@ -558,7 +641,6 @@ impl CompactLineMatrixArchive {
         let data_mmap = unsafe { Mmap::map(&data_file)? };
         // SAFETY: same immutable archive contract as the data mapping above.
         let index_mmap = unsafe { Mmap::map(&index_file)? };
-        let cache_capacity = options.cache_capacity.max(1);
         Ok(Self {
             data_mmap,
             index_mmap,
@@ -571,7 +653,10 @@ impl CompactLineMatrixArchive {
             },
             matrix_count: manifest.matrix_count,
             verify_checksums: options.verify_checksums,
-            cache: Mutex::new(SimpleLru::new(cache_capacity)),
+            cache: Mutex::new(SimpleLru::new(
+                options.cache_capacity,
+                options.cache_byte_budget,
+            )),
         })
     }
 
@@ -778,6 +863,26 @@ impl DecodedCompactLineMatrix {
 
     pub fn matrix(&self) -> &CompactLineMatrix {
         &self.matrix
+    }
+
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let action_payload_bytes = self
+            .matrix
+            .actions
+            .iter()
+            .map(|action| {
+                action.frequency_x10000.capacity() * std::mem::size_of::<u32>()
+                    + action.ev_x10000.capacity() * std::mem::size_of::<i32>()
+                    + action.action_hand_bitmap.capacity()
+            })
+            .sum::<usize>();
+        std::mem::size_of::<Self>()
+            + self.matrix.actions.capacity() * std::mem::size_of::<CompactActionColumn>()
+            + self.matrix.valid_hand_bitmap.capacity()
+            + action_payload_bytes
+            + self.hand_id_to_global_index.capacity() * std::mem::size_of::<i16>()
+            + self.action_offsets.capacity() * std::mem::size_of::<usize>()
+            + self.action_global_to_local_index.capacity() * std::mem::size_of::<i16>()
     }
 
     pub fn action_value(&self, action_index: usize, hand_id: usize) -> Option<HandActionValue> {

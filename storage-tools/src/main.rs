@@ -670,6 +670,11 @@ Commands:
         [--write-workload <path>] [--dimension <strategy:players:depth>]
         [--out <report.json>] [--md <report.md>]
 
+  benchmark-three-way-stability --runs <count> [hot benchmark options]
+        [--matrix-cache-capacities <entries_csv>]
+        [--matrix-cache-byte-budgets <none|bytes|MiB_csv>]
+        [--line-transition-start <concrete_line> --line-transition-sessions <count>]
+
   verify --dir <dir> [--mode standalone|cross] [--source <range.db>]
          [--verify-checksum] [--sample-size <n>] [--max-failures <n>]
          [--out <report.json>] [--md <report.md>]

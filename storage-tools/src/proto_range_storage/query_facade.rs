@@ -14,15 +14,42 @@ use range_store_core::sqlite::{Connection, Value};
 use crate::errors::ToolError;
 
 use super::format::METADATA_FILE_NAME;
-use super::line_matrix_store::{read_compact_archive_dimension, CompactArchiveOpenOptions};
+use super::line_matrix_store::{
+    read_compact_archive_dimension, CompactArchiveOpenOptions, MatrixCacheStats,
+    DEFAULT_MATRIX_CACHE_CAPACITY,
+};
 use super::query_service::{ProfiledHandStrategyResult, ProtoRangeQueryService};
-
-const MATRIX_CACHE_CAPACITY_PER_HANDLE: usize = 1024;
 
 pub struct ProtoRangeStoreFacade {
     archive_dirs: BTreeMap<String, PathBuf>,
-    verify_checksums: bool,
+    options: ProtoRangeStoreFacadeOptions,
     handles: Mutex<HandlePool>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ProtoRangeStoreFacadeOptions {
+    pub max_open_handles: usize,
+    pub matrix_cache_capacity: usize,
+    pub matrix_cache_byte_budget: Option<usize>,
+    pub verify_checksums: bool,
+}
+
+impl Default for ProtoRangeStoreFacadeOptions {
+    fn default() -> Self {
+        Self {
+            max_open_handles: 16,
+            matrix_cache_capacity: DEFAULT_MATRIX_CACHE_CAPACITY,
+            matrix_cache_byte_budget: None,
+            verify_checksums: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct HandlePoolStats {
+    pub hits: u64,
+    pub opens: u64,
+    pub evictions: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -36,6 +63,20 @@ impl ProtoRangeStoreFacade {
         root_dir: impl AsRef<Path>,
         max_open_handles: usize,
         verify_checksums: bool,
+    ) -> Result<Self, ToolError> {
+        Self::open_with_options(
+            root_dir,
+            ProtoRangeStoreFacadeOptions {
+                max_open_handles,
+                verify_checksums,
+                ..ProtoRangeStoreFacadeOptions::default()
+            },
+        )
+    }
+
+    pub fn open_with_options(
+        root_dir: impl AsRef<Path>,
+        options: ProtoRangeStoreFacadeOptions,
     ) -> Result<Self, ToolError> {
         let root_dir = root_dir.as_ref();
         if !root_dir.is_dir() {
@@ -67,8 +108,8 @@ impl ProtoRangeStoreFacade {
 
         Ok(Self {
             archive_dirs,
-            verify_checksums,
-            handles: Mutex::new(HandlePool::new(max_open_handles)),
+            handles: Mutex::new(HandlePool::new(options.max_open_handles)),
+            options,
         })
     }
 
@@ -83,12 +124,26 @@ impl ProtoRangeStoreFacade {
             .len()
     }
 
+    pub fn handle_pool_stats(&self) -> HandlePoolStats {
+        self.handles
+            .lock()
+            .expect("Proto handle pool lock poisoned")
+            .stats()
+    }
+
     pub fn prewarm(&self, dimension: &DimensionRef) -> Result<(), ToolError> {
         self.with_service(dimension, |_| Ok(()))
     }
 
     pub fn matrix_count(&self, dimension: &DimensionRef) -> Result<u64, ToolError> {
         self.with_service(dimension, |service| service.matrix_count(dimension))
+    }
+
+    pub fn matrix_cache_stats(
+        &self,
+        dimension: &DimensionRef,
+    ) -> Result<MatrixCacheStats, ToolError> {
+        self.with_service(dimension, |service| Ok(service.matrix_cache_stats()))
     }
 
     pub fn query_hand_strategy(
@@ -195,7 +250,7 @@ impl ProtoRangeStoreFacade {
             .lock()
             .expect("Proto handle pool lock poisoned");
         let handle = handles.get_or_open(&key, archive_dir);
-        let service = handle.service(archive_dir, self.verify_checksums)?;
+        let service = handle.service(archive_dir, &self.options)?;
         query(service)
     }
 
@@ -223,6 +278,7 @@ struct HandlePool {
     capacity: usize,
     counter: u64,
     entries: HashMap<String, OpenHandle>,
+    stats: HandlePoolStats,
 }
 
 struct OpenHandle {
@@ -243,14 +299,15 @@ impl OpenHandle {
     fn service(
         &mut self,
         archive_dir: &Path,
-        verify_checksums: bool,
+        options: &ProtoRangeStoreFacadeOptions,
     ) -> Result<&ProtoRangeQueryService, ToolError> {
         if self.service.is_none() {
             self.service = Some(ProtoRangeQueryService::open_with_options(
                 archive_dir,
                 CompactArchiveOpenOptions {
-                    verify_checksums,
-                    cache_capacity: MATRIX_CACHE_CAPACITY_PER_HANDLE,
+                    verify_checksums: options.verify_checksums,
+                    cache_capacity: options.matrix_cache_capacity,
+                    cache_byte_budget: options.matrix_cache_byte_budget,
                 },
             )?);
         }
@@ -417,6 +474,7 @@ impl HandlePool {
             capacity: capacity.max(1),
             counter: 0,
             entries: HashMap::new(),
+            stats: HandlePoolStats::default(),
         }
     }
 
@@ -424,15 +482,21 @@ impl HandlePool {
         self.entries.len()
     }
 
+    fn stats(&self) -> HandlePoolStats {
+        self.stats
+    }
+
     fn get_or_open(&mut self, key: &str, archive_dir: &Path) -> &mut OpenHandle {
         self.counter = self.counter.wrapping_add(1);
         let access_sequence = self.counter;
         if self.entries.contains_key(key) {
+            self.stats.hits = self.stats.hits.wrapping_add(1);
             self.entries
                 .get_mut(key)
                 .expect("existing Proto handle")
                 .last_access = access_sequence;
         } else {
+            self.stats.opens = self.stats.opens.wrapping_add(1);
             if self.entries.len() >= self.capacity {
                 if let Some(lru_key) = self
                     .entries
@@ -441,6 +505,7 @@ impl HandlePool {
                     .map(|(key, _)| key.clone())
                 {
                     self.entries.remove(&lru_key);
+                    self.stats.evictions = self.stats.evictions.wrapping_add(1);
                 }
             }
             self.entries.insert(
