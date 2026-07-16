@@ -188,6 +188,22 @@ impl ArchiveManifest {
     }
 }
 
+pub fn read_manifest(dir: &Path) -> Result<ArchiveManifest, ToolError> {
+    let path = dir.join(MANIFEST_FILE_NAME);
+    let manifest: ArchiveManifest = serde_json::from_slice(&fs::read(&path)?)
+        .map_err(|error| ToolError::new("INVALID_V3_MANIFEST", error.to_string()))?;
+    manifest.validate()?;
+    Ok(manifest)
+}
+
+pub fn write_manifest(dir: &Path, manifest: &ArchiveManifest) -> Result<(), ToolError> {
+    manifest.validate()?;
+    let json = serde_json::to_string_pretty(manifest)
+        .map_err(|error| ToolError::new("INVALID_V3_MANIFEST", error.to_string()))?;
+    fs::write(dir.join(MANIFEST_FILE_NAME), format!("{json}\n"))?;
+    Ok(())
+}
+
 fn validate_file(
     file: &ManifestFile,
     expected_name: &str,
@@ -220,3 +236,5 @@ fn validate_file(
 fn invalid_manifest(message: impl Into<String>) -> ToolError {
     ToolError::new("INVALID_V3_MANIFEST", message)
 }
+use std::fs;
+use std::path::Path;

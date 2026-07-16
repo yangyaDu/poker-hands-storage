@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use memmap2::Mmap;
 use prost::Message;
@@ -10,6 +11,7 @@ use range_store_core::sqlite::Connection;
 
 use crate::errors::ToolError;
 
+use super::cache::{ByteCacheStats, ByteLru};
 use super::format::{
     decode_header, decode_payload_locator, decode_section_descriptor, encode_header,
     encode_payload_locator, encode_section_descriptor, FileHeader, FileKind, PayloadLocator,
@@ -21,6 +23,21 @@ use super::metadata_store::ExportedConcreteActionPath;
 use super::proto::HandStrategy;
 use super::source::load_strategy_rows;
 use super::strategy_codec::{build_hand_strategy, DecodedHandStrategy};
+
+pub const DEFAULT_STRATEGY_CACHE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub struct HandStrategyStoreOptions {
+    pub cache_byte_budget: usize,
+}
+
+impl Default for HandStrategyStoreOptions {
+    fn default() -> Self {
+        Self {
+            cache_byte_budget: DEFAULT_STRATEGY_CACHE_BYTE_BUDGET,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct HandStrategyExportOptions {
@@ -90,10 +107,18 @@ pub struct HandStrategyStore {
     _index_file: File,
     record_count: u64,
     locator_offset: usize,
+    cache: Mutex<ByteLru<u32, DecodedHandStrategy>>,
 }
 
 impl HandStrategyStore {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, ToolError> {
+        Self::open_with_options(dir, HandStrategyStoreOptions::default())
+    }
+
+    pub fn open_with_options(
+        dir: impl AsRef<Path>,
+        options: HandStrategyStoreOptions,
+    ) -> Result<Self, ToolError> {
         let dir = dir.as_ref();
         let data_file = File::open(dir.join(HAND_STRATEGIES_DATA_FILE_NAME))?;
         let index_file = File::open(dir.join(HAND_STRATEGIES_INDEX_FILE_NAME))?;
@@ -138,6 +163,7 @@ impl HandStrategyStore {
             _index_file: index_file,
             record_count: data_header.primary_count,
             locator_offset: descriptor_end,
+            cache: Mutex::new(ByteLru::new(options.cache_byte_budget)),
         })
     }
 
@@ -145,13 +171,46 @@ impl HandStrategyStore {
         self.record_count
     }
 
-    pub fn read(&self, concrete_action_path_id: u32) -> Result<DecodedHandStrategy, ToolError> {
+    pub fn cache_stats(&self) -> ByteCacheStats {
+        self.cache
+            .lock()
+            .expect("V3 strategy cache lock poisoned")
+            .stats()
+    }
+
+    pub fn read(
+        &self,
+        concrete_action_path_id: u32,
+    ) -> Result<Arc<DecodedHandStrategy>, ToolError> {
         if concrete_action_path_id == 0 || u64::from(concrete_action_path_id) > self.record_count {
             return Err(ToolError::new(
                 "CONCRETE_LINE_NOT_FOUND",
                 format!("V3 concrete action path id {concrete_action_path_id} is out of range"),
             ));
         }
+        {
+            let mut cache = self.cache.lock().expect("V3 strategy cache lock poisoned");
+            if let Some(strategy) = cache.get(concrete_action_path_id) {
+                return Ok(strategy);
+            }
+        }
+        let strategy = Arc::new(self.read_uncached(concrete_action_path_id)?);
+        let estimated_bytes = strategy.estimated_heap_bytes();
+        self.cache
+            .lock()
+            .expect("V3 strategy cache lock poisoned")
+            .put(
+                concrete_action_path_id,
+                Arc::clone(&strategy),
+                estimated_bytes,
+            );
+        Ok(strategy)
+    }
+
+    fn read_uncached(
+        &self,
+        concrete_action_path_id: u32,
+    ) -> Result<DecodedHandStrategy, ToolError> {
         let record_index = concrete_action_path_id as usize - 1;
         let start = self
             .locator_offset

@@ -252,6 +252,26 @@ impl DecodedHandStrategy {
         &self.strategy
     }
 
+    pub fn estimated_heap_bytes(&self) -> usize {
+        let action_payload_bytes = self
+            .strategy
+            .actions
+            .iter()
+            .map(|action| {
+                action.frequency_x10000.capacity() * std::mem::size_of::<u32>()
+                    + action.hand_ev_x10000.capacity() * std::mem::size_of::<i32>()
+                    + action.action_hand_bitmap.capacity()
+            })
+            .sum::<usize>();
+        std::mem::size_of::<Self>()
+            + self.strategy.actions.capacity() * std::mem::size_of::<ActionStrategyColumn>()
+            + self.strategy.available_hand_bitmap.capacity()
+            + action_payload_bytes
+            + self.hand_id_to_global_index.capacity() * std::mem::size_of::<i16>()
+            + self.action_offsets.capacity() * std::mem::size_of::<usize>()
+            + self.action_global_to_local_index.capacity() * std::mem::size_of::<i16>()
+    }
+
     pub fn action_value(&self, action_index: usize, hand_id: usize) -> Option<DecodedActionValue> {
         let global_index = *self.hand_id_to_global_index.get(hand_id)?;
         if global_index < 0 {

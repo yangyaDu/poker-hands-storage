@@ -1,6 +1,7 @@
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
 
 use memmap2::Mmap;
 use prost::Message;
@@ -11,6 +12,7 @@ use range_store_core::sqlite::Connection;
 
 use crate::errors::ToolError;
 
+use super::cache::{ByteCacheStats, ByteLru};
 use super::format::{
     decode_hash_locator, decode_header, decode_payload_locator, decode_section_descriptor,
     encode_hash_locator, encode_header, encode_payload_locator, encode_section_descriptor,
@@ -24,6 +26,20 @@ use super::proto::{AbstractActionPathEntry, AbstractActionPathPage, DrillScenari
 use super::source::{load_metadata, LoadedMetadata};
 
 pub const DEFAULT_METADATA_PAGE_TARGET_BYTES: usize = 64 * 1024;
+pub const DEFAULT_METADATA_CACHE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
+
+#[derive(Debug, Clone, Copy)]
+pub struct MetadataStoreOptions {
+    pub page_cache_byte_budget: usize,
+}
+
+impl Default for MetadataStoreOptions {
+    fn default() -> Self {
+        Self {
+            page_cache_byte_budget: DEFAULT_METADATA_CACHE_BYTE_BUDGET,
+        }
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct MetadataExportOptions {
@@ -102,11 +118,22 @@ pub fn export_metadata(
 pub struct MetadataStore {
     drill: PagedDataset,
     action_paths: PagedDataset,
+    drill_cache: Mutex<ByteLru<u32, DrillScenarioPage>>,
+    action_path_cache: Mutex<ByteLru<u32, AbstractActionPathPage>>,
 }
 
 impl MetadataStore {
     pub fn open(dir: impl AsRef<Path>) -> Result<Self, ToolError> {
+        Self::open_with_options(dir, MetadataStoreOptions::default())
+    }
+
+    pub fn open_with_options(
+        dir: impl AsRef<Path>,
+        options: MetadataStoreOptions,
+    ) -> Result<Self, ToolError> {
         let dir = dir.as_ref();
+        let drill_budget = options.page_cache_byte_budget / 2;
+        let action_path_budget = options.page_cache_byte_budget - drill_budget;
         Ok(Self {
             drill: PagedDataset::open(
                 &dir.join(DRILL_SCENARIOS_DATA_FILE_NAME),
@@ -126,7 +153,24 @@ impl MetadataStore {
                     SectionKind::SecondaryHashLocators,
                 ],
             )?,
+            drill_cache: Mutex::new(ByteLru::new(drill_budget)),
+            action_path_cache: Mutex::new(ByteLru::new(action_path_budget)),
         })
+    }
+
+    pub fn cache_stats(&self) -> ByteCacheStats {
+        let mut stats = self
+            .drill_cache
+            .lock()
+            .expect("V3 drill page cache lock poisoned")
+            .stats();
+        stats.merge(
+            self.action_path_cache
+                .lock()
+                .expect("V3 action path page cache lock poisoned")
+                .stats(),
+        );
+        stats
     }
 
     pub fn get_drill_scenario_lines(&self, drill_name: &str) -> Result<Vec<String>, ToolError> {
@@ -137,7 +181,7 @@ impl MetadataStore {
             .hash_locators(SectionKind::PrimaryHashLocators, hash)?
         {
             require_entry_locator(locator, "drill")?;
-            let page: DrillScenarioPage = self.drill.read_page(locator.page_id)?;
+            let page = self.read_drill_page(locator.page_id)?;
             let entry = page
                 .entries
                 .get(locator.entry_index as usize)
@@ -217,7 +261,7 @@ impl MetadataStore {
             .hash_locators(SectionKind::PrimaryHashLocators, hash)?
         {
             require_entry_locator(locator, "abstract action path")?;
-            let page: AbstractActionPathPage = self.action_paths.read_page(locator.page_id)?;
+            let page = self.read_action_path_page(locator.page_id)?;
             let entry = page
                 .entries
                 .get(locator.entry_index as usize)
@@ -248,7 +292,7 @@ impl MetadataStore {
                     "Concrete action path locator is missing value index",
                 ));
             }
-            let page: AbstractActionPathPage = self.action_paths.read_page(locator.page_id)?;
+            let page = self.read_action_path_page(locator.page_id)?;
             let entry = page
                 .entries
                 .get(locator.entry_index as usize)
@@ -277,6 +321,84 @@ impl MetadataStore {
         }
         matched.ok_or_else(concrete_not_found)
     }
+
+    fn read_drill_page(&self, page_id: u32) -> Result<Arc<DrillScenarioPage>, ToolError> {
+        {
+            let mut cache = self
+                .drill_cache
+                .lock()
+                .expect("V3 drill page cache lock poisoned");
+            if let Some(page) = cache.get(page_id) {
+                return Ok(page);
+            }
+        }
+        let page = Arc::new(self.drill.read_page(page_id)?);
+        let estimated_bytes = estimate_drill_page_bytes(&page);
+        self.drill_cache
+            .lock()
+            .expect("V3 drill page cache lock poisoned")
+            .put(page_id, Arc::clone(&page), estimated_bytes);
+        Ok(page)
+    }
+
+    fn read_action_path_page(
+        &self,
+        page_id: u32,
+    ) -> Result<Arc<AbstractActionPathPage>, ToolError> {
+        {
+            let mut cache = self
+                .action_path_cache
+                .lock()
+                .expect("V3 action path page cache lock poisoned");
+            if let Some(page) = cache.get(page_id) {
+                return Ok(page);
+            }
+        }
+        let page = Arc::new(self.action_paths.read_page(page_id)?);
+        let estimated_bytes = estimate_action_path_page_bytes(&page);
+        self.action_path_cache
+            .lock()
+            .expect("V3 action path page cache lock poisoned")
+            .put(page_id, Arc::clone(&page), estimated_bytes);
+        Ok(page)
+    }
+}
+
+fn estimate_drill_page_bytes(page: &DrillScenarioPage) -> usize {
+    std::mem::size_of::<DrillScenarioPage>()
+        + page.entries.capacity() * std::mem::size_of::<super::proto::DrillScenarioEntry>()
+        + page
+            .entries
+            .iter()
+            .map(|entry| {
+                entry.drill_name.capacity()
+                    + entry.abstract_action_paths.capacity() * std::mem::size_of::<String>()
+                    + entry
+                        .abstract_action_paths
+                        .iter()
+                        .map(String::capacity)
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
+}
+
+fn estimate_action_path_page_bytes(page: &AbstractActionPathPage) -> usize {
+    std::mem::size_of::<AbstractActionPathPage>()
+        + page.entries.capacity() * std::mem::size_of::<AbstractActionPathEntry>()
+        + page
+            .entries
+            .iter()
+            .map(|entry| {
+                entry.abstract_action_path.capacity()
+                    + entry.concrete_action_paths.capacity()
+                        * std::mem::size_of::<super::proto::ConcreteActionPathRef>()
+                    + entry
+                        .concrete_action_paths
+                        .iter()
+                        .map(|path| path.concrete_action_path.capacity())
+                        .sum::<usize>()
+            })
+            .sum::<usize>()
 }
 
 struct MetadataPaths {
