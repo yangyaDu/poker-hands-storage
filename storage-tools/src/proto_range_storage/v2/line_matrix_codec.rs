@@ -3,9 +3,9 @@ use std::collections::{BTreeMap, HashSet};
 use range_store_core::hole_cards::get_hand_id;
 
 use crate::errors::ToolError;
-use crate::proto_range_storage::sqlite_source::SourceRow;
+use crate::proto_range_storage::v2::sqlite_source::SourceRow;
 
-use crate::proto_range_storage::proto::{
+use crate::proto_range_storage::v2::proto::{
     ActionType, CompactActionColumn, CompactLineMatrix, HandEncoding,
 };
 

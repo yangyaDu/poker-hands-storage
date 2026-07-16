@@ -13,12 +13,12 @@ use range_store_core::sqlite::{Connection, Value};
 
 use crate::errors::ToolError;
 
-use super::format::METADATA_FILE_NAME;
-use super::line_matrix_store::{
+use crate::proto_range_storage::v2::format::METADATA_FILE_NAME;
+use crate::proto_range_storage::v2::line_matrix_store::{
     read_compact_archive_dimension, CompactArchiveOpenOptions, MatrixCacheStats,
     DEFAULT_MATRIX_CACHE_CAPACITY,
 };
-use super::query_service::{ProfiledHandStrategyResult, ProtoRangeQueryService};
+use crate::proto_range_storage::v2::query_service::{ProfiledHandStrategyResult, ProtoRangeQueryService};
 
 pub struct ProtoRangeStoreFacade {
     archive_dirs: BTreeMap<String, PathBuf>,

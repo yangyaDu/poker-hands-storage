@@ -20,7 +20,7 @@ use crate::benchmark::types::{drill_scenario_table_name, range_table_name};
 use crate::benchmark::workload::drill_depth_column;
 use crate::errors::ToolError;
 
-use super::query_facade::ProtoRangeStoreFacade;
+use crate::proto_range_storage::v2::query_facade::ProtoRangeStoreFacade;
 
 #[derive(Debug, Clone)]
 pub struct ThreeWayColdBenchmarkCommand {

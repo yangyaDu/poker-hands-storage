@@ -12,11 +12,11 @@ use range_store_core::query::{
 
 use crate::errors::ToolError;
 
-use super::line_matrix_store::{
+use crate::proto_range_storage::v2::line_matrix_store::{
     CompactArchiveOpenOptions, CompactLineMatrixArchive, DecodedCompactLineMatrix,
     MatrixCacheInsertOutcome, MatrixCacheStats, ProfiledMatrixRead,
 };
-use super::proto::ActionType;
+use crate::proto_range_storage::v2::proto::ActionType;
 
 pub struct ProtoRangeQueryService {
     store: CompactLineMatrixArchive,

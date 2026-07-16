@@ -2,16 +2,16 @@ use std::fs;
 use std::process::Command;
 use std::sync::Arc;
 
-use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
+use poker_hands_storage_tools::proto_range_storage::v2::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
     CompactArchiveOpenOptions, CompactLineMatrixArchive, CompactLineMatrixArchiveOptions,
     CompactLineMatrixArchivesOptions, MatrixCacheInsertOutcome,
 };
-use poker_hands_storage_tools::proto_range_storage::proto::ActionType as CompactActionType;
-use poker_hands_storage_tools::proto_range_storage::query_facade::{
+use poker_hands_storage_tools::proto_range_storage::v2::proto::ActionType as CompactActionType;
+use poker_hands_storage_tools::proto_range_storage::v2::query_facade::{
     ProtoRangeStoreFacade, ProtoRangeStoreFacadeOptions,
 };
-use poker_hands_storage_tools::proto_range_storage::query_service::ProtoRangeQueryService;
+use poker_hands_storage_tools::proto_range_storage::v2::query_service::ProtoRangeQueryService;
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions};
 use range_store_core::dimension::{DimensionRef, DimensionSpec};
 use range_store_core::hole_cards::hand_code_from_id;
@@ -86,7 +86,7 @@ fn compact_archive_filters_null_ev_and_uses_action_local_compact_indexes() {
     assert_eq!(
         first.action_value(call_index, 2),
         Some(
-            poker_hands_storage_tools::proto_range_storage::line_matrix_store::HandActionValue {
+            poker_hands_storage_tools::proto_range_storage::v2::line_matrix_store::HandActionValue {
                 frequency_x10000: 2_500,
                 ev_x10000: 0,
             }

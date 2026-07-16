@@ -16,24 +16,24 @@ use poker_hands_storage_tools::benchmark::run_drill_metadata_benchmark;
 use poker_hands_storage_tools::benchmark::run_hot_benchmark;
 use poker_hands_storage_tools::benchmark::run_native_benchmark;
 use poker_hands_storage_tools::errors::ToolError;
-use poker_hands_storage_tools::proto_range_storage::cli::{
+use poker_hands_storage_tools::proto_range_storage::v2::cli::{
     parse_benchmark_compact_vs_core_args, parse_compact_vs_core_cold_worker_args,
     parse_export_all_compact_line_matrix_archives_args,
     parse_export_compact_line_matrix_archive_args, parse_three_way_hot_benchmark_args,
     parse_verify_compact_line_matrix_archive_args,
 };
-use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
+use poker_hands_storage_tools::proto_range_storage::v2::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
     run_compact_vs_core_benchmark, run_compact_vs_core_cold_worker, CompactLineMatrixArchive,
 };
-use poker_hands_storage_tools::proto_range_storage::three_way_benchmark::{
+use poker_hands_storage_tools::proto_range_storage::v2::three_way_benchmark::{
     run_three_way_hot_benchmark, run_three_way_memory_worker_from_stdin,
 };
-use poker_hands_storage_tools::proto_range_storage::three_way_cold_benchmark::{
+use poker_hands_storage_tools::proto_range_storage::v2::three_way_cold_benchmark::{
     parse_three_way_cold_benchmark_args, run_three_way_cold_benchmark,
     run_three_way_cold_worker_from_stdin,
 };
-use poker_hands_storage_tools::proto_range_storage::three_way_stability_benchmark::{
+use poker_hands_storage_tools::proto_range_storage::v2::three_way_stability_benchmark::{
     parse_three_way_stability_benchmark_args, run_three_way_stability_benchmark,
 };
 use poker_hands_storage_tools::proto_range_storage::v3::archive::{

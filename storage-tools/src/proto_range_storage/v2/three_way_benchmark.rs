@@ -32,7 +32,7 @@ use crate::benchmark::workload::{
 };
 use crate::errors::ToolError;
 
-use super::query_facade::ProtoRangeStoreFacade;
+use crate::proto_range_storage::v2::query_facade::ProtoRangeStoreFacade;
 
 const ACTION_AMOUNT_TOLERANCE: f64 = 1e-6;
 

@@ -9,12 +9,12 @@ use crate::benchmark::cold::types::ColdStartMode;
 use crate::benchmark::types::{normalize_batch_sizes, WorkloadMode};
 use crate::errors::ToolError;
 
-use super::line_matrix_store::{
+use crate::proto_range_storage::v2::line_matrix_store::{
     CompactLineMatrixArchiveOptions, CompactLineMatrixArchivesOptions,
     CompactVsCoreBenchmarkCommand, CompactVsCoreColdWorkerCommand, CompactVsCoreEngine,
     CompactVsCoreQuery,
 };
-use super::three_way_benchmark::ThreeWayHotBenchmarkCommand;
+use crate::proto_range_storage::v2::three_way_benchmark::ThreeWayHotBenchmarkCommand;
 
 pub fn parse_three_way_hot_benchmark_args(
     args: Vec<String>,
