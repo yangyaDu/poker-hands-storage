@@ -22,6 +22,16 @@ pub(crate) struct LoadedMetadata {
     pub concrete_paths: Vec<ConcretePathMapping>,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct SourceStrategyRow {
+    pub hole_cards: String,
+    pub action_name: String,
+    pub action_size: f64,
+    pub amount_bb: f64,
+    pub frequency: f64,
+    pub hand_ev: Option<f64>,
+}
+
 pub(crate) fn load_metadata(
     connection: &Connection,
     dimension: &DimensionSpec,
@@ -73,6 +83,41 @@ pub(crate) fn load_metadata(
         abstract_action_paths,
         concrete_paths,
     })
+}
+
+pub(crate) fn load_strategy_rows(
+    connection: &Connection,
+    dimension: &DimensionSpec,
+    source_concrete_action_path_id: u32,
+) -> Result<Vec<SourceStrategyRow>, ToolError> {
+    let table = quote_identifier(&dimension.range_table())?;
+    let mut statement = connection.prepare(&format!(
+        "SELECT hole_cards, action_name, action_size, amount_bb, frequency, hand_ev
+         FROM {table}
+         WHERE concrete_line_id = ?1
+         ORDER BY hole_cards, action_name, action_size, amount_bb"
+    ))?;
+    statement.start(&[Value::from(source_concrete_action_path_id)])?;
+    let mut rows = Vec::new();
+    while statement.step_row()? {
+        rows.push(SourceStrategyRow {
+            hole_cards: statement.column_text(0)?,
+            action_name: statement.column_text(1)?,
+            action_size: statement.column_f64(2),
+            amount_bb: statement.column_f64(3),
+            frequency: statement.column_f64(4),
+            hand_ev: statement.column_optional_f64(5),
+        });
+    }
+    if rows.is_empty() {
+        return Err(ToolError::new(
+            "V3_HAND_STRATEGY_EMPTY",
+            format!(
+                "Source concrete action path id {source_concrete_action_path_id} has no strategy rows"
+            ),
+        ));
+    }
+    Ok(rows)
 }
 
 fn load_concrete_paths(

@@ -37,6 +37,10 @@ name = "proto_v3_metadata_test"
 path = "tests/proto_v3_metadata.test.rs"
 
 [[test]]
+name = "proto_v3_hand_strategy_test"
+path = "tests/proto_v3_hand_strategy.test.rs"
+
+[[test]]
 name = "verification_float32_precision_test"
 path = "tests/verification/float32_precision.test.rs"
 
