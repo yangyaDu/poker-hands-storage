@@ -168,11 +168,21 @@ pub struct MatrixCacheStats {
     pub evictions: u64,
     pub evicted_estimated_bytes: u64,
     pub oversized_skips: u64,
+    pub cache_disabled_skips: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixCacheInsertOutcome {
+    NotAttempted,
+    Cached,
+    Disabled,
+    Oversized,
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct MatrixReadPhaseProfile {
     pub cache_hit: bool,
+    pub cache_insert_outcome: MatrixCacheInsertOutcome,
     pub cache_lookup_ms: f64,
     pub index_payload_ms: f64,
     pub protobuf_decode_ms: f64,
@@ -200,6 +210,7 @@ struct SimpleLru {
     evictions: u64,
     evicted_estimated_bytes: u64,
     oversized_skips: u64,
+    cache_disabled_skips: u64,
 }
 
 #[derive(Debug)]
@@ -223,6 +234,7 @@ impl SimpleLru {
             evictions: 0,
             evicted_estimated_bytes: 0,
             oversized_skips: 0,
+            cache_disabled_skips: 0,
         }
     }
 
@@ -238,10 +250,10 @@ impl SimpleLru {
         self.misses = self.misses.wrapping_add(1);
     }
 
-    fn put(&mut self, key: u64, value: Arc<DecodedCompactLineMatrix>) {
+    fn put(&mut self, key: u64, value: Arc<DecodedCompactLineMatrix>) -> MatrixCacheInsertOutcome {
         if self.capacity == 0 {
-            self.oversized_skips = self.oversized_skips.wrapping_add(1);
-            return;
+            self.cache_disabled_skips = self.cache_disabled_skips.wrapping_add(1);
+            return MatrixCacheInsertOutcome::Disabled;
         }
         let estimated_bytes = value.estimated_heap_bytes();
         if self
@@ -249,7 +261,7 @@ impl SimpleLru {
             .is_some_and(|budget| estimated_bytes > budget)
         {
             self.oversized_skips = self.oversized_skips.wrapping_add(1);
-            return;
+            return MatrixCacheInsertOutcome::Oversized;
         }
         self.counter = self.counter.wrapping_add(1);
         if let Some(previous) = self.data.remove(&key) {
@@ -271,7 +283,7 @@ impl SimpleLru {
                 .map(|(key, _)| *key)
             else {
                 self.oversized_skips = self.oversized_skips.wrapping_add(1);
-                return;
+                return MatrixCacheInsertOutcome::Oversized;
             };
             if let Some(evicted) = self.data.remove(&lru_key) {
                 self.resident_estimated_bytes = self
@@ -297,6 +309,7 @@ impl SimpleLru {
                 estimated_bytes,
             },
         );
+        MatrixCacheInsertOutcome::Cached
     }
 
     fn stats(&self) -> MatrixCacheStats {
@@ -309,6 +322,7 @@ impl SimpleLru {
             evictions: self.evictions,
             evicted_estimated_bytes: self.evicted_estimated_bytes,
             oversized_skips: self.oversized_skips,
+            cache_disabled_skips: self.cache_disabled_skips,
         }
     }
 }
@@ -695,6 +709,7 @@ impl CompactLineMatrixArchive {
                     matrix: decoded,
                     profile: MatrixReadPhaseProfile {
                         cache_hit: true,
+                        cache_insert_outcome: MatrixCacheInsertOutcome::NotAttempted,
                         cache_lookup_ms: elapsed_ms(stage_started),
                         index_payload_ms: 0.0,
                         protobuf_decode_ms: 0.0,
@@ -711,14 +726,15 @@ impl CompactLineMatrixArchive {
             self.decode_matrix_uncached_profiled(concrete_line_id, self.verify_checksums)?;
         let decoded = Arc::new(decoded);
         let stage_started = Instant::now();
-        {
+        let cache_insert_outcome = {
             let mut cache = self.cache.lock().expect("compact cache lock poisoned");
-            cache.put(concrete_line_id, Arc::clone(&decoded));
-        }
+            cache.put(concrete_line_id, Arc::clone(&decoded))
+        };
         Ok(ProfiledMatrixRead {
             matrix: decoded,
             profile: MatrixReadPhaseProfile {
                 cache_hit: false,
+                cache_insert_outcome,
                 cache_lookup_ms,
                 index_payload_ms,
                 protobuf_decode_ms,

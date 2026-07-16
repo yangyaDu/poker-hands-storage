@@ -1064,7 +1064,7 @@ fn write_idx_record(
     Ok(())
 }
 
-fn sha256_file(path: &Path) -> Result<String, ToolError> {
+pub(crate) fn sha256_file(path: &Path) -> Result<String, ToolError> {
     let mut file = File::open(path)?;
     let mut hasher = Sha256State::new();
     let mut buffer = vec![0u8; 1024 * 1024];
@@ -1076,6 +1076,12 @@ fn sha256_file(path: &Path) -> Result<String, ToolError> {
         hasher.update(&buffer[..read]);
     }
     Ok(to_hex(&hasher.finalize()))
+}
+
+pub(crate) fn sha256_bytes(bytes: &[u8]) -> String {
+    let mut hasher = Sha256State::new();
+    hasher.update(bytes);
+    to_hex(&hasher.finalize())
 }
 
 struct Sha256State {

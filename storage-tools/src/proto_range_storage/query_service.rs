@@ -14,7 +14,7 @@ use crate::errors::ToolError;
 
 use super::line_matrix_store::{
     CompactArchiveOpenOptions, CompactLineMatrixArchive, DecodedCompactLineMatrix,
-    MatrixCacheStats, ProfiledMatrixRead,
+    MatrixCacheInsertOutcome, MatrixCacheStats, ProfiledMatrixRead,
 };
 use super::proto::ActionType;
 
@@ -28,6 +28,7 @@ pub struct HandStrategyPhaseProfile {
     pub parse_hand_ms: f64,
     pub matrix_read_ms: f64,
     pub matrix_cache_hit: bool,
+    pub matrix_cache_insert_outcome: MatrixCacheInsertOutcome,
     pub matrix_cache_lookup_ms: f64,
     pub matrix_index_payload_ms: f64,
     pub matrix_protobuf_decode_ms: f64,
@@ -99,6 +100,7 @@ impl ProtoRangeQueryService {
                 parse_hand_ms,
                 matrix_read_ms,
                 matrix_cache_hit: matrix.profile.cache_hit,
+                matrix_cache_insert_outcome: matrix.profile.cache_insert_outcome,
                 matrix_cache_lookup_ms: matrix.profile.cache_lookup_ms,
                 matrix_index_payload_ms: matrix.profile.index_payload_ms,
                 matrix_protobuf_decode_ms: matrix.profile.protobuf_decode_ms,

@@ -52,10 +52,24 @@ pub struct HandlePoolStats {
     pub evictions: u64,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct FacadeMatrixCacheStats {
+    pub open_handle_count: usize,
+    pub initialized_matrix_cache_handle_count: usize,
+    pub entries: usize,
+    pub resident_estimated_bytes: usize,
+    pub peak_resident_estimated_bytes: usize,
+    pub evictions: u64,
+    pub evicted_estimated_bytes: u64,
+    pub oversized_skips: u64,
+    pub cache_disabled_skips: u64,
+}
+
 #[derive(Debug, Clone)]
 pub struct FacadeProfiledHandStrategyResult {
     pub profiled: ProfiledHandStrategyResult,
     pub facade_total_ms: f64,
+    pub dimension_handle_opened: bool,
 }
 
 impl ProtoRangeStoreFacade {
@@ -117,6 +131,19 @@ impl ProtoRangeStoreFacade {
         self.archive_dirs.keys().cloned().collect()
     }
 
+    pub fn archive_manifest_path(&self, dimension: &DimensionRef) -> Result<PathBuf, ToolError> {
+        let key = dimension_key(dimension);
+        self.archive_dirs
+            .get(&key)
+            .map(|archive_dir| archive_dir.join("manifest.json"))
+            .ok_or_else(|| {
+                ToolError::new(
+                    "DIMENSION_NOT_FOUND",
+                    format!("Proto range storage does not contain dimension {key}"),
+                )
+            })
+    }
+
     pub fn open_handle_count(&self) -> usize {
         self.handles
             .lock()
@@ -146,6 +173,13 @@ impl ProtoRangeStoreFacade {
         self.with_service(dimension, |service| Ok(service.matrix_cache_stats()))
     }
 
+    pub fn aggregate_matrix_cache_stats(&self) -> FacadeMatrixCacheStats {
+        self.handles
+            .lock()
+            .expect("Proto handle pool lock poisoned")
+            .aggregate_matrix_cache_stats()
+    }
+
     pub fn query_hand_strategy(
         &self,
         dimension: &DimensionRef,
@@ -164,12 +198,17 @@ impl ProtoRangeStoreFacade {
         hole_cards: &str,
     ) -> Result<FacadeProfiledHandStrategyResult, ToolError> {
         let started = Instant::now();
-        let profiled = self.with_service(dimension, |service| {
-            service.profile_hand_strategy(dimension, concrete_line_id, hole_cards)
-        })?;
+        let (profiled, dimension_handle_opened) =
+            self.with_service_access(dimension, |service, dimension_handle_opened| {
+                Ok((
+                    service.profile_hand_strategy(dimension, concrete_line_id, hole_cards)?,
+                    dimension_handle_opened,
+                ))
+            })?;
         Ok(FacadeProfiledHandStrategyResult {
             profiled,
             facade_total_ms: started.elapsed().as_secs_f64() * 1000.0,
+            dimension_handle_opened,
         })
     }
 
@@ -238,6 +277,14 @@ impl ProtoRangeStoreFacade {
         dimension: &DimensionRef,
         query: impl FnOnce(&ProtoRangeQueryService) -> Result<T, ToolError>,
     ) -> Result<T, ToolError> {
+        self.with_service_access(dimension, |service, _| query(service))
+    }
+
+    fn with_service_access<T>(
+        &self,
+        dimension: &DimensionRef,
+        query: impl FnOnce(&ProtoRangeQueryService, bool) -> Result<T, ToolError>,
+    ) -> Result<T, ToolError> {
         let key = dimension_key(dimension);
         let archive_dir = self.archive_dirs.get(&key).ok_or_else(|| {
             ToolError::new(
@@ -249,9 +296,9 @@ impl ProtoRangeStoreFacade {
             .handles
             .lock()
             .expect("Proto handle pool lock poisoned");
-        let handle = handles.get_or_open(&key, archive_dir);
+        let (handle, dimension_handle_opened) = handles.get_or_open(&key, archive_dir);
         let service = handle.service(archive_dir, &self.options)?;
-        query(service)
+        query(service, dimension_handle_opened)
     }
 
     fn with_metadata<T>(
@@ -270,7 +317,8 @@ impl ProtoRangeStoreFacade {
             .handles
             .lock()
             .expect("Proto handle pool lock poisoned");
-        query(&mut handles.get_or_open(&key, archive_dir).metadata)
+        let (handle, _) = handles.get_or_open(&key, archive_dir);
+        query(&mut handle.metadata)
     }
 }
 
@@ -486,10 +534,39 @@ impl HandlePool {
         self.stats
     }
 
-    fn get_or_open(&mut self, key: &str, archive_dir: &Path) -> &mut OpenHandle {
+    fn aggregate_matrix_cache_stats(&self) -> FacadeMatrixCacheStats {
+        let mut aggregate = FacadeMatrixCacheStats {
+            open_handle_count: self.entries.len(),
+            ..FacadeMatrixCacheStats::default()
+        };
+        for handle in self.entries.values() {
+            let Some(service) = handle.service.as_ref() else {
+                continue;
+            };
+            let stats = service.matrix_cache_stats();
+            aggregate.initialized_matrix_cache_handle_count += 1;
+            aggregate.entries += stats.entries;
+            aggregate.resident_estimated_bytes += stats.resident_estimated_bytes;
+            aggregate.peak_resident_estimated_bytes += stats.peak_resident_estimated_bytes;
+            aggregate.evictions = aggregate.evictions.wrapping_add(stats.evictions);
+            aggregate.evicted_estimated_bytes = aggregate
+                .evicted_estimated_bytes
+                .wrapping_add(stats.evicted_estimated_bytes);
+            aggregate.oversized_skips = aggregate
+                .oversized_skips
+                .wrapping_add(stats.oversized_skips);
+            aggregate.cache_disabled_skips = aggregate
+                .cache_disabled_skips
+                .wrapping_add(stats.cache_disabled_skips);
+        }
+        aggregate
+    }
+
+    fn get_or_open(&mut self, key: &str, archive_dir: &Path) -> (&mut OpenHandle, bool) {
         self.counter = self.counter.wrapping_add(1);
         let access_sequence = self.counter;
-        if self.entries.contains_key(key) {
+        let opened = !self.entries.contains_key(key);
+        if !opened {
             self.stats.hits = self.stats.hits.wrapping_add(1);
             self.entries
                 .get_mut(key)
@@ -513,6 +590,9 @@ impl HandlePool {
                 OpenHandle::new(archive_dir, access_sequence),
             );
         }
-        self.entries.get_mut(key).expect("inserted Proto handle")
+        (
+            self.entries.get_mut(key).expect("inserted Proto handle"),
+            opened,
+        )
     }
 }

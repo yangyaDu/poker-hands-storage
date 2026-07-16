@@ -5,10 +5,12 @@ use std::sync::Arc;
 use poker_hands_storage_tools::proto_range_storage::line_matrix_store::{
     export_all_compact_line_matrix_archives, export_compact_line_matrix_archive,
     CompactArchiveOpenOptions, CompactLineMatrixArchive, CompactLineMatrixArchiveOptions,
-    CompactLineMatrixArchivesOptions,
+    CompactLineMatrixArchivesOptions, MatrixCacheInsertOutcome,
 };
 use poker_hands_storage_tools::proto_range_storage::proto::ActionType as CompactActionType;
-use poker_hands_storage_tools::proto_range_storage::query_facade::ProtoRangeStoreFacade;
+use poker_hands_storage_tools::proto_range_storage::query_facade::{
+    ProtoRangeStoreFacade, ProtoRangeStoreFacadeOptions,
+};
 use poker_hands_storage_tools::proto_range_storage::query_service::ProtoRangeQueryService;
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions};
 use range_store_core::dimension::{DimensionRef, DimensionSpec};
@@ -141,6 +143,55 @@ fn compact_archive_respects_matrix_cache_byte_budget() {
     assert_eq!(stats.evictions, 1);
     assert!(stats.resident_estimated_bytes <= byte_budget);
     assert!(stats.peak_resident_estimated_bytes <= byte_budget);
+}
+
+#[test]
+fn compact_archive_profiles_disabled_and_oversized_cache_inserts_separately() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let out_dir = temp.path().join("compact-archive");
+    export_compact_line_matrix_archive(&CompactLineMatrixArchiveOptions {
+        source_db,
+        out_dir: out_dir.clone(),
+        dimension: DimensionSpec::parse("default:6:100").expect("dimension"),
+        overwrite: false,
+    })
+    .expect("export compact archive");
+
+    let disabled = CompactLineMatrixArchive::open_with_options(
+        &out_dir,
+        CompactArchiveOpenOptions {
+            verify_checksums: true,
+            cache_capacity: 0,
+            cache_byte_budget: None,
+        },
+    )
+    .expect("open archive with disabled cache");
+    let disabled_read = disabled.read_matrix_profiled(1).expect("read matrix");
+    assert_eq!(
+        disabled_read.profile.cache_insert_outcome,
+        MatrixCacheInsertOutcome::Disabled
+    );
+    assert_eq!(disabled.matrix_cache_stats().cache_disabled_skips, 1);
+    assert_eq!(disabled.matrix_cache_stats().oversized_skips, 0);
+
+    let oversized = CompactLineMatrixArchive::open_with_options(
+        &out_dir,
+        CompactArchiveOpenOptions {
+            verify_checksums: true,
+            cache_capacity: 1,
+            cache_byte_budget: Some(1),
+        },
+    )
+    .expect("open archive with undersized byte budget");
+    let oversized_read = oversized.read_matrix_profiled(1).expect("read matrix");
+    assert_eq!(
+        oversized_read.profile.cache_insert_outcome,
+        MatrixCacheInsertOutcome::Oversized
+    );
+    assert_eq!(oversized.matrix_cache_stats().cache_disabled_skips, 0);
+    assert_eq!(oversized.matrix_cache_stats().oversized_skips, 1);
 }
 
 #[test]
@@ -671,6 +722,67 @@ fn proto_range_store_facade_discovers_dimensions_and_limits_open_handles() {
         .query_hand_strategy(&DimensionRef::with_default_strategy(9, 100), 1, "AA")
         .expect_err("unknown dimension must fail");
     assert_eq!(error.code(), "DIMENSION_NOT_FOUND");
+}
+
+#[test]
+fn proto_range_store_facade_aggregates_resident_matrix_cache_across_handles() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let source_db = temp.path().join("range.db");
+    create_source_fixture(&source_db);
+    let connection = Connection::open(&source_db, false).expect("open fixture database");
+    connection
+        .exec(
+            "CREATE TABLE concrete_lines_default_8max_200BB AS
+               SELECT * FROM concrete_lines_default_6max_100BB;
+             CREATE TABLE range_data_default_8max_200BB AS
+               SELECT * FROM range_data_default_6max_100BB;",
+        )
+        .expect("add second dimension");
+    drop(connection);
+
+    let root_dir = temp.path().join("all-compact-archives");
+    export_all_compact_line_matrix_archives(&CompactLineMatrixArchivesOptions {
+        source_db,
+        out_dir: root_dir.clone(),
+        overwrite: false,
+    })
+    .expect("export all compact dimensions");
+
+    let facade = ProtoRangeStoreFacade::open_with_options(
+        &root_dir,
+        ProtoRangeStoreFacadeOptions {
+            max_open_handles: 2,
+            matrix_cache_capacity: 4,
+            matrix_cache_byte_budget: None,
+            verify_checksums: true,
+        },
+    )
+    .expect("open Proto facade");
+    let six_max = DimensionRef::with_default_strategy(6, 100);
+    let eight_max = DimensionRef::with_default_strategy(8, 200);
+    let first_profile = facade
+        .profile_hand_strategy(&six_max, 1, "AA")
+        .expect("profile first 6max query");
+    assert!(first_profile.dimension_handle_opened);
+    let repeated_profile = facade
+        .profile_hand_strategy(&six_max, 1, "AA")
+        .expect("profile repeated 6max query");
+    assert!(!repeated_profile.dimension_handle_opened);
+    facade
+        .query_hand_strategy(&eight_max, 1, "AA")
+        .expect("query 8max matrix");
+
+    let aggregate = facade.aggregate_matrix_cache_stats();
+    assert_eq!(aggregate.open_handle_count, 2);
+    assert_eq!(aggregate.entries, 2);
+    assert!(aggregate.resident_estimated_bytes > 0);
+    assert!(
+        aggregate.resident_estimated_bytes
+            > facade
+                .matrix_cache_stats(&six_max)
+                .expect("6max stats")
+                .resident_estimated_bytes
+    );
 }
 
 #[test]

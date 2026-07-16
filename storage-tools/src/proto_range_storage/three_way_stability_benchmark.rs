@@ -7,7 +7,7 @@ use range_store_core::dimension::{get_concrete_lines_table_name, quote_identifie
 use range_store_core::sqlite::Connection;
 use serde::{Deserialize, Serialize};
 
-use crate::benchmark::cli::{next_value, parse_usize, parse_usize_list};
+use crate::benchmark::cli::{next_value, parse_usize};
 use crate::benchmark::cold::types::LatencySummary;
 use crate::benchmark::memory_snapshot::{get_memory_snapshot, MemorySnapshot};
 use crate::benchmark::report_support::{
@@ -18,13 +18,17 @@ use crate::benchmark::types::{
 };
 use crate::benchmark::workload::{create_benchmark_workload, read_workload_json};
 use crate::errors::ToolError;
+use crate::range_store_builder::{sha256_bytes, sha256_file};
 
 use super::cli::parse_three_way_hot_benchmark_args;
+use super::line_matrix_store::MatrixCacheInsertOutcome;
 use super::query_facade::{ProtoRangeStoreFacade, ProtoRangeStoreFacadeOptions};
 use super::three_way_benchmark::{
     run_three_way_hot_benchmark, run_three_way_hot_benchmark_with_workload,
     ThreeWayHotBenchmarkCommand, ThreeWayHotBenchmarkReport,
 };
+
+const SOURCE_DERIVED_TRAVERSAL_ALGORITHM_VERSION: &str = "line-transition-v1";
 
 #[derive(Debug, Clone)]
 pub struct ThreeWayStabilityBenchmarkCommand {
@@ -89,13 +93,21 @@ pub struct ProtoHandStrategyProfileReport {
     pub matrix_cache_hits: usize,
     pub matrix_cache_misses: usize,
     pub matrix_first_seen_misses: usize,
+    pub matrix_revisit_misses: usize,
     pub matrix_revisit_after_eviction_misses: usize,
+    pub matrix_lru_eviction_misses: usize,
+    pub matrix_handle_eviction_misses: usize,
+    pub matrix_oversized_misses: usize,
+    pub matrix_cache_disabled_misses: usize,
+    pub matrix_unknown_revisit_misses: usize,
     pub unique_matrix_count: usize,
     pub reuse_distance: Option<LatencySummary>,
     pub matrix_cache_evictions: u64,
     pub matrix_cache_oversized_skips: u64,
+    pub matrix_cache_disabled_skips: u64,
     pub max_observed_resident_estimated_bytes: usize,
     pub max_observed_peak_resident_estimated_bytes: usize,
+    pub max_observed_facade_resident_estimated_bytes: usize,
     pub dimension_handle_opens: u64,
     pub dimension_handle_evictions: u64,
     pub matrix_index_payload_ms: LatencySummary,
@@ -135,6 +147,7 @@ pub struct MatrixCacheSweepReport {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LineTransitionSweepReport {
+    pub fingerprint: SourceDerivedTraversalFingerprint,
     pub dimension: String,
     pub start_concrete_line: String,
     pub sessions: usize,
@@ -145,6 +158,20 @@ pub struct LineTransitionSweepReport {
     pub skipped_no_retained_hand_leaf_count: usize,
     pub child_fanout: Option<LatencySummary>,
     pub cache_configs: Vec<MatrixCacheSweepReport>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SourceDerivedTraversalFingerprint {
+    pub algorithm_version: String,
+    pub source_db_sha256: String,
+    pub proto_manifest_path: String,
+    pub proto_manifest_sha256: String,
+    pub dimension: String,
+    pub start_concrete_line: String,
+    pub sessions: usize,
+    pub steps: usize,
+    pub selected_requests_sha256: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -228,6 +255,38 @@ struct WorkloadMatrixKey {
     concrete_line_id: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MatrixCacheMissReason {
+    FirstSeen,
+    HandleEvicted,
+    MatrixLruEvicted,
+    Oversized,
+    CacheDisabled,
+    UnknownRevisit,
+}
+
+fn classify_matrix_miss(
+    is_first_seen: bool,
+    dimension_handle_opened: bool,
+    last_insert_outcome: Option<MatrixCacheInsertOutcome>,
+) -> MatrixCacheMissReason {
+    if is_first_seen {
+        return MatrixCacheMissReason::FirstSeen;
+    }
+    if dimension_handle_opened {
+        return MatrixCacheMissReason::HandleEvicted;
+    }
+    match last_insert_outcome {
+        Some(MatrixCacheInsertOutcome::Cached) => MatrixCacheMissReason::MatrixLruEvicted,
+        Some(MatrixCacheInsertOutcome::Oversized) => MatrixCacheMissReason::Oversized,
+        Some(MatrixCacheInsertOutcome::Disabled) => MatrixCacheMissReason::CacheDisabled,
+        Some(MatrixCacheInsertOutcome::NotAttempted) | None => {
+            MatrixCacheMissReason::UnknownRevisit
+        }
+    }
+}
+
 pub fn parse_three_way_stability_benchmark_args(
     args: Vec<String>,
 ) -> Result<ThreeWayStabilityBenchmarkCommand, ToolError> {
@@ -244,7 +303,7 @@ pub fn parse_three_way_stability_benchmark_args(
             "--runs" => runs = parse_usize("--runs", next_value(&args, &mut index)?)?,
             "--matrix-cache-capacities" => {
                 matrix_cache_capacities =
-                    parse_usize_list("--matrix-cache-capacities", next_value(&args, &mut index)?)?
+                    parse_cache_entry_capacities(next_value(&args, &mut index)?)?
             }
             "--matrix-cache-byte-budgets" => {
                 matrix_cache_byte_budgets =
@@ -298,6 +357,26 @@ pub fn parse_three_way_stability_benchmark_args(
         line_transition_sessions,
         line_transition_replay_path,
     })
+}
+
+fn parse_cache_entry_capacities(value: &str) -> Result<Vec<usize>, ToolError> {
+    let mut capacities = Vec::new();
+    for raw in value
+        .split(',')
+        .map(str::trim)
+        .filter(|part| !part.is_empty())
+    {
+        let capacity = parse_usize("--matrix-cache-capacities", raw)?;
+        if !capacities.contains(&capacity) {
+            capacities.push(capacity);
+        }
+    }
+    if capacities.is_empty() {
+        return Err(ToolError::invalid_argument(
+            "--matrix-cache-capacities must contain at least one integer",
+        ));
+    }
+    Ok(capacities)
 }
 
 fn parse_cache_byte_budgets(value: &str) -> Result<Vec<Option<usize>>, ToolError> {
@@ -569,13 +648,22 @@ fn profile_hand_strategy_requests(
     let mut matrix_read = Vec::with_capacity(requests.len());
     let mut matrix_cache_hits = 0usize;
     let mut matrix_first_seen_misses = 0usize;
-    let mut matrix_revisit_after_eviction_misses = 0usize;
+    let mut matrix_revisit_misses = 0usize;
+    let mut matrix_lru_eviction_misses = 0usize;
+    let mut matrix_handle_eviction_misses = 0usize;
+    let mut matrix_oversized_misses = 0usize;
+    let mut matrix_cache_disabled_misses = 0usize;
+    let mut matrix_unknown_revisit_misses = 0usize;
     let mut reuse_distances = Vec::new();
     let mut matrix_cache_evictions = 0u64;
     let mut matrix_cache_oversized_skips = 0u64;
-    let mut last_cache_counters = HashMap::<String, (u64, u64)>::new();
+    let mut matrix_cache_disabled_skips = 0u64;
+    let mut last_cache_counters = HashMap::<String, (u64, u64, u64)>::new();
+    let mut last_cache_insert_outcomes =
+        HashMap::<WorkloadMatrixKey, MatrixCacheInsertOutcome>::new();
     let mut max_observed_resident_estimated_bytes = 0usize;
     let mut max_observed_peak_resident_estimated_bytes = 0usize;
+    let mut max_observed_facade_resident_estimated_bytes = 0usize;
     let handle_stats_before = facade.handle_pool_stats();
     let mut matrix_index_payload = Vec::new();
     let mut matrix_protobuf_decode = Vec::new();
@@ -604,11 +692,34 @@ fn profile_hand_strategy_requests(
         if phases.matrix_cache_hit {
             matrix_cache_hits += 1;
         } else {
-            if is_first_seen {
-                matrix_first_seen_misses += 1;
-            } else {
-                matrix_revisit_after_eviction_misses += 1;
+            match classify_matrix_miss(
+                is_first_seen,
+                profiled.dimension_handle_opened,
+                last_cache_insert_outcomes.get(&key).copied(),
+            ) {
+                MatrixCacheMissReason::FirstSeen => matrix_first_seen_misses += 1,
+                MatrixCacheMissReason::HandleEvicted => {
+                    matrix_revisit_misses += 1;
+                    matrix_handle_eviction_misses += 1;
+                }
+                MatrixCacheMissReason::MatrixLruEvicted => {
+                    matrix_revisit_misses += 1;
+                    matrix_lru_eviction_misses += 1;
+                }
+                MatrixCacheMissReason::Oversized => {
+                    matrix_revisit_misses += 1;
+                    matrix_oversized_misses += 1;
+                }
+                MatrixCacheMissReason::CacheDisabled => {
+                    matrix_revisit_misses += 1;
+                    matrix_cache_disabled_misses += 1;
+                }
+                MatrixCacheMissReason::UnknownRevisit => {
+                    matrix_revisit_misses += 1;
+                    matrix_unknown_revisit_misses += 1;
+                }
             }
+            last_cache_insert_outcomes.insert(key.clone(), phases.matrix_cache_insert_outcome);
             matrix_index_payload.push(phases.matrix_index_payload_ms);
             matrix_protobuf_decode.push(phases.matrix_protobuf_decode_ms);
             matrix_compact_index.push(phases.matrix_compact_index_ms);
@@ -619,22 +730,37 @@ fn profile_hand_strategy_requests(
             "{}:{}max:{}BB",
             item.strategy, item.player_count, item.depth_bb
         );
-        let (previous_evictions, previous_oversized_skips) = last_cache_counters
-            .insert(
-                dimension_key,
-                (cache_stats.evictions, cache_stats.oversized_skips),
-            )
-            .unwrap_or((0, 0));
+        let (previous_evictions, previous_oversized_skips, previous_disabled_skips) =
+            last_cache_counters
+                .insert(
+                    dimension_key,
+                    (
+                        cache_stats.evictions,
+                        cache_stats.oversized_skips,
+                        cache_stats.cache_disabled_skips,
+                    ),
+                )
+                .unwrap_or((0, 0, 0));
         matrix_cache_evictions = matrix_cache_evictions
             .wrapping_add(counter_delta(cache_stats.evictions, previous_evictions));
         matrix_cache_oversized_skips = matrix_cache_oversized_skips.wrapping_add(counter_delta(
             cache_stats.oversized_skips,
             previous_oversized_skips,
         ));
+        matrix_cache_disabled_skips = matrix_cache_disabled_skips.wrapping_add(counter_delta(
+            cache_stats.cache_disabled_skips,
+            previous_disabled_skips,
+        ));
         max_observed_resident_estimated_bytes =
             max_observed_resident_estimated_bytes.max(cache_stats.resident_estimated_bytes);
         max_observed_peak_resident_estimated_bytes = max_observed_peak_resident_estimated_bytes
             .max(cache_stats.peak_resident_estimated_bytes);
+        max_observed_facade_resident_estimated_bytes = max_observed_facade_resident_estimated_bytes
+            .max(
+                facade
+                    .aggregate_matrix_cache_stats()
+                    .resident_estimated_bytes,
+            );
         action_materialization.push(phases.action_materialization_ms);
         service_total.push(phases.service_total_ms);
         slowest.push(SlowHandStrategyProfile {
@@ -665,14 +791,22 @@ fn profile_hand_strategy_requests(
         matrix_cache_hits,
         matrix_cache_misses: facade_total.len() - matrix_cache_hits,
         matrix_first_seen_misses,
-        matrix_revisit_after_eviction_misses,
+        matrix_revisit_misses,
+        matrix_revisit_after_eviction_misses: matrix_revisit_misses,
+        matrix_lru_eviction_misses,
+        matrix_handle_eviction_misses,
+        matrix_oversized_misses,
+        matrix_cache_disabled_misses,
+        matrix_unknown_revisit_misses,
         unique_matrix_count: seen.len(),
         reuse_distance: (!reuse_distances.is_empty())
             .then(|| LatencySummary::from_values(&reuse_distances)),
         matrix_cache_evictions,
         matrix_cache_oversized_skips,
+        matrix_cache_disabled_skips,
         max_observed_resident_estimated_bytes,
         max_observed_peak_resident_estimated_bytes,
+        max_observed_facade_resident_estimated_bytes,
         dimension_handle_opens: handle_stats_after.opens - handle_stats_before.opens,
         dimension_handle_evictions: handle_stats_after.evictions - handle_stats_before.evictions,
         matrix_index_payload_ms: LatencySummary::from_values(&matrix_index_payload),
@@ -706,6 +840,7 @@ fn profile_line_transition_sweep(
         start_concrete_line,
         command.line_transition_sessions,
     )?;
+    let fingerprint = build_source_derived_traversal_fingerprint(command, &workload)?;
     let mut cache_configs = Vec::new();
     for &entry_capacity in &command.matrix_cache_capacities {
         for &byte_budget_bytes in &command.matrix_cache_byte_budgets {
@@ -725,6 +860,7 @@ fn profile_line_transition_sweep(
         }
     }
     Ok(Some(LineTransitionSweepReport {
+        fingerprint,
         dimension: format!(
             "{}:{}max:{}BB",
             workload.dimension.strategy,
@@ -742,6 +878,54 @@ fn profile_line_transition_sweep(
             .then(|| LatencySummary::from_values(&workload.child_fanout)),
         cache_configs,
     }))
+}
+
+fn build_source_derived_traversal_fingerprint(
+    command: &ThreeWayStabilityBenchmarkCommand,
+    workload: &LineTransitionWorkload,
+) -> Result<SourceDerivedTraversalFingerprint, ToolError> {
+    let proto_facade = ProtoRangeStoreFacade::open(&command.hot.proto_root, 1, false)?;
+    let proto_manifest_path = proto_facade.archive_manifest_path(&workload.dimension)?;
+    Ok(source_derived_traversal_fingerprint(
+        sha256_file(&command.hot.source_db)?,
+        sha256_file(&proto_manifest_path)?,
+        proto_manifest_path,
+        workload,
+    ))
+}
+
+fn source_derived_traversal_fingerprint(
+    source_db_sha256: String,
+    proto_manifest_sha256: String,
+    proto_manifest_path: PathBuf,
+    workload: &LineTransitionWorkload,
+) -> SourceDerivedTraversalFingerprint {
+    let dimension = format!(
+        "{}:{}max:{}BB",
+        workload.dimension.strategy, workload.dimension.player_count, workload.dimension.depth_bb
+    );
+    let mut selected_requests = String::new();
+    for request in &workload.requests {
+        selected_requests.push_str(&format!(
+            "{}\\t{}\\t{}\\t{}\\t{}\\n",
+            request.strategy,
+            request.player_count,
+            request.depth_bb,
+            request.concrete_line_id,
+            request.hole_cards
+        ));
+    }
+    SourceDerivedTraversalFingerprint {
+        algorithm_version: SOURCE_DERIVED_TRAVERSAL_ALGORITHM_VERSION.to_owned(),
+        source_db_sha256,
+        proto_manifest_path: proto_manifest_path.display().to_string(),
+        proto_manifest_sha256,
+        dimension,
+        start_concrete_line: workload.start_concrete_line.clone(),
+        sessions: workload.sessions,
+        steps: workload.requests.len(),
+        selected_requests_sha256: sha256_bytes(selected_requests.as_bytes()),
+    }
 }
 
 fn profile_line_transition_replay_sweep(
@@ -1376,6 +1560,9 @@ fn render_markdown(report: &ThreeWayStabilityBenchmarkReport) -> String {
     ));
     if let Some(transition) = &report.line_transition_sweep {
         markdown.push_str("\n## Line Transition Session Sweep\n\n");
+        markdown.push_str(&render_source_derived_traversal_fingerprint(
+            &transition.fingerprint,
+        ));
         markdown.push_str(&markdown_table(
             &[
                 "dimension",
@@ -1527,6 +1714,39 @@ fn render_markdown(report: &ThreeWayStabilityBenchmarkReport) -> String {
     markdown
 }
 
+fn render_source_derived_traversal_fingerprint(
+    fingerprint: &SourceDerivedTraversalFingerprint,
+) -> String {
+    let mut markdown = String::from("## Source-Derived Traversal Fingerprint\n\n");
+    markdown.push_str(&markdown_table(
+        &["algorithm", "dimension", "start line", "sessions", "steps"],
+        &[vec![
+            fingerprint.algorithm_version.clone(),
+            fingerprint.dimension.clone(),
+            fingerprint.start_concrete_line.clone(),
+            fingerprint.sessions.to_string(),
+            fingerprint.steps.to_string(),
+        ]],
+    ));
+    markdown.push('\n');
+    markdown.push_str(&markdown_table(
+        &[
+            "source SQLite SHA-256",
+            "Proto manifest",
+            "manifest SHA-256",
+            "request sequence SHA-256",
+        ],
+        &[vec![
+            fingerprint.source_db_sha256.clone(),
+            fingerprint.proto_manifest_path.clone(),
+            fingerprint.proto_manifest_sha256.clone(),
+            fingerprint.selected_requests_sha256.clone(),
+        ]],
+    ));
+    markdown.push('\n');
+    markdown
+}
+
 fn format_optional_bytes(value: Option<i64>) -> String {
     value
         .map(|value| format!("{value} B"))
@@ -1569,13 +1789,13 @@ mod tests {
             "--runs".to_owned(),
             "2".to_owned(),
             "--matrix-cache-capacities".to_owned(),
-            "128,1024".to_owned(),
+            "0,128,1024".to_owned(),
             "--matrix-cache-byte-budgets".to_owned(),
             "none,16MiB".to_owned(),
         ])
         .expect("parse stability command");
 
-        assert_eq!(command.matrix_cache_capacities, vec![128, 1024]);
+        assert_eq!(command.matrix_cache_capacities, vec![0, 128, 1024]);
         assert_eq!(
             command.matrix_cache_byte_budgets,
             vec![None, Some(16 * 1024 * 1024)]
@@ -1654,6 +1874,92 @@ mod tests {
         assert!(workload.batch_queries.is_empty());
         assert!(workload.hands_by_actions_queries.is_empty());
         assert!(workload.drill_scenario_queries.is_empty());
+    }
+
+    #[test]
+    fn source_derived_fingerprint_records_inputs_and_selected_request_sequence() {
+        let workload = LineTransitionWorkload {
+            dimension: DimensionRef::new("default", 6, 100),
+            start_concrete_line: "F-F".to_owned(),
+            sessions: 2,
+            requests: vec![
+                HandBenchmarkItem {
+                    strategy: "default".to_owned(),
+                    player_count: 6,
+                    depth_bb: 100,
+                    concrete_line_id: 42,
+                    hole_cards: "AKs".to_owned(),
+                },
+                HandBenchmarkItem {
+                    strategy: "default".to_owned(),
+                    player_count: 6,
+                    depth_bb: 100,
+                    concrete_line_id: 43,
+                    hole_cards: "QQ".to_owned(),
+                },
+            ],
+            child_fanout: Vec::new(),
+            candidate_leaf_count: 1,
+            implicit_fold_normalized_prefix_count: 0,
+            skipped_unresolvable_leaf_count: 0,
+            skipped_no_retained_hand_leaf_count: 0,
+        };
+
+        let fingerprint = source_derived_traversal_fingerprint(
+            "sqlite-sha256".to_owned(),
+            "proto-manifest-sha256".to_owned(),
+            PathBuf::from("proto/default_6max_100BB/manifest.json"),
+            &workload,
+        );
+
+        assert_eq!(
+            fingerprint.algorithm_version,
+            SOURCE_DERIVED_TRAVERSAL_ALGORITHM_VERSION
+        );
+        assert_eq!(fingerprint.source_db_sha256, "sqlite-sha256");
+        assert_eq!(fingerprint.proto_manifest_sha256, "proto-manifest-sha256");
+        assert_eq!(
+            fingerprint.proto_manifest_path,
+            "proto/default_6max_100BB/manifest.json"
+        );
+        assert_eq!(fingerprint.dimension, "default:6max:100BB");
+        assert_eq!(fingerprint.start_concrete_line, "F-F");
+        assert_eq!(fingerprint.sessions, 2);
+        assert_eq!(fingerprint.steps, 2);
+
+        let mut reordered = workload.clone();
+        reordered.requests.reverse();
+        let reordered_fingerprint = source_derived_traversal_fingerprint(
+            "sqlite-sha256".to_owned(),
+            "proto-manifest-sha256".to_owned(),
+            PathBuf::from("proto/default_6max_100BB/manifest.json"),
+            &reordered,
+        );
+        assert_ne!(
+            fingerprint.selected_requests_sha256,
+            reordered_fingerprint.selected_requests_sha256
+        );
+    }
+
+    #[test]
+    fn renders_source_derived_fingerprint_in_markdown() {
+        let markdown =
+            render_source_derived_traversal_fingerprint(&SourceDerivedTraversalFingerprint {
+                algorithm_version: "line-transition-v1".to_owned(),
+                source_db_sha256: "sqlite-sha256".to_owned(),
+                proto_manifest_path: "proto/manifest.json".to_owned(),
+                proto_manifest_sha256: "manifest-sha256".to_owned(),
+                dimension: "default:6max:100BB".to_owned(),
+                start_concrete_line: "F-F".to_owned(),
+                sessions: 2,
+                steps: 12,
+                selected_requests_sha256: "requests-sha256".to_owned(),
+            });
+
+        assert!(markdown.contains("## Source-Derived Traversal Fingerprint"));
+        assert!(markdown.contains("sqlite-sha256"));
+        assert!(markdown.contains("manifest-sha256"));
+        assert!(markdown.contains("requests-sha256"));
     }
 
     #[test]
@@ -1751,5 +2057,29 @@ mod tests {
 
         assert_eq!(reuse_distance(&history, &seen, &key_a), Some(2));
         assert_eq!(reuse_distance(&history, &seen, &key_b), Some(0));
+    }
+
+    #[test]
+    fn classifies_matrix_misses_without_conflating_eviction_and_cache_bypass() {
+        assert_eq!(
+            classify_matrix_miss(true, false, None),
+            MatrixCacheMissReason::FirstSeen
+        );
+        assert_eq!(
+            classify_matrix_miss(false, true, Some(MatrixCacheInsertOutcome::Cached)),
+            MatrixCacheMissReason::HandleEvicted
+        );
+        assert_eq!(
+            classify_matrix_miss(false, false, Some(MatrixCacheInsertOutcome::Cached)),
+            MatrixCacheMissReason::MatrixLruEvicted
+        );
+        assert_eq!(
+            classify_matrix_miss(false, false, Some(MatrixCacheInsertOutcome::Oversized)),
+            MatrixCacheMissReason::Oversized
+        );
+        assert_eq!(
+            classify_matrix_miss(false, false, Some(MatrixCacheInsertOutcome::Disabled)),
+            MatrixCacheMissReason::CacheDisabled
+        );
     }
 }
