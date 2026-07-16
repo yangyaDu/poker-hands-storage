@@ -165,7 +165,7 @@ pub struct ErrorResponse {
     info(
         title = "Poker Hands Storage API",
         version = env!("CARGO_PKG_VERSION"),
-        description = "Read-only query service for PFSP preflop range storage data."
+        description = "Read-only query service for Proto V3 preflop range storage data."
     )
 )]
 pub struct ApiDoc;

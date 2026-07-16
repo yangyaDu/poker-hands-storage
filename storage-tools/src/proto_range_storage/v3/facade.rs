@@ -6,6 +6,7 @@ use std::sync::{Arc, Mutex};
 use range_store_core::dimension::{dimension_key, DimensionRef};
 use range_store_core::metadata::{ConcreteLineFilter, ConcreteLineRow};
 use range_store_core::query::{ActionFilter, QueryBatchResult, QueryResult};
+use serde::Serialize;
 
 use crate::errors::ToolError;
 
@@ -35,14 +36,16 @@ impl Default for V3FacadeOptions {
     }
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct HandlePoolStats {
     pub hits: u64,
     pub opens: u64,
     pub evictions: u64,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct FacadeCacheStats {
     pub open_handle_count: usize,
     pub metadata: ByteCacheStats,
@@ -92,12 +95,6 @@ impl V3Facade {
                     format!("Duplicate V3 dimension {key}"),
                 ));
             }
-        }
-        if archive_dirs.is_empty() {
-            return Err(ToolError::new(
-                "DIMENSION_NOT_FOUND",
-                "V3 storage root contains no dimension archives",
-            ));
         }
         Ok(Self {
             archive_dirs,

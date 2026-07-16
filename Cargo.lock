@@ -617,6 +617,7 @@ name = "poker-hands-storage-service"
 version = "1.1.0"
 dependencies = [
  "axum",
+ "poker-hands-storage-tools",
  "range-store-core",
  "serde",
  "serde_json",
@@ -813,6 +814,7 @@ dependencies = [
  "napi",
  "napi-build",
  "napi-derive",
+ "poker-hands-storage-tools",
  "range-store-core",
 ]
 

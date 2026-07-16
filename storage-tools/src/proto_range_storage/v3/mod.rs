@@ -1,5 +1,7 @@
 pub mod archive;
+pub mod benchmark;
 pub mod cache;
+pub mod cli;
 pub mod facade;
 pub mod format;
 pub mod manifest;

@@ -2,13 +2,15 @@ use std::sync::Arc;
 
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use poker_hands_storage_tools::errors::ToolError;
+use poker_hands_storage_tools::proto_range_storage::v3::facade::{V3Facade, V3FacadeOptions};
 use range_store_core::dimension::DimensionRef;
 use range_store_core::metadata::ConcreteLineFilter;
-use range_store_core::query::{RangeStoreError, RangeStoreFacade};
+use range_store_core::query::parse_action_filters;
 
 #[napi]
 pub struct PokerHandsRange {
-    inner: Arc<RangeStoreFacade>,
+    inner: Arc<V3Facade>,
 }
 
 #[napi(object)]
@@ -132,8 +134,15 @@ impl PokerHandsRange {
     pub fn new(options: PokerHandsRangeOptions) -> Result<Self> {
         let max_open_handles = options.max_open_handles.unwrap_or(2).max(1) as usize;
         let verify_checksums = options.verify_checksums.unwrap_or(false);
-        let inner = RangeStoreFacade::open(options.data_dir, max_open_handles, verify_checksums)
-            .map_err(to_napi_error)?;
+        let inner = V3Facade::open_with_options(
+            options.data_dir,
+            V3FacadeOptions {
+                max_open_handles,
+                verify_file_checksums: verify_checksums,
+                ..V3FacadeOptions::default()
+            },
+        )
+        .map_err(to_napi_error)?;
         Ok(Self {
             inner: Arc::new(inner),
         })
@@ -180,10 +189,16 @@ impl PokerHandsRange {
     ) -> Result<HandsByActionsResponse> {
         let dimension =
             dimension_from_parts(request.strategy, request.player_count, request.depth_bb);
-        let actions = request.actions.unwrap_or_default();
+        let actions =
+            parse_action_filters(request.actions.unwrap_or_default()).map_err(|error| {
+                Error::new(
+                    Status::InvalidArg,
+                    format!("RANGE_STORE_ERROR:INVALID_ARGUMENT:{error}"),
+                )
+            })?;
         let hole_cards = self
             .inner
-            .hands_by_action_names(
+            .query_hands_by_actions(
                 &dimension,
                 request.concrete_line_id,
                 &actions,
@@ -222,22 +237,37 @@ impl PokerHandsRange {
             .into_iter()
             .map(|item| (item.concrete_line_id, item.hole_cards))
             .collect::<Vec<_>>();
-        let results = self
-            .inner
-            .query_batch(&dimension, &requests)
-            .map_err(to_napi_error)?
-            .results
+        let results = requests
             .into_iter()
-            .map(|item| QueryBatchItemResponse {
-                concrete_line_id: item.concrete_line_id,
-                hole_cards: item.hole_cards,
-                actions: item
-                    .actions
-                    .into_iter()
-                    .map(action_result_from_core)
-                    .collect(),
+            .enumerate()
+            .map(|(index, (concrete_line_id, hole_cards))| {
+                let result = self
+                    .inner
+                    .query_hand_strategy(&dimension, concrete_line_id, &hole_cards)
+                    .map_err(|error| {
+                        let code = public_tool_code(&error);
+                        Error::new(
+                            Status::GenericFailure,
+                            format!(
+                                "RANGE_STORE_ERROR:{code}:Batch item requests[{index}] failed: {} from concrete_line_id={concrete_line_id} dimension={}:{}:{}",
+                                error.message(),
+                                dimension.strategy,
+                                dimension.player_count,
+                                dimension.depth_bb
+                            ),
+                        )
+                    })?;
+                Ok(QueryBatchItemResponse {
+                    concrete_line_id,
+                    hole_cards,
+                    actions: result
+                        .actions
+                        .into_iter()
+                        .map(action_result_from_core)
+                        .collect(),
+                })
             })
-            .collect();
+            .collect::<Result<Vec<_>>>()?;
         Ok(QueryBatchResponse { results })
     }
 
@@ -245,17 +275,17 @@ impl PokerHandsRange {
     pub fn prewarm(&self, request: DimensionInput) -> Result<PrewarmResponse> {
         let dimension =
             dimension_from_parts(request.strategy, request.player_count, request.depth_bb);
-        let open_handle_count = self.inner.prewarm(&dimension).map_err(to_napi_error)?;
+        self.inner.prewarm(&dimension).map_err(to_napi_error)?;
         Ok(PrewarmResponse {
-            open_handle_count: open_handle_count as u32,
+            open_handle_count: self.inner.cache_stats().open_handle_count as u32,
         })
     }
 
     #[napi]
     pub fn stats(&self) -> StatsResponse {
         StatsResponse {
-            schema_count: self.inner.schema_count() as u32,
-            open_handle_count: self.inner.open_handle_count() as u32,
+            schema_count: self.inner.cache_stats().open_handle_count as u32,
+            open_handle_count: self.inner.cache_stats().open_handle_count as u32,
             known_dimensions: self.inner.known_dimensions(),
         }
     }
@@ -331,9 +361,17 @@ fn concrete_line_filter_from_request(
     }
 }
 
-fn to_napi_error(error: RangeStoreError) -> Error {
+fn to_napi_error(error: ToolError) -> Error {
+    let code = public_tool_code(&error);
     Error::new(
         Status::GenericFailure,
-        format!("RANGE_STORE_ERROR:{}:{}", error.code(), error),
+        format!("RANGE_STORE_ERROR:{code}:{}", error.message()),
     )
+}
+
+fn public_tool_code(error: &ToolError) -> &str {
+    match error.code() {
+        "UNKNOWN_HAND" => "INVALID_ARGUMENT",
+        code => code,
+    }
 }

@@ -1,29 +1,32 @@
 # poker-hands-storage
 
-独立的 Rust 存储与查询服务，用于读取 `preflop-storage` 产出的 Range Strata Binary 数据。
+独立的 Rust 存储与查询服务。默认 HTTP service 与 Bun/Node native SDK 读取 Proto V3 业务存储。
 
-当前 V1 运行目录由以下文件组成：
+一个 V3 根目录包含若干维度子目录；每个维度固定由七个文件组成：
 
-- `manifest.json`（`format = "PFSP"`，`version = 1`）
-- `meta.db`
-- `ranges_{strategy}_{player_count}max_{depth_bb}BB.idx`
-- `ranges_{strategy}_{player_count}max_{depth_bb}BB.bin`
+- `manifest.json`
+- `drill-scenarios.pb` / `drill-scenarios.idx`
+- `abstract-action-paths.pb` / `abstract-action-paths.idx`
+- `hand-strategies.pb` / `hand-strategies.idx`
 
 当前主链路：
 
 ```text
-1.45GB slim SQLite -> 345.5MB Range Strata Binary -> HTTP service / Bun native SDK
+源 SQLite -> 离线导出与 SQLite cross verify -> Proto V3 root -> HTTP service / Bun native SDK
 ```
+
+线上运行时不需要源 SQLite、`meta.db`、`lines.db` 或 Proto V2 产物。V2 代码和文档仅保留为实现参考，
+V3 reader 不读取 V2，也没有 V2/V3 双读或回退路径。
 
 ## 模块职责
 
 | 路径 | 对外能力 | 说明 |
 | --- | --- | --- |
-| `range-store-core` | Rust 只读查询核心 | 负责 manifest、metadata、`.idx/.bin` reader、pack decode、CRC32C、LRU handle pool 和 `RangeStoreFacade` |
-| `service` | HTTP API 服务 | 提供 OpenAPI、请求校验、错误码映射、health/readiness、Docker 运行入口 |
-| `range-store-native` | Bun/Node 进程内 SDK | 通过 napi-rs 加载同一套 core 查询能力，成功返回直接 payload，失败抛出 `RangeStoreError` |
-| `storage-tools` | 离线工具 | 提供构建、Proto LineMatrix archive、standalone/cross verify、SQLite/Binary/native benchmark 和报告生成 |
-| `.docker` | HTTP service 容器化 | Dockerfile 只构建 `range-store-core` + `service`，不包含 benchmark 或 native SDK |
+| `range-store-core` | 共享领域类型 | 提供维度、手牌、查询契约、SQLite 离线访问和历史 Binary 参考实现 |
+| `service` | HTTP API 服务 | 默认使用 V3 facade，提供 OpenAPI、错误映射、health/readiness 和 Docker 入口 |
+| `range-store-native` | Bun/Node 进程内 SDK | 默认使用同一 V3 facade，失败抛出 `RangeStoreError` |
+| `storage-tools` | V3 存储与离线工具 | 提供 V3 export、reader、facade、standalone/cross verify 和 SQLite/V3 benchmark |
+| `.docker` | HTTP service 容器化 | Dockerfile 构建 V3 runtime 所需的 `storage-tools` library + `service`，不包含 CLI 或 native SDK 二进制 |
 | `docs` | 项目文档 | 入口见 [docs/README.md](docs/README.md) |
 
 ## 项目目录树
@@ -47,8 +50,7 @@ poker-hands-storage/
 |
 |-- .docker/
 |   |-- Dockerfile                     # HTTP service 多阶段构建镜像
-|   |-- Cargo.service.toml             # Docker 构建专用最小 workspace，只含 core + service
-|   |-- Cargo.service.lock             # Docker 构建专用依赖锁定文件
+|   |-- Cargo.service.toml             # Docker 构建专用 workspace，只含 core + V3 library + service
 |   |-- docker-compose.yml             # 本地 Compose 启动、只读数据挂载和 healthcheck
 |   `-- k8s.yaml                       # Kubernetes 部署模板
 |
@@ -101,7 +103,7 @@ poker-hands-storage/
 |   |-- package.json                   # Bun 构建和 SDK 测试脚本
 |   |-- index.js                       # JS SDK 包装层，加载 index.node 并转换 RangeStoreError
 |   |-- index.d.ts                     # TypeScript API 类型声明
-|   |-- src/lib.rs                     # N-API 绑定，复用 RangeStoreFacade
+|   |-- src/lib.rs                     # N-API 绑定，复用 V3Facade
 |   `-- tests/
 |       |-- sdk-contract.test.js       # SDK contract 测试
 |       `-- http-consistency.test.js   # native SDK 与 HTTP service 抽样一致性测试
@@ -187,15 +189,14 @@ poker-hands-storage/
 
 ## 当前状态
 
-已完成：
+V3 实现状态：
 
-- 二进制运行格式、构建工具和 `build --resume`。
-- HTTP API、OpenAPI、Docker/Compose/Kubernetes 模板。
-- Bun/Node native SDK 的 Windows 本地构建、SDK contract 和 HTTP consistency 测试入口。
-- full cross verify 覆盖 9 个维度、23,806,716 条源记录，失败数为 0。
-- benchmark 覆盖 SQLite vs Binary hot/cold、`concrete_line` 精确 metadata lookup、drill metadata、Rust core、Bun native SDK、HTTP service 和 `concrete_line -> handsByActions` 单链路。
+- V3 schema、六个 data/index 文件、manifest、元数据和 HandStrategy reader/writer 已完成。
+- standalone verify 与 SQLite 全量 cross verify 已完成，包含 NULL-EV 精确语义。
+- V3 facade、按字节预算缓存、HTTP service、native SDK 和 SQLite/V3 benchmark 已接入。
+- fixture 端到端和 workspace 回归已通过；真实九维源库仍须在发布环境执行 export + cross gate。
 
-剩余工作只在 [docs/roadmap.md](docs/roadmap.md) 维护，当前主要是完整 `line-transition` benchmark、Linux native SDK 生产接入验证和最终验收边界清单。
+历史 Range Strata Binary 与 Proto V2 仍留在仓库中用于参考和回归，不属于 V3 发布产物。
 
 ## 环境准备
 
@@ -223,39 +224,38 @@ $env:PHS_SQLITE3_LIB = "C:\path\to\sqlite3.dll"
 
 ## 常用命令
 
-构建 Range Strata Binary：
+导出并交叉验证一个 V3 维度：
 
 ```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
-  --source-db data\sqlite\range.db `
-  --out-dir data\range-strata `
-  --dimension default:6:100 `
-  --overwrite
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- v3-export `
+  --source data\sqlite\range.db `
+  --out data\proto-v3\default_6max_100BB `
+  --dimension default:6:100
 ```
 
-导出 Proto LineMatrix archive：
+导出并交叉验证全部可发现维度：
 
 ```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- export-compact-line-matrix-archive `
-  --source-db data\sqlite\range.db `
-  --out-dir reports\line-matrix-compact-default-6max-100BB `
-  --dimension default:6:100 `
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- v3-export-all `
+  --source data\sqlite\range.db `
+  --out-root data\proto-v3
 ```
 
 数据验证：
 
 ```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
-  --dir data\range-strata `
-  --mode standalone `
-  --verify-checksum
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- v3-verify `
+  --archive data\proto-v3\default_6max_100BB
+
+cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- v3-cross-verify `
+  --source data\sqlite\range.db `
+  --archive data\proto-v3\default_6max_100BB
 ```
 
 启动 HTTP service：
 
 ```powershell
-$env:PHS_DATA_DIR = "data\range-strata"
-$env:PHS_META_DB = "data\range-strata\meta.db"
+$env:PHS_DATA_DIR = "data\proto-v3"
 $env:PHS_PREWARM = "default:6:100"
 cargo run -p poker-hands-storage-service --target x86_64-pc-windows-msvc -- serve
 ```
@@ -280,10 +280,11 @@ bun run test:sdk
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
 | `PHS_BIND` | `0.0.0.0:8080` | HTTP 监听地址 |
-| `PHS_DATA_DIR` | `/data` | Range Strata 运行目录 |
-| `PHS_META_DB` | `${PHS_DATA_DIR}/meta.db` | metadata SQLite 路径 |
+| `PHS_DATA_DIR` | `/data` | Proto V3 根目录；直接包含维度子目录 |
 | `PHS_MAX_OPEN_HANDLES` | `2` | 最大打开维度 reader 数 |
-| `PHS_VERIFY_CHECKSUMS` | `false` | 查询时是否校验 pack CRC32C |
+| `PHS_METADATA_CACHE_BYTES` | `8388608` | 每个维度 metadata page cache 字节预算 |
+| `PHS_STRATEGY_CACHE_BYTES` | `67108864` | 每个维度 decoded strategy cache 字节预算 |
+| `PHS_VERIFY_CHECKSUMS` | `false` | 打开维度时是否校验六个完整文件 CRC32C |
 | `PHS_PREWARM` | 空 | 启动预热维度，格式 `strategy:player_count:depth_bb` |
 | `PHS_SQLITE3_LIB` | 自动检测 | 离线工具使用的 SQLite 动态库路径 |
 | `RUST_LOG` | `info` | 日志级别 |
@@ -296,6 +297,7 @@ bun run test:sdk
 | [docs/roadmap.md](docs/roadmap.md) | 当前剩余工作、验收条件和优先级 |
 | [docs/range-db-binary-storage-design.md](docs/range-db-binary-storage-design.md) | 文件格式、pack 编码、查询流程和运行时约束 |
 | [docs/protobuf-line-matrix-export.md](docs/protobuf-line-matrix-export.md) | 单行动线 Protobuf schema、字段语义、bitmap、导出和校验 |
+| [docs/proto/v3-runtime-and-operations.md](docs/proto/v3-runtime-and-operations.md) | V3 CLI、服务配置、benchmark 与发布门禁 |
 | [docs/api-business-contract.md](docs/api-business-contract.md) | HTTP API 请求/响应、错误码和业务语义 |
 | [docs/sdk-and-query-chain-explanation.md](docs/sdk-and-query-chain-explanation.md) | Bun/Node native SDK API、构建测试、生产接入边界和查询链路 |
 | [docs/verification_and_benchmark.md](docs/verification_and_benchmark.md) | standalone/cross verify、Float32 策略、benchmark 脚本和发布前验证 |

@@ -298,3 +298,13 @@ impl From<RangeStoreError> for AppError {
         Self::new(error.code(), error.to_string())
     }
 }
+
+impl From<poker_hands_storage_tools::errors::ToolError> for AppError {
+    fn from(error: poker_hands_storage_tools::errors::ToolError) -> Self {
+        let code = match error.static_code() {
+            "UNKNOWN_HAND" => "INVALID_ARGUMENT",
+            code => code,
+        };
+        Self::new(code, error.message())
+    }
+}

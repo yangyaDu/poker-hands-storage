@@ -2,7 +2,10 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ByteCacheStats {
     pub hits: u64,
     pub misses: u64,

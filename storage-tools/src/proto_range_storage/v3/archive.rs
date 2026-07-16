@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use range_store_core::crc32c::crc32c;
-use range_store_core::dimension::DimensionSpec;
+use range_store_core::dimension::{discover_dimensions, DimensionSpec};
+use range_store_core::sqlite::Connection;
 
 use crate::errors::ToolError;
 
@@ -17,6 +18,7 @@ use super::metadata_store::{
 use super::strategy_store::{
     export_hand_strategies, HandStrategyExportOptions, HandStrategyStore, HandStrategyStoreOptions,
 };
+use super::verification::{cross_verify_sqlite_v3, V3VerificationOptions};
 
 #[derive(Debug, Clone)]
 pub struct V3ArchiveExportOptions {
@@ -43,6 +45,19 @@ impl V3ArchiveExportOptions {
 pub struct V3ArchiveExportSummary {
     pub manifest: ArchiveManifest,
     pub archive_dir: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct V3ArchivesExportOptions {
+    pub source_db: PathBuf,
+    pub out_root: PathBuf,
+    pub metadata_page_target_bytes: usize,
+    pub overwrite: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct V3ArchivesExportSummary {
+    pub archives: Vec<V3ArchiveExportSummary>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -191,6 +206,57 @@ pub fn export_v3_archive(
         manifest,
         archive_dir: options.out_dir.clone(),
     })
+}
+
+pub fn export_all_v3_archives(
+    options: &V3ArchivesExportOptions,
+) -> Result<V3ArchivesExportSummary, ToolError> {
+    if !options.source_db.is_file() {
+        return Err(ToolError::invalid_argument(format!(
+            "Source database does not exist: {}",
+            options.source_db.display()
+        )));
+    }
+    fs::create_dir_all(&options.out_root)?;
+    let source = Connection::open(&options.source_db, true)?;
+    let dimensions = discover_dimensions(&source)?;
+    drop(source);
+    if dimensions.is_empty() {
+        return Err(ToolError::new(
+            "V3_ARCHIVE_EMPTY",
+            "Source database has no discoverable dimensions",
+        ));
+    }
+
+    let mut archives = Vec::with_capacity(dimensions.len());
+    for dimension in dimensions {
+        let out_dir = options.out_root.join(format!(
+            "{}_{}max_{}BB",
+            dimension.strategy, dimension.player_count, dimension.depth_bb
+        ));
+        let summary = export_v3_archive(&V3ArchiveExportOptions {
+            source_db: options.source_db.clone(),
+            out_dir,
+            dimension,
+            metadata_page_target_bytes: options.metadata_page_target_bytes,
+            overwrite: options.overwrite,
+        })?;
+        let verification = cross_verify_sqlite_v3(
+            &options.source_db,
+            &summary.archive_dir,
+            V3VerificationOptions::default(),
+        );
+        if !verification.ok {
+            return Err(ToolError::verify(format!(
+                "SQLite/V3 cross verification failed for {} with {} differences; first={:?}",
+                summary.archive_dir.display(),
+                verification.failure_count,
+                verification.failure_samples.first()
+            )));
+        }
+        archives.push(summary);
+    }
+    Ok(V3ArchivesExportSummary { archives })
 }
 
 fn validate_manifest_files(

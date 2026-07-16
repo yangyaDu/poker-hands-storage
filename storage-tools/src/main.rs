@@ -36,6 +36,16 @@ use poker_hands_storage_tools::proto_range_storage::three_way_cold_benchmark::{
 use poker_hands_storage_tools::proto_range_storage::three_way_stability_benchmark::{
     parse_three_way_stability_benchmark_args, run_three_way_stability_benchmark,
 };
+use poker_hands_storage_tools::proto_range_storage::v3::archive::{
+    export_all_v3_archives, export_v3_archive,
+};
+use poker_hands_storage_tools::proto_range_storage::v3::benchmark::run_v3_benchmark as execute_v3_benchmark;
+use poker_hands_storage_tools::proto_range_storage::v3::cli::{
+    parse_v3_benchmark_args, parse_v3_export_all_args, parse_v3_export_args, parse_v3_verify_args,
+};
+use poker_hands_storage_tools::proto_range_storage::v3::verification::{
+    cross_verify_sqlite_v3, verify_v3_archive, V3VerificationReport,
+};
 use poker_hands_storage_tools::range_store_builder::{build_store, BuildOptions, DimensionSpec};
 use poker_hands_storage_tools::verification::cli::parse_verify_args;
 use poker_hands_storage_tools::verification::cross::{run_cross_verify, CrossVerifyOptions};
@@ -55,6 +65,11 @@ fn run() -> Result<(), ToolError> {
     let mut args = std::env::args().skip(1);
     match args.next().as_deref() {
         Some("build") => run_build(args.collect()),
+        Some("v3-export") => run_v3_export(args.collect()),
+        Some("v3-export-all") => run_v3_export_all(args.collect()),
+        Some("v3-verify") => run_v3_verify(args.collect(), false),
+        Some("v3-cross-verify") => run_v3_verify(args.collect(), true),
+        Some("v3-benchmark") => run_v3_benchmark(args.collect()),
         Some("export-compact-line-matrix-archive") => {
             run_export_compact_line_matrix_archive(args.collect())
         }
@@ -91,6 +106,99 @@ fn run() -> Result<(), ToolError> {
         Some(cmd) => Err(ToolError::invalid_argument(format!(
             "Unknown command: {cmd}"
         ))),
+    }
+}
+
+fn run_v3_export(args: Vec<String>) -> Result<(), ToolError> {
+    let options = parse_v3_export_args(args)?;
+    let source_db = options.source_db.clone();
+    let summary = export_v3_archive(&options)?;
+    let verification = cross_verify_sqlite_v3(source_db, &summary.archive_dir, Default::default());
+    print_v3_verification(&verification);
+    require_v3_verification(&verification)?;
+    println!("V3 archive exported: {}", summary.archive_dir.display());
+    Ok(())
+}
+
+fn run_v3_export_all(args: Vec<String>) -> Result<(), ToolError> {
+    let summary = export_all_v3_archives(&parse_v3_export_all_args(args)?)?;
+    println!(
+        "V3 archives exported and cross-verified: {}",
+        summary.archives.len()
+    );
+    for archive in summary.archives {
+        println!("  {}", archive.archive_dir.display());
+    }
+    Ok(())
+}
+
+fn run_v3_verify(args: Vec<String>, cross: bool) -> Result<(), ToolError> {
+    let command = parse_v3_verify_args(args, cross)?;
+    let report = if cross {
+        cross_verify_sqlite_v3(
+            command.source_db.expect("cross source validated"),
+            &command.archive_dir,
+            command.options,
+        )
+    } else {
+        verify_v3_archive(&command.archive_dir, command.options)
+    };
+    if let Some(path) = command.out_path {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            path,
+            format!(
+                "{}\n",
+                serde_json::to_string_pretty(&report)
+                    .map_err(|error| ToolError::invalid_format(error.to_string()))?
+            ),
+        )?;
+    }
+    print_v3_verification(&report);
+    require_v3_verification(&report)
+}
+
+fn run_v3_benchmark(args: Vec<String>) -> Result<(), ToolError> {
+    let command = parse_v3_benchmark_args(args)?;
+    let report = execute_v3_benchmark(&command)?;
+    println!("SQLite/V3 benchmark complete: {}", report.dimension);
+    println!(
+        "  metadata P50/P95: {:.6}/{:.6} ms",
+        report.metadata_summary.p50_ms, report.metadata_summary.p95_ms
+    );
+    println!(
+        "  strategy P50/P95: {:.6}/{:.6} ms",
+        report.strategy_summary.p50_ms, report.strategy_summary.p95_ms
+    );
+    println!("  JSON: {}", command.out_path.display());
+    println!("  Markdown: {}", command.markdown_path.display());
+    if report.has_errors() {
+        return Err(ToolError::new(
+            "V3_BENCHMARK_FAILED",
+            "SQLite/V3 benchmark contains errors",
+        ));
+    }
+    Ok(())
+}
+
+fn print_v3_verification(report: &V3VerificationReport) {
+    println!("mode={}", report.mode);
+    println!("pass={}", report.ok);
+    println!("failures={}", report.failure_count);
+    println!("elapsed_ms={}", report.elapsed_ms);
+}
+
+fn require_v3_verification(report: &V3VerificationReport) -> Result<(), ToolError> {
+    if report.ok {
+        Ok(())
+    } else {
+        Err(ToolError::verify(format!(
+            "V3 verification found {} differences; first={:?}",
+            report.failure_count,
+            report.failure_samples.first()
+        )))
     }
 }
 
@@ -643,6 +751,21 @@ fn print_help() {
         "poker-hands-storage-tools
 
 Commands:
+  v3-export --source <range.db> --out <dimension-dir>
+        --dimension <strategy:player_count:depth_bb> [--overwrite]
+
+  v3-export-all --source <range.db> --out-root <v3-root> [--overwrite]
+
+  v3-verify --archive <dimension-dir> [--out <report.json>]
+
+  v3-cross-verify --source <range.db> --archive <dimension-dir>
+        [--out <report.json>]
+
+  v3-benchmark --source <range.db> --archive-root <v3-root>
+        --dimension <strategy:player_count:depth_bb>
+        [--iterations <count>] [--warmup-iterations <count>]
+        [--out <report.json>] [--md <report.md>]
+
   build --source-db <range.db> --out-dir <dir>
         [--dimension strategy:player_count:depth_bb]
         [--max-concrete-lines <count>] [--overwrite] [--resume]

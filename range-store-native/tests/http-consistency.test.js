@@ -3,7 +3,7 @@ import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, test } from "bun:test";
 
 const nativeAddonPath = fileURLToPath(new URL("../index.node", import.meta.url));
-const dataDir = fileURLToPath(new URL("../../data/range-strata", import.meta.url));
+const dataDir = fileURLToPath(new URL("../../data/proto-v3", import.meta.url));
 const httpUrl = process.env.PHS_HTTP_URL?.replace(/\/$/, "");
 const testWithHttp = httpUrl ? test : test.skip;
 

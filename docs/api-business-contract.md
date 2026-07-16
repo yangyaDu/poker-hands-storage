@@ -1,10 +1,10 @@
 # API 业务逻辑和接口契约
 
-更新日期：2026-07-08
+更新日期：2026-07-16
 
 ## 总体说明
 
-服务是只读 HTTP API，读取 Range Strata 运行目录中的 `manifest.json`、`meta.db`、`.idx/.bin` 文件。HTTP 框架为 axum，OpenAPI 文档由 utoipa 生成。
+服务是只读 HTTP API，默认读取 Proto V3 根目录中的维度 manifest 和三组 `.pb/.idx` 文件。运行时不打开 SQLite，也不读取 V2。HTTP 框架为 axum，OpenAPI 文档由 utoipa 生成。
 
 本文只维护 HTTP service 的请求、响应、业务错误码和业务语义。Bun/Node native SDK 的直接 payload 与 `RangeStoreError` 契约见 `sdk-and-query-chain-explanation.md`。
 
@@ -51,7 +51,7 @@ GET /api-docs/openapi.json
 | 400 | 1000 | JSON 解析失败、参数校验失败、未知手牌、非法参数 |
 | 404 | 404 | 维度、文件、concrete line、drill scenario、手牌策略或筛选结果不存在 |
 | 503 | 503 | 服务未 ready |
-| 500 | 500 | 格式损坏、元数据库错误、内部异常等未归类错误 |
+| 500 | 500 | V3 manifest、索引或 payload 损坏，以及未归类内部异常 |
 
 内部错误到公开业务码的映射：
 
@@ -71,7 +71,6 @@ GET /api-docs/openapi.json
 | `HANDS_NOT_FOUND` | 404 |
 | `SERVICE_UNAVAILABLE` | 503 |
 | `INVALID_FORMAT` | 500 |
-| `META_DB_ERROR` | 500 |
 | 其他错误 | 500 |
 
 ## 通用参数规则
@@ -214,7 +213,7 @@ F-F-F-R2-F-R7-R15
 | ---: | ---: | --- |
 | 400 | 1000 | 参数非法 |
 | 404 | 404 | 没有找到该 drill scenario 的 abstract lines |
-| 500 | 500 | `meta.db` 读取异常 |
+| 500 | 500 | V3 metadata page 或索引损坏 |
 
 ## `POST /range/concrete-lines`
 
@@ -280,7 +279,7 @@ F-F-F-R2-F-R7-R15
 | ---: | ---: | --- |
 | 400 | 1000 | 参数非法；`abstract_line` 和 `concrete_line` 都未传；字段为空字符串或 `null` |
 | 404 | 404 | 该 abstract line 没有 concrete lines，或 concrete line 不存在 |
-| 500 | 500 | `meta.db` 读取异常 |
+| 500 | 500 | V3 metadata page 或索引损坏 |
 
 ## `POST /range/hand-strategy`
 
@@ -302,9 +301,9 @@ F-F-F-R2-F-R7-R15
 
 1. 校验维度和必填字段。
 2. 解析 `hole_cards` 为固定 169 手牌 `hand_id`。
-3. 通过 `.idx` 查找 `concrete_line_id`。
-4. 从 `.bin` 解码目标 hand 的 action cells。
-5. 使用 `meta.db.action_schemas` 把 action id 转成业务 action 字段。
+3. 通过 `hand-strategies.idx` 直接定位 V3 ID 对应的 payload。
+4. 从 `hand-strategies.pb` 解码目标 hand 的 action cells。
+5. action identity 已在 `HandStrategy` payload 中，不需要 metadata SQLite。
 
 响应：
 

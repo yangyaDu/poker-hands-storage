@@ -40,6 +40,10 @@ impl ToolError {
         self.code
     }
 
+    pub fn static_code(&self) -> &'static str {
+        self.code
+    }
+
     pub fn message(&self) -> &str {
         &self.message
     }

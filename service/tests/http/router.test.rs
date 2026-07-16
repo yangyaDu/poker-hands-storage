@@ -32,7 +32,7 @@ async fn health_and_ready_endpoints_return_ok() {
     let (status, ready) = call_json(&app, Method::GET, "/ready", None).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(ready["code"], 0);
-    assert_eq!(ready["data"]["dimensions_known"][0], "default_6max_100BB");
+    assert_eq!(ready["data"]["dimensions_known"][0], "default:6max:100BB");
     assert!(ready["message"].is_null());
 }
 

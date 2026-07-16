@@ -12,6 +12,7 @@ crate-type = ["cdylib", "rlib"]
 napi = { version = "3", default-features = false, features = ["napi4"] }
 napi-derive = "3"
 range-store-core = { path = "../range-store-core" }
+poker-hands-storage-tools = { path = "../storage-tools" }
 
 [build-dependencies]
 napi-build = "2"

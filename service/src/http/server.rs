@@ -8,11 +8,12 @@ use crate::http::router::router;
 use crate::query::QueryService;
 
 pub async fn serve(config: ServiceConfig) -> Result<(), AppError> {
-    let service = Arc::new(QueryService::open_with_meta(
+    let service = Arc::new(QueryService::open_with_options(
         &config.data_dir,
-        &config.meta_db,
         config.max_open_handles,
         config.verify_checksums,
+        config.metadata_cache_bytes_per_handle,
+        config.strategy_cache_bytes_per_handle,
     )?);
     for dimension in &config.prewarm {
         service.prewarm(dimension)?;
@@ -22,7 +23,6 @@ pub async fn serve(config: ServiceConfig) -> Result<(), AppError> {
     tracing::info!(
         bind = %config.bind,
         data_dir = %config.data_dir.display(),
-        meta_db = %config.meta_db.display(),
         known_dimensions = service.known_dimensions().len(),
         prewarmed_handles = service.open_handle_count(),
         "poker-hands-storage service ready"

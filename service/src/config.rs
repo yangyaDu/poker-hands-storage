@@ -8,13 +8,16 @@ use range_store_core::dimension::DimensionRef;
 const DEFAULT_BIND: &str = "0.0.0.0:8080";
 const DEFAULT_DATA_DIR: &str = "/data";
 const DEFAULT_MAX_OPEN_HANDLES: usize = 2;
+const DEFAULT_METADATA_CACHE_BYTES: usize = 8 * 1024 * 1024;
+const DEFAULT_STRATEGY_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceConfig {
     pub bind: SocketAddr,
     pub data_dir: PathBuf,
-    pub meta_db: PathBuf,
     pub max_open_handles: usize,
+    pub metadata_cache_bytes_per_handle: usize,
+    pub strategy_cache_bytes_per_handle: usize,
     pub verify_checksums: bool,
     pub prewarm: Vec<DimensionRef>,
 }
@@ -34,10 +37,6 @@ impl ServiceConfig {
 
         let data_dir =
             PathBuf::from(lookup("PHS_DATA_DIR").unwrap_or_else(|| DEFAULT_DATA_DIR.to_owned()));
-        let meta_db = lookup("PHS_META_DB")
-            .map(PathBuf::from)
-            .unwrap_or_else(|| data_dir.join("meta.db"));
-
         let max_open_handles = match lookup("PHS_MAX_OPEN_HANDLES") {
             Some(value) => {
                 let parsed = value.parse::<usize>().map_err(|_| {
@@ -57,17 +56,43 @@ impl ServiceConfig {
             Some(value) => parse_bool("PHS_VERIFY_CHECKSUMS", &value)?,
             None => false,
         };
+        let metadata_cache_bytes_per_handle = parse_usize_or_default(
+            "PHS_METADATA_CACHE_BYTES",
+            lookup("PHS_METADATA_CACHE_BYTES"),
+            DEFAULT_METADATA_CACHE_BYTES,
+        )?;
+        let strategy_cache_bytes_per_handle = parse_usize_or_default(
+            "PHS_STRATEGY_CACHE_BYTES",
+            lookup("PHS_STRATEGY_CACHE_BYTES"),
+            DEFAULT_STRATEGY_CACHE_BYTES,
+        )?;
         let prewarm = parse_prewarm(lookup("PHS_PREWARM").as_deref().unwrap_or_default())?;
 
         Ok(Self {
             bind,
             data_dir,
-            meta_db,
             max_open_handles,
+            metadata_cache_bytes_per_handle,
+            strategy_cache_bytes_per_handle,
             verify_checksums,
             prewarm,
         })
     }
+}
+
+fn parse_usize_or_default(
+    name: &str,
+    value: Option<String>,
+    default: usize,
+) -> Result<usize, AppError> {
+    value
+        .map(|value| {
+            value
+                .parse::<usize>()
+                .map_err(|_| AppError::invalid_argument(format!("{name} must be an integer")))
+        })
+        .transpose()
+        .map(|value| value.unwrap_or(default))
 }
 
 fn parse_bool(name: &str, value: &str) -> Result<bool, AppError> {

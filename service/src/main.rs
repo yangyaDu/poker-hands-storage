@@ -87,8 +87,9 @@ fn print_help() {
 
 Commands:
   serve
-        Environment: PHS_BIND, PHS_DATA_DIR, PHS_META_DB,
-        PHS_MAX_OPEN_HANDLES, PHS_VERIFY_CHECKSUMS, PHS_PREWARM, RUST_LOG
+        Environment: PHS_BIND, PHS_DATA_DIR, PHS_MAX_OPEN_HANDLES,
+        PHS_METADATA_CACHE_BYTES, PHS_STRATEGY_CACHE_BYTES,
+        PHS_VERIFY_CHECKSUMS, PHS_PREWARM, RUST_LOG
 
   healthcheck [--url <http-url>] [--timeout-ms <milliseconds>]
 

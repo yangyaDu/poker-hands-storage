@@ -1,115 +1,76 @@
-# Docker 部署流程
+# Proto V3 Docker 部署流程
 
-更新日期：2026-07-02
+更新日期：2026-07-16
 
-## 部署目标
+HTTP service 默认且只读取 Proto V3。生产容器只需要镜像和一个只读 V3 根目录；不需要源
+`range.db`、`meta.db`、`lines.db`、PFSP Binary 或 Proto V2 文件。
 
-Docker 部署只运行 HTTP API 服务，不包含离线构建、验证和 benchmark 工具。
+## 数据目录
 
-运行时需要两个部分：
-
-1. 镜像：`poker-hands-storage:local` 或发布到镜像仓库的正式 tag。
-2. 数据目录：包含 `manifest.json`、`meta.db`、`*.idx`、`*.bin` 的 Range Strata 输出目录。
-
-源 SQLite `range.db` 不是线上容器输入，只用于离线构建和验证。
-
-## 镜像构建方案
-
-Dockerfile 使用多阶段构建：
-
-1. `builder` 阶段使用 `rust:1-slim-bookworm`。
-2. 只 COPY `.docker/Cargo.service.toml`、`Cargo.lock`、`range-store-core`、`service`。
-3. 执行 `cargo build --release --locked -p poker-hands-storage-service`。
-4. `deps-extractor` 阶段安装运行时所需的 `libsqlite3-0` 和 CA 证书。
-5. runtime 阶段使用 `gcr.io/distroless/base-debian12`。
-6. 拷贝 service 二进制和动态库。
-7. 使用非 root 用户启动。
-
-`.docker/Cargo.service.toml` 只包含：
+根目录下每个子目录代表一个维度：
 
 ```text
-range-store-core
-service
+proto-v3/
+  default_6max_100BB/
+    manifest.json
+    drill-scenarios.pb
+    drill-scenarios.idx
+    abstract-action-paths.pb
+    abstract-action-paths.idx
+    hand-strategies.pb
+    hand-strategies.idx
 ```
 
-因此 `storage-tools` 的 benchmark、verification、build 工具变更不会影响 service 镜像构建缓存。
-
-## 本地 Compose 启动
-
-默认命令：
+离线生成并验收全部维度：
 
 ```powershell
+cargo run -p poker-hands-storage-tools -- v3-export-all `
+  --source data\sqlite\range.db `
+  --out-root data\proto-v3-releases\2026-07-16T000000Z
+
+cargo run -p poker-hands-storage-tools -- v3-benchmark `
+  --source data\sqlite\range.db `
+  --archive-root data\proto-v3-releases\2026-07-16T000000Z `
+  --dimension default:6:100
+```
+
+`v3-export-all` 对每个维度执行 read-back standalone verify 和 SQLite cross verify。正式发布仍应
+保存报告，并确认所有计划维度均被发现。
+
+## Compose
+
+```powershell
+$env:PHS_HOST_DATA_DIR = "C:\path\to\proto-v3-release"
 docker compose -f .docker\docker-compose.yml up --build -d
-```
-
-默认挂载：
-
-```text
-${PHS_HOST_DATA_DIR:-../data/range-strata}:/data:ro
-```
-
-如果要验证其他数据目录：
-
-```powershell
-$env:PHS_HOST_DATA_DIR = "C:\path\to\range-strata-v2"
-docker compose -f .docker\docker-compose.yml up --build -d
-```
-
-查看容器：
-
-```powershell
 docker compose -f .docker\docker-compose.yml ps
+Invoke-RestMethod http://127.0.0.1:8080/ready
 ```
 
-停止：
-
-```powershell
-docker compose -f .docker\docker-compose.yml down
-```
+Compose 把宿主机 V3 root 只读挂载到 `/data`。不要把单个维度目录挂到 `/data`；service 需要在
+根目录发现维度子目录。
 
 ## 环境变量
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `PHS_BIND` | `0.0.0.0:8080` | 服务监听地址 |
-| `PHS_DATA_DIR` | `/data` | 容器内数据目录 |
-| `PHS_META_DB` | `/data/meta.db` | 元数据库路径 |
-| `PHS_MAX_OPEN_HANDLES` | `2` | 维度 reader LRU 池大小；单 9max 服务可先设为 `1` 或 `2` |
-| `PHS_VERIFY_CHECKSUMS` | `false` | 查询时是否校验 pack CRC32C |
-| `PHS_PREWARM` | 空 | 启动时预热的维度列表，格式 `strategy:player_count:depth_bb` |
+| `PHS_BIND` | `0.0.0.0:8080` | HTTP 监听地址 |
+| `PHS_DATA_DIR` | `/data` | Proto V3 根目录 |
+| `PHS_MAX_OPEN_HANDLES` | `2` | 维度 handle LRU 容量 |
+| `PHS_METADATA_CACHE_BYTES` | `8388608` | 每 handle metadata cache 字节预算 |
+| `PHS_STRATEGY_CACHE_BYTES` | `67108864` | 每 handle strategy cache 字节预算 |
+| `PHS_VERIFY_CHECKSUMS` | `false` | 打开维度时验证完整文件 CRC32C |
+| `PHS_PREWARM` | 空 | `strategy:player_count:depth_bb` 列表 |
 | `RUST_LOG` | `info` | 日志级别 |
-| `PHS_HOST_DATA_DIR` | `../data/range-strata` | Compose 使用的宿主机数据目录 |
 
-Compose 当前显式配置：
+发布环境建议启用 `PHS_VERIFY_CHECKSUMS=true`。查询时仍会检查目标 page/payload CRC。
 
-```yaml
-PHS_MAX_OPEN_HANDLES: "2"
-PHS_VERIFY_CHECKSUMS: "true"
-PHS_PREWARM: default:6:100
-```
-
-## 健康检查
-
-接口：
+## 健康检查与 smoke
 
 ```text
 GET /health
 GET /ready
+GET /swagger
 ```
-
-`/health` 表示进程存活。  
-`/ready` 表示服务已经成功打开数据目录并加载到可查询维度。
-
-本地检查：
-
-```powershell
-Invoke-RestMethod http://127.0.0.1:8080/health
-Invoke-RestMethod http://127.0.0.1:8080/ready
-```
-
-Dockerfile 内置 HEALTHCHECK 默认检查 `/health`。Compose 覆盖为检查 `/ready`，更接近线上流量接入条件。
-
-## 查询 smoke
 
 ```powershell
 $body = @{
@@ -122,267 +83,15 @@ $body = @{
 
 Invoke-RestMethod `
   -Uri http://127.0.0.1:8080/range/hand-strategy `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body $body
+  -Method Post -ContentType "application/json" -Body $body
 ```
 
-Swagger：
-
-```text
-http://127.0.0.1:8080/swagger
-```
-
-OpenAPI JSON：
-
-```text
-http://127.0.0.1:8080/api-docs/openapi.json
-```
-
-## 发布前数据准备
-
-建议每次发布都生成一个新的版本化数据目录，不要覆盖正在运行的目录：
-
-```text
-data/
-  range-strata-releases/
-    2026-07-02T230000Z/
-      manifest.json
-      meta.db
-      *.idx
-      *.bin
-      build-state.json
-    2026-07-03T010000Z/
-      manifest.json
-      meta.db
-      *.idx
-      *.bin
-      build-state.json
-```
-
-构建新版本数据：
-
-```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
-  --source-db data\sqlite\range.db `
-  --out-dir data\range-strata-releases\2026-07-02T230000Z `
-  --resume
-```
-
-如果构建中断，使用相同命令继续。`--resume` 会读取输出目录中的 `build-state.json`，跳过已完成且 size/checksum 匹配的维度。
-
-如果确认要从零重建某个版本目录，使用 `--overwrite`，不要和 `--resume` 同时使用：
-
-```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- build `
-  --source-db data\sqlite\range.db `
-  --out-dir data\range-strata-releases\2026-07-02T230000Z `
-  --overwrite
-```
-
-发布前必须验证数据：
-
-```powershell
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
-  --mode standalone `
-  --dir data\range-strata-releases\2026-07-02T230000Z `
-  --verify-checksum
-
-cargo run -p poker-hands-storage-tools --target x86_64-pc-windows-msvc -- verify `
-  --mode cross `
-  --dir data\range-strata-releases\2026-07-02T230000Z `
-  --source data\sqlite\range.db `
-  --sample-size 0 `
-  --verify-checksum
-```
-
-发布验收口径：
-
-- standalone verify 必须通过。
-- full cross verify 推荐使用 `--sample-size 0`，失败数必须为 0。
-- 如果源 SQLite 不在生产环境，需要在离线构建环境完成 cross verify 后再发布数据目录。
-
-## 推荐部署流程
-
-1. 选择新 release id，例如 `2026-07-02T230000Z`。
-2. 用 `build --resume` 构建到新版本目录。
-3. 对新目录执行 standalone verify。
-4. 对新目录执行 full cross verify。
-5. 构建 Docker 镜像。
-6. 设置 `PHS_HOST_DATA_DIR` 指向新版本目录。
-7. 启动或重建容器。
-8. 检查 `/health`、`/ready`。
-9. 执行至少一个 `concrete-lines` 和一个 `hands-by-actions` smoke 查询。
-10. 切正式流量。
-
-命令示例：
-
-```powershell
-$env:PHS_HOST_DATA_DIR = "C:\Users\Duyang\Desktop\elysia_project\poker-hands-storage\data\range-strata-releases\2026-07-02T230000Z"
-
-docker compose -f .docker\docker-compose.yml build
-docker compose -f .docker\docker-compose.yml up -d
-docker compose -f .docker\docker-compose.yml ps
-Invoke-RestMethod http://127.0.0.1:8080/ready
-```
-
-Smoke 查询：
-
-```powershell
-$lineBody = @{
-  strategy = "default"
-  player_count = 6
-  depth_bb = 100
-  concrete_line = "F-F-F"
-} | ConvertTo-Json
-
-Invoke-RestMethod `
-  -Uri http://127.0.0.1:8080/range/concrete-lines `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body $lineBody
-
-$rangeBody = @{
-  strategy = "default"
-  player_count = 6
-  depth_bb = 100
-  concrete_line_id = 1
-  actions = @()
-  frequency = 0.005
-} | ConvertTo-Json
-
-Invoke-RestMethod `
-  -Uri http://127.0.0.1:8080/range/hands-by-actions `
-  -Method Post `
-  -ContentType "application/json" `
-  -Body $rangeBody
-```
-
-## Kubernetes 部署
-
-`.docker/k8s.yaml` 提供基础模板：
-
-- `ConfigMap`：服务环境变量。
-- `PersistentVolumeClaim`：只读数据卷。
-- `Deployment`：容器、资源限制、探针和只读挂载。
-- `Service`：ClusterIP。
-
-探针：
-
-```text
-readinessProbe -> GET /ready
-livenessProbe  -> GET /health
-```
-
-默认资源：
-
-```yaml
-requests:
-  cpu: 100m
-  memory: 256Mi
-limits:
-  cpu: "1"
-  memory: 1Gi
-```
-
-生产环境应按实际数据目录大小、prewarm 策略和访问量调整资源。
-
-## 安全和文件系统策略
-
-Compose 当前配置：
-
-- 数据目录 `/data` 只读挂载。
-- root filesystem `read_only: true`。
-- `cap_drop: [ALL]`。
-- `no-new-privileges:true`。
-- distroless runtime。
-- 非 root 用户运行。
-
-这些配置要求服务运行时不能写本地文件。日志应走 stdout/stderr。
-
-## Prewarm 与内存
-
-服务启动时会读取 manifest、打开 `meta.db`，并校验维度文件和 action schema 引用。action schemas 按 `schema_id` 懒加载，不再在启动或首次 miss 时全表加载。
-
-`PHS_PREWARM` 只会把配置的维度打开进 handle pool。mmap 打开 `.idx/.bin` 不等于立即把整个 `.bin` 读入物理内存，但被访问过的页会进入 OS page cache，并可能体现在 RSS 或容器内存统计中。
-
-建议：
-
-- 生产只 prewarm 高频维度。
-- 不建议为了 ready 全量 prewarm 所有维度。
-- 如果希望把某些首次访问成本放到 ready 前，可把这些维度加入 `PHS_PREWARM`。
-- 如果容器内存紧张，应降低 `PHS_MAX_OPEN_HANDLES` 或减少 prewarm 维度。
-
-## 回滚流程
-
-推荐使用版本化数据目录：
-
-```text
-data/range-strata-releases/
-  2026-07-02T230000Z/
-  2026-07-03T010000Z/
-```
-
-回滚时切回旧目录并重启容器。Compose 使用 `PHS_HOST_DATA_DIR` 控制宿主机数据目录：
-
-```powershell
-$env:PHS_HOST_DATA_DIR = "C:\Users\Duyang\Desktop\elysia_project\poker-hands-storage\data\range-strata-releases\2026-07-02T230000Z"
-docker compose -f .docker\docker-compose.yml up -d
-docker compose -f .docker\docker-compose.yml ps
-Invoke-RestMethod http://127.0.0.1:8080/ready
-```
-
-回滚验收：
-
-- 容器重新进入 healthy。
-- `/ready` 返回 `code=0`。
-- smoke 查询返回正常结果。
-
-不要在已有容器正在 mmap 的目录中原地覆盖 `.idx/.bin` 文件。应发布新目录并重启或滚动替换容器。
-
-## 发布注意事项
-
-- `build-state.json` 是构建恢复和审计文件，建议随数据目录一起保留。
-- `manifest.json` 是服务入口，缺失或格式错误会导致 `/ready` 失败。
-- `meta.db`、`.idx`、`.bin` 必须来自同一次构建，不要跨版本混用。
-- 发布前不要只跑 sampled cross verify 作为最终验收；正式发布建议 full cross verify。
-- 如果新版本启动失败，不要在同一目录内修补文件，重新构建一个新 release 目录。
-
-## 常见问题
-
-### `/ready` 返回 503
-
-可能原因：
-
-- `/data/manifest.json` 不存在或格式错误。
-- manifest 中没有成功维度。
-- 数据目录挂载错误。
-- `meta.db` 或 `.idx/.bin` 缺失导致服务启动失败。
-
-先检查容器日志和挂载路径。
-
-### 容器启动失败，提示 SQLite 动态库问题
-
-runtime 镜像已经包含 `libsqlite3.so.0`。如果自定义基础镜像，需要确保动态 SQLite 库存在。
-
-Windows 本机运行时可通过 `PHS_SQLITE3_LIB` 指定 `sqlite3.dll`，Docker Linux runtime 通常不需要设置。
-
-### 查询返回 404
-
-可能原因：
-
-- 维度不存在。
-- `concrete_line_id` 不存在。
-- 手牌不在该 concrete line 的 pack 中。
-- `/range/hands-by-actions` 筛选后没有满足条件的手牌。
-
-### 内存高于预期
-
-可能原因：
-
-- `PHS_PREWARM` 配置了多个大维度。
-- `PHS_MAX_OPEN_HANDLES` 较大。
-- 查询访问触发了大量 `.bin` 文件页进入 page cache。
-- `PHS_VERIFY_CHECKSUMS=true` 增加了 pack 读取和计算。
-
-先用较小 prewarm 集合验证，再逐步增加。
+## 发布和问题处理
+
+1. 每次从源 SQLite 导出到新的版本化目录，不覆盖正在 mmap 的目录。
+2. 确认全部维度的 standalone/cross verify 零差异。
+3. 运行 SQLite/V3 benchmark，确认 correctness gate、P50/P95、cache bytes 和 RSS。
+4. 将挂载切到新目录，滚动重启，检查 `/ready` 和 smoke 查询。
+5. 若发现问题，停止发布，修复 writer/reader 后从 SQLite 重新导出新的 V3 目录。
+
+V3 没有 V2 双读或 V2 回退路径。所谓“回滚”只能切回一个已经通过校验的旧 V3 release。
