@@ -178,6 +178,38 @@ impl HandStrategyStore {
             .stats()
     }
 
+    /// Decode every strategy payload and verify that locators densely and contiguously cover the
+    /// data file. Decoding also enforces all schema, bitmap, array and null-sentinel invariants.
+    pub fn verify_and_snapshot(&self) -> Result<Vec<HandStrategy>, ToolError> {
+        let count = u32::try_from(self.record_count)
+            .map_err(|_| invalid_store("V3 hand strategy count exceeds uint32"))?;
+        let mut expected_offset = HEADER_SIZE as u64;
+        let mut strategies = Vec::with_capacity(count as usize);
+        for concrete_action_path_id in 1..=count {
+            let locator = self.locator(concrete_action_path_id)?;
+            if locator.byte_length == 0 || locator.offset != expected_offset {
+                return Err(invalid_store(format!(
+                    "V3 strategy locator for id {concrete_action_path_id} is empty or non-contiguous"
+                )));
+            }
+            expected_offset = locator
+                .offset
+                .checked_add(u64::from(locator.byte_length))
+                .ok_or_else(|| invalid_store("V3 strategy payload end overflow"))?;
+            strategies.push(
+                self.read_uncached(concrete_action_path_id)?
+                    .strategy()
+                    .clone(),
+            );
+        }
+        if expected_offset != self.data_mmap.len() as u64 {
+            return Err(invalid_store(
+                "V3 strategy payloads do not exactly cover the data file",
+            ));
+        }
+        Ok(strategies)
+    }
+
     pub fn read(
         &self,
         concrete_action_path_id: u32,
@@ -211,20 +243,7 @@ impl HandStrategyStore {
         &self,
         concrete_action_path_id: u32,
     ) -> Result<DecodedHandStrategy, ToolError> {
-        let record_index = concrete_action_path_id as usize - 1;
-        let start = self
-            .locator_offset
-            .checked_add(
-                record_index
-                    .checked_mul(PAYLOAD_LOCATOR_SIZE)
-                    .ok_or_else(|| invalid_store("V3 strategy locator offset overflow"))?,
-            )
-            .ok_or_else(|| invalid_store("V3 strategy locator offset overflow"))?;
-        let locator = decode_payload_locator(
-            self.index_mmap
-                .get(start..start + PAYLOAD_LOCATOR_SIZE)
-                .ok_or_else(|| invalid_store("V3 strategy locator is truncated"))?,
-        )?;
+        let locator = self.locator(concrete_action_path_id)?;
         let payload_end = locator
             .offset
             .checked_add(u64::from(locator.byte_length))
@@ -243,6 +262,28 @@ impl HandStrategyStore {
         let strategy = HandStrategy::decode(payload)
             .map_err(|error| ToolError::new("PROTOBUF_DECODE_ERROR", error.to_string()))?;
         DecodedHandStrategy::new(strategy)
+    }
+
+    fn locator(&self, concrete_action_path_id: u32) -> Result<PayloadLocator, ToolError> {
+        if concrete_action_path_id == 0 || u64::from(concrete_action_path_id) > self.record_count {
+            return Err(invalid_store(format!(
+                "V3 concrete action path id {concrete_action_path_id} is out of bounds"
+            )));
+        }
+        let record_index = concrete_action_path_id as usize - 1;
+        let start = self
+            .locator_offset
+            .checked_add(
+                record_index
+                    .checked_mul(PAYLOAD_LOCATOR_SIZE)
+                    .ok_or_else(|| invalid_store("V3 strategy locator offset overflow"))?,
+            )
+            .ok_or_else(|| invalid_store("V3 strategy locator offset overflow"))?;
+        decode_payload_locator(
+            self.index_mmap
+                .get(start..start + PAYLOAD_LOCATOR_SIZE)
+                .ok_or_else(|| invalid_store("V3 strategy locator is truncated"))?,
+        )
     }
 }
 

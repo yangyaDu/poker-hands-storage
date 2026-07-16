@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -22,7 +23,9 @@ use super::format::{
     HEADER_SIZE, NO_VALUE_INDEX, PAYLOAD_LOCATOR_SIZE, SECTION_DESCRIPTOR_SIZE,
 };
 use super::manifest::{AbstractActionPathsManifest, DrillScenariosManifest, ManifestFile};
-use super::proto::{AbstractActionPathEntry, AbstractActionPathPage, DrillScenarioPage};
+use super::proto::{
+    AbstractActionPathEntry, AbstractActionPathPage, DrillScenarioEntry, DrillScenarioPage,
+};
 use super::source::{load_metadata, LoadedMetadata};
 
 pub const DEFAULT_METADATA_PAGE_TARGET_BYTES: usize = 64 * 1024;
@@ -63,6 +66,13 @@ pub struct MetadataExportSummary {
     pub drill_scenarios: DrillScenariosManifest,
     pub abstract_action_paths: AbstractActionPathsManifest,
     pub concrete_paths: Vec<ExportedConcreteActionPath>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MetadataSnapshot {
+    pub drill_scenarios: Vec<DrillScenarioEntry>,
+    pub abstract_action_paths: Vec<AbstractActionPathEntry>,
+    pub concrete_path_count: u64,
 }
 
 pub fn export_metadata(
@@ -171,6 +181,139 @@ impl MetadataStore {
                 .stats(),
         );
         stats
+    }
+
+    /// Decode every metadata page and prove that the fixed-width indexes are an exact,
+    /// one-to-one projection of the protobuf payloads.
+    pub fn verify_and_snapshot(&self) -> Result<MetadataSnapshot, ToolError> {
+        self.drill.verify_payload_layout()?;
+        self.action_paths.verify_payload_layout()?;
+
+        let mut drill_scenarios = Vec::new();
+        let mut expected_drill_locators = Vec::new();
+        for page_id in 0..self.drill.page_count_u32()? {
+            let page: DrillScenarioPage = self.drill.read_page(page_id)?;
+            if page.entries.is_empty() {
+                return Err(invalid_metadata(format!(
+                    "Drill page {page_id} must not be empty"
+                )));
+            }
+            for (entry_index, entry) in page.entries.into_iter().enumerate() {
+                expected_drill_locators.push(HashLocator::entry(
+                    stable_hash64(&entry.drill_name),
+                    page_id,
+                    to_u32("drill entry index", entry_index)?,
+                ));
+                drill_scenarios.push(entry);
+            }
+        }
+        if drill_scenarios.len() as u64 != self.drill.data_secondary_count {
+            return Err(invalid_metadata(
+                "Drill entry count does not match the data header",
+            ));
+        }
+        sort_hash_locators(&mut expected_drill_locators);
+        self.drill
+            .verify_hash_section(SectionKind::PrimaryHashLocators, &expected_drill_locators)?;
+
+        let mut abstract_action_paths = Vec::new();
+        let mut expected_abstract_locators = Vec::new();
+        let mut expected_concrete_locators = Vec::new();
+        for page_id in 0..self.action_paths.page_count_u32()? {
+            let page: AbstractActionPathPage = self.action_paths.read_page(page_id)?;
+            if page.entries.is_empty() {
+                return Err(invalid_metadata(format!(
+                    "Abstract action path page {page_id} must not be empty"
+                )));
+            }
+            for (entry_index, entry) in page.entries.into_iter().enumerate() {
+                let entry_index = to_u32("abstract action path entry index", entry_index)?;
+                expected_abstract_locators.push(HashLocator::entry(
+                    stable_hash64(&entry.abstract_action_path),
+                    page_id,
+                    entry_index,
+                ));
+                for (value_index, path) in entry.concrete_action_paths.iter().enumerate() {
+                    expected_concrete_locators.push(HashLocator::value(
+                        stable_hash64(&path.concrete_action_path),
+                        page_id,
+                        entry_index,
+                        to_u32("concrete action path value index", value_index)?,
+                    ));
+                }
+                abstract_action_paths.push(entry);
+            }
+        }
+        if abstract_action_paths.len() as u64 != self.action_paths.data_secondary_count {
+            return Err(invalid_metadata(
+                "Abstract action path count does not match the data header",
+            ));
+        }
+        sort_hash_locators(&mut expected_abstract_locators);
+        sort_hash_locators(&mut expected_concrete_locators);
+        self.action_paths.verify_hash_section(
+            SectionKind::PrimaryHashLocators,
+            &expected_abstract_locators,
+        )?;
+        self.action_paths.verify_hash_section(
+            SectionKind::SecondaryHashLocators,
+            &expected_concrete_locators,
+        )?;
+
+        let mut drill_names = HashSet::new();
+        let mut abstract_paths = HashSet::new();
+        let mut concrete_paths = HashSet::new();
+        let mut concrete_ids = Vec::new();
+        for drill in &drill_scenarios {
+            if !drill_names.insert(drill.drill_name.as_str()) {
+                return Err(invalid_metadata(format!(
+                    "Duplicate drill scenario {:?}",
+                    drill.drill_name
+                )));
+            }
+        }
+        for entry in &abstract_action_paths {
+            if !abstract_paths.insert(entry.abstract_action_path.as_str()) {
+                return Err(invalid_metadata(format!(
+                    "Duplicate abstract action path {:?}",
+                    entry.abstract_action_path
+                )));
+            }
+            for concrete in &entry.concrete_action_paths {
+                if !concrete_paths.insert(concrete.concrete_action_path.as_str()) {
+                    return Err(invalid_metadata(format!(
+                        "Duplicate concrete action path {:?}",
+                        concrete.concrete_action_path
+                    )));
+                }
+                concrete_ids.push(concrete.concrete_action_path_id);
+            }
+        }
+        for drill in &drill_scenarios {
+            for abstract_path in &drill.abstract_action_paths {
+                if !abstract_paths.contains(abstract_path.as_str()) {
+                    return Err(invalid_metadata(format!(
+                        "Drill {:?} references missing abstract action path {:?}",
+                        drill.drill_name, abstract_path
+                    )));
+                }
+            }
+        }
+        concrete_ids.sort_unstable();
+        for (index, actual) in concrete_ids.iter().copied().enumerate() {
+            let expected = to_u32("concrete action path id", index + 1)?;
+            if actual != expected {
+                return Err(invalid_metadata(format!(
+                    "Concrete action path ids must be dense: expected {expected}, got {actual}"
+                )));
+            }
+        }
+
+        Ok(MetadataSnapshot {
+            drill_scenarios,
+            abstract_action_paths,
+            concrete_path_count: concrete_ids.len() as u64,
+        })
     }
 
     pub fn get_drill_scenario_lines(&self, drill_name: &str) -> Result<Vec<String>, ToolError> {
@@ -775,6 +918,7 @@ struct PagedDataset {
     page_locators: SectionView,
     primary_hash_locators: SectionView,
     secondary_hash_locators: Option<SectionView>,
+    data_secondary_count: u64,
 }
 
 impl PagedDataset {
@@ -830,7 +974,65 @@ impl PagedDataset {
             page_locators: sections[0],
             primary_hash_locators: sections[1],
             secondary_hash_locators: sections.get(2).copied(),
+            data_secondary_count: data_header.secondary_count,
         })
+    }
+
+    fn page_count_u32(&self) -> Result<u32, ToolError> {
+        u32::try_from(self.page_locators.record_count)
+            .map_err(|_| invalid_metadata("V3 metadata page count exceeds uint32"))
+    }
+
+    fn verify_payload_layout(&self) -> Result<(), ToolError> {
+        let mut expected_offset = HEADER_SIZE as u64;
+        for page_id in 0..self.page_count_u32()? {
+            let locator = self.payload_locator(page_id)?;
+            if locator.byte_length == 0 || locator.offset != expected_offset {
+                return Err(invalid_metadata(format!(
+                    "V3 metadata page {page_id} locator is empty or non-contiguous"
+                )));
+            }
+            expected_offset = locator
+                .offset
+                .checked_add(u64::from(locator.byte_length))
+                .ok_or_else(|| invalid_metadata("V3 metadata page end overflow"))?;
+        }
+        if expected_offset != self.data_mmap.len() as u64 {
+            return Err(invalid_metadata(
+                "V3 metadata payloads do not exactly cover the data file",
+            ));
+        }
+        Ok(())
+    }
+
+    fn verify_hash_section(
+        &self,
+        kind: SectionKind,
+        expected: &[HashLocator],
+    ) -> Result<(), ToolError> {
+        let section = match kind {
+            SectionKind::PrimaryHashLocators => self.primary_hash_locators,
+            SectionKind::SecondaryHashLocators => self
+                .secondary_hash_locators
+                .ok_or_else(|| invalid_metadata("V3 metadata secondary hash index is missing"))?,
+            _ => return Err(invalid_metadata("V3 metadata hash section kind is invalid")),
+        };
+        if section.record_count != expected.len() as u64 {
+            return Err(invalid_metadata(format!(
+                "V3 metadata {:?} count does not match payloads",
+                kind
+            )));
+        }
+        for (index, expected_locator) in expected.iter().enumerate() {
+            let actual = decode_hash_locator(section.record(&self.index_mmap, index)?)?;
+            if actual.reserved != 0 || actual != *expected_locator {
+                return Err(invalid_metadata(format!(
+                    "V3 metadata {:?} locator {index} does not match payloads",
+                    kind
+                )));
+            }
+        }
+        Ok(())
     }
 
     fn read_page<P: Message + Default>(&self, page_id: u32) -> Result<P, ToolError> {
