@@ -6,6 +6,7 @@ pub mod query_service;
 pub mod three_way_benchmark;
 pub mod three_way_cold_benchmark;
 pub mod three_way_stability_benchmark;
+pub mod v3;
 
 pub(crate) mod benchmark;
 pub(crate) mod format;

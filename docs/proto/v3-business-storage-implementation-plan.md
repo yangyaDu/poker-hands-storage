@@ -53,6 +53,50 @@ default_9max_200BB/
 - `manifest.json` 记录 V3 format、维度、文件名、大小、校验信息和 record/page count。
 - `concrete_action_path_id` 只在当前维度内有效，并且从 1 连续编号。
 
+### 已固化的二进制契约
+
+所有整数使用 little-endian。六个文件使用独立 magic：
+
+| 文件 | magic |
+| --- | --- |
+| `drill-scenarios.pb` | `V3DD` |
+| `drill-scenarios.idx` | `V3DI` |
+| `abstract-action-paths.pb` | `V3AD` |
+| `abstract-action-paths.idx` | `V3AI` |
+| `hand-strategies.pb` | `V3HD` |
+| `hand-strategies.idx` | `V3HI` |
+
+每个文件以 32-byte header 开始：
+
+```text
+magic[4]
+format_version: u16 = 3
+header_size: u16 = 32
+primary_count: u64
+secondary_count: u64
+section_count: u32
+flags: u32 = 0
+```
+
+`.idx` 的 section directory 紧跟 header，每条 32 bytes：
+
+```text
+section_kind: u16
+record_size: u16
+reserved: u32 = 0
+offset: u64
+record_count: u64
+byte_length: u64
+```
+
+page/payload locator 固定为 16 bytes：`offset: u64 + byte_length: u32 + crc32c: u32`。hash locator
+固定为 24 bytes：`hash: u64 + page_id: u32 + entry_index: u32 + value_index: u32 + reserved: u32`。
+`page_id`、`entry_index` 和 `value_index` 均为 0-based；不使用 value index 时写 `u32::MAX`。
+
+字符串索引固定使用 FNV-1a 64-bit，不能替换为进程随机 hash。hash locator 按 hash 排序；相同 hash 的
+记录必须连续保存并逐项做完整字符串比较。locator 中的 CRC32C 覆盖单个 Proto payload；manifest
+另存六个完整 `.pb/.idx` 文件各自的 CRC32C。
+
 ## Proto schema
 
 ```proto

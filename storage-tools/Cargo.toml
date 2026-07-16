@@ -29,6 +29,10 @@ name = "compact_line_matrix_archive_test"
 path = "tests/compact_line_matrix_archive.test.rs"
 
 [[test]]
+name = "proto_v3_format_test"
+path = "tests/proto_v3_format.test.rs"
+
+[[test]]
 name = "verification_float32_precision_test"
 path = "tests/verification/float32_precision.test.rs"
 
