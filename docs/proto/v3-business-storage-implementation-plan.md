@@ -6,10 +6,10 @@
 ## 首发发布门禁记录
 
 2026-07-17 已使用完整源 SQLite 完成九维 V3 发布门禁。通过的不可变 release root 为
-`data/proto-v3-releases/2026-07-17T000001Z`，包含
+`data/proto-v3-releases/2026-07-17T132350Z`，包含
 `default_{6,8,9}max_{100,200,300}BB` 共九个维度；每个维度均包含 manifest 和三组 `.pb/.idx` 文件。
 
-对应汇总报告位于 `reports/v3-release-20260717/release-gate-summary.json`：九份 standalone verify 与九份 SQLite cross verify
+对应汇总报告位于 `reports/v3-release-20260717T132350Z/release-gate-summary.json`：九份 standalone verify 与九份 SQLite cross verify
 报告均为 `ok=true`、`failureCount=0`，cross 的 mapping/action/cell differences 均为 0；九份
 SQLite/V3 benchmark 均为 `correctnessVerified=true`，并记录了 P50/P95、cache 统计和前后 RSS。
 
@@ -407,8 +407,8 @@ golden tests 和本方案，不能静默改变 magic、header 或 locator 语义
 ## 后续发布与问题处理
 
 2026-07-17 的首发门禁已在
-`data/proto-v3-releases/2026-07-17T000001Z` 完成，报告固定保存在
-`reports/v3-release-20260717/release-gate-summary.json`。后续每次发布仍按以下规则执行：
+`data/proto-v3-releases/2026-07-17T132350Z` 完成，报告固定保存在
+`reports/v3-release-20260717T132350Z/release-gate-summary.json`。后续每次发布仍按以下规则执行：
 
 1. 从源 SQLite 向全新的版本化 V3 root 导出，禁止覆盖源库、已发布目录或把临时文件当成完成产物。
 2. 对计划发布的每个维度运行 read-back standalone verify 和 SQLite cross verify。
@@ -420,14 +420,14 @@ golden tests 和本方案，不能静默改变 magic、header 或 locator 语义
 ## Definition of Done
 
 - 九个维度已于 2026-07-17 由源 SQLite 全量导出至
-  `data/proto-v3-releases/2026-07-17T000001Z`，目录中只有 manifest 和三组 `.pb/.idx` 业务文件。
+  `data/proto-v3-releases/2026-07-17T132350Z`，每个维度目录中只有 manifest 和三组 `.pb/.idx` 业务文件。
 - standalone verify 已对九个维度的所有文件、索引、ref、payload 和业务不变量通过；报告在
-  `reports/v3-release-20260717/release-gate-summary.json`。
+  `reports/v3-release-20260717T132350Z/release-gate-summary.json`。
 - SQLite cross verify 已对三条业务映射和所有 action cell 达到零差异，包括全部 null EV cell；报告在
-  `reports/v3-release-20260717/release-gate-summary.json`。
+  `reports/v3-release-20260717T132350Z/release-gate-summary.json`。
 - 运行时查询链不打开 SQLite，metadata/strategy cache 均受 byte budget 限制。
 - 首次访问、cache hit、handle 淘汰和稳定运行性能已有九维可复现报告；所有 benchmark 的
-  `correctnessVerified=true`，报告在 `reports/v3-release-20260717/release-gate-summary.json`。
+  `correctnessVerified=true`，报告在 `reports/v3-release-20260717T132350Z/release-gate-summary.json`。
 - workspace test、format check 和 V3 CLI 端到端测试通过。
 - README、API、部署和运维文档将 V3 描述为当前主发布格式和 service/SDK 的唯一运行时 Proto 格式；V2
   明确标记为实现参考，`storage-tools` CLI 保留显式 V2 参考命令。

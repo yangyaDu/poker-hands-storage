@@ -206,10 +206,12 @@ V3 实现状态：
 - standalone verify 与 SQLite 全量 cross verify 已完成，包含 NULL-EV 精确语义。
 - V3 facade、按字节预算缓存、HTTP service、native SDK 和 SQLite/V3 benchmark 已接入。
 - fixture 端到端和 workspace 回归已通过；2026-07-17 已在完整源库完成九维 export、standalone verify、
-  SQLite cross verify 与 benchmark gate。release root 为
-  `data/proto-v3-releases/2026-07-17T000001Z`，汇总报告位于
-  `reports/v3-release-20260717/release-gate-summary.json`：9/9 verify 与
+  SQLite cross verify、benchmark 和解包复验。当前 release root 为
+  `data/proto-v3-releases/2026-07-17T132350Z`，汇总报告位于
+  `reports/v3-release-20260717T132350Z/release-gate-summary.json`：9/9 verify 与
   cross 均为零失败/零差异，9/9 benchmark 均为 `correctnessVerified=true`。
+- V3 数据已作为独立 `tar.zst` 制品打包并带 SHA-256；native SDK 以 N-API 包供业务侧安装，通过
+  `dataDir` 使用解压后的版本化 V3 root，不需要 Docker，也不把数据塞进 npm 包。
 
 历史 Range Strata Binary 与 Proto V2 仍留在仓库中用于参考和回归，不属于 V3 发布产物。
 
@@ -288,6 +290,16 @@ Set-Location range-store-native
 bun install
 bun run build:native
 bun run test:sdk
+```
+
+打包已通过门禁的不可变 V3 数据 release：
+
+```bash
+scripts/package-v3-release.sh \
+  data/proto-v3-releases/2026-07-17T132350Z \
+  data/sqlite/range.db \
+  reports/v3-release-20260717T132350Z \
+  artifacts/v3/2026-07-17T132350Z
 ```
 
 ## 运行时环境变量

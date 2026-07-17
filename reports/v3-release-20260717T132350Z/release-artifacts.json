@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "2026-07-17T132350Z",
+  "releaseManifest": {
+    "fileName": "RELEASE.json",
+    "sha256": "ff32140cdf105e97820af7a09884c88fc52d2770fb9fd2d8f5748620a16ecbae"
+  },
+  "artifacts": [
+    {
+      "kind": "v3-data",
+      "fileName": "poker-hands-v3-2026-07-17T132350Z.tar.zst",
+      "byteLength": 67130709,
+      "sha256": "551088c83e2894a68f5fc6ae224724b4619c35b84ea4519230907753f0e8c5d2"
+    },
+    {
+      "kind": "release-evidence",
+      "fileName": "poker-hands-v3-2026-07-17T132350Z-evidence.tar.zst",
+      "byteLength": 8473,
+      "sha256": "7d639b083ad07d82b6a8eaa7075585cad7314f045dcfd3a9395abec6678f9454"
+    }
+  ]
+}

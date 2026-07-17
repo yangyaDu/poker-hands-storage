@@ -36,13 +36,13 @@ cargo run -p poker-hands-storage-tools -- v3-benchmark `
 
 `v3-export-all` 对每个维度执行 read-back standalone verify 和 SQLite cross verify。正式发布仍应
 保存报告，并确认所有计划维度均被发现。`<new-release-id>` 必须是新的版本化目录；不得覆盖当前已通过
-门禁的 `data/proto-v3-releases/2026-07-17T000001Z`。该 release 含九个维度，其 standalone/cross/
-benchmark 汇总位于 `reports/v3-release-20260717/release-gate-summary.json`。
+门禁的 `data/proto-v3-releases/2026-07-17T132350Z`。该 release 含九个维度，其 standalone/cross/
+benchmark 汇总位于 `reports/v3-release-20260717T132350Z/release-gate-summary.json`。
 
 ## Compose
 
 ```powershell
-$env:PHS_HOST_DATA_DIR = "E:\idea_project\poker-hands-storage\data\proto-v3-releases\2026-07-17T000001Z"
+$env:PHS_HOST_DATA_DIR = "E:\idea_project\poker-hands-storage\data\proto-v3-releases\2026-07-17T132350Z"
 docker compose -f .docker\docker-compose.yml up --build -d
 docker compose -f .docker\docker-compose.yml ps
 Invoke-RestMethod http://127.0.0.1:8080/ready
@@ -90,8 +90,8 @@ Invoke-RestMethod `
 
 ## 发布和问题处理
 
-1. 已验证的 2026-07-17 release 是 `data/proto-v3-releases/2026-07-17T000001Z`；其报告在
-   `reports/v3-release-20260717/release-gate-summary.json`。每次新发布仍从源 SQLite 导出到新的版本化目录，不覆盖正在 mmap 的目录。
+1. 当前已验证的 2026-07-17 release 是 `data/proto-v3-releases/2026-07-17T132350Z`；其报告在
+   `reports/v3-release-20260717T132350Z/release-gate-summary.json`。每次新发布仍从源 SQLite 导出到新的版本化目录，不覆盖正在 mmap 的目录。
 2. 确认全部维度的 standalone/cross verify 零差异。
 3. 运行 SQLite/V3 benchmark，确认 correctness gate、P50/P95、cache bytes 和 RSS。
 4. 将挂载切到新目录，滚动重启，检查 `/ready` 和 smoke 查询。

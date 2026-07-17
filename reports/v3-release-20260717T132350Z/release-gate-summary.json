@@ -1,0 +1,120 @@
+{
+  "releaseId": "2026-07-17T132350Z",
+  "archiveRoot": "data/proto-v3-releases/2026-07-17T132350Z",
+  "sourceDb": "data/sqlite/range.db",
+  "sourceSha256": "0e022c8d273e31b7b4664658411516c24ad2c3829cea9f0cc3cf8f39705a912a",
+  "gitCommit": "617a6c7a795def4f6c4de2752e7a2dd7887dff0f",
+  "releaseManifest": "data/proto-v3-releases/2026-07-17T132350Z/RELEASE.json",
+  "dimensions": 9,
+  "verify": {
+    "passedDimensions": 9,
+    "failureCount": 0,
+    "elapsedMs": 1867
+  },
+  "crossVerify": {
+    "passedDimensions": 9,
+    "failureCount": 0,
+    "mappingDifferences": 0,
+    "actionDifferences": 0,
+    "cellDifferences": 0,
+    "handsVisited": 88071646,
+    "actionCellsCompared": 308819953,
+    "elapsedMs": 30110
+  },
+  "benchmark": {
+    "passedDimensions": 9,
+    "correctnessVerified": true
+  },
+  "perDimension": [
+    {
+      "dimension": "default:6:100",
+      "metadataP50Ms": 0.00041600000000000003,
+      "metadataP95Ms": 0.0005,
+      "strategyP50Ms": 0.00033299999999999996,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 175854,
+      "strategyResidentBytes": 8096,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:6:200",
+      "metadataP50Ms": 0.000417,
+      "metadataP95Ms": 0.00045900000000000004,
+      "strategyP50Ms": 0.000375,
+      "strategyP95Ms": 0.000458,
+      "metadataResidentBytes": 175822,
+      "strategyResidentBytes": 8096,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:6:300",
+      "metadataP50Ms": 0.000375,
+      "metadataP95Ms": 0.00046104999999999817,
+      "strategyP50Ms": 0.00033299999999999996,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 169290,
+      "strategyResidentBytes": 8096,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:8:100",
+      "metadataP50Ms": 0.000458,
+      "metadataP95Ms": 0.000542,
+      "strategyP50Ms": 0.00033299999999999996,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 172831,
+      "strategyResidentBytes": 7072,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:8:200",
+      "metadataP50Ms": 0.000417,
+      "metadataP95Ms": 0.00045900000000000004,
+      "strategyP50Ms": 0.00033299999999999996,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 171055,
+      "strategyResidentBytes": 7072,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:8:300",
+      "metadataP50Ms": 0.000458,
+      "metadataP95Ms": 0.0005,
+      "strategyP50Ms": 0.000375,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 171353,
+      "strategyResidentBytes": 7472,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:9:100",
+      "metadataP50Ms": 0.00045900000000000004,
+      "metadataP95Ms": 0.0005839999999999999,
+      "strategyP50Ms": 0.00033299999999999996,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 155377,
+      "strategyResidentBytes": 8096,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:9:200",
+      "metadataP50Ms": 0.00045900000000000004,
+      "metadataP95Ms": 0.000625,
+      "strategyP50Ms": 0.00033299999999999996,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 156077,
+      "strategyResidentBytes": 8096,
+      "deltaRssBytes": null
+    },
+    {
+      "dimension": "default:9:300",
+      "metadataP50Ms": 0.0005,
+      "metadataP95Ms": 0.000625,
+      "strategyP50Ms": 0.000375,
+      "strategyP95Ms": 0.000375,
+      "metadataResidentBytes": 160692,
+      "strategyResidentBytes": 8096,
+      "deltaRssBytes": null
+    }
+  ]
+}

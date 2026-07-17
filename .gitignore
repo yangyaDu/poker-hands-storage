@@ -17,6 +17,10 @@ reports/*
 !reports/v3-release-20260717/
 reports/v3-release-20260717/*
 !reports/v3-release-20260717/release-gate-summary.json
+!reports/v3-release-20260717T132350Z/
+reports/v3-release-20260717T132350Z/*
+!reports/v3-release-20260717T132350Z/release-gate-summary.json
+!reports/v3-release-20260717T132350Z/release-artifacts.json
 
 range-store-native/node_modules
 
@@ -27,6 +31,8 @@ data/sqlite/*-shm
 
 # Versioned Proto V3 archive payloads are external release artifacts, not source.
 data/proto-v3-releases/
+# Packaged V3 data/evidence archives are external release artifacts, not source.
+artifacts/
 # Environment
 .env
 .env.local

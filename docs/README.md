@@ -32,6 +32,6 @@
 - 线上运行时只需要 V3 目录，不需要 SQLite 或 V2 产物。
 
 当前代码、fixture 回归与真实九维首发数据验收均已完成。2026-07-17 的完整源库 release root 为
-`data/proto-v3-releases/2026-07-17T000001Z`；九份 standalone verify、九份 SQLite cross verify 及九份
-benchmark 汇总位于 `reports/v3-release-20260717/release-gate-summary.json`，verify/cross 均为零失败和零差异，benchmark 均为
+`data/proto-v3-releases/2026-07-17T132350Z`；九份 standalone verify、九份 SQLite cross verify 及九份
+benchmark 汇总位于 `reports/v3-release-20260717T132350Z/release-gate-summary.json`，verify/cross 均为零失败和零差异，benchmark 均为
 `correctnessVerified=true`。

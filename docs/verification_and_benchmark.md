@@ -7,9 +7,9 @@ V3 只有两个正确性基线：归档自洽检查，以及以源 SQLite 为唯
 
 ## 2026-07-17 九维 release gate 记录
 
-完整源库的 V3 release 已发布到 `data/proto-v3-releases/2026-07-17T000001Z`，包含
+完整源库的当前 V3 release 已发布到 `data/proto-v3-releases/2026-07-17T132350Z`，包含
 `default_{6,8,9}max_{100,200,300}BB` 九个维度。汇总报告固定在
-`reports/v3-release-20260717/release-gate-summary.json`：9/9 standalone verify 成功、9/9 SQLite
+`reports/v3-release-20260717T132350Z/release-gate-summary.json`：9/9 standalone verify 成功、9/9 SQLite
 cross verify 零差异、9/9 benchmark 的 `correctnessVerified=true`，并保留每个维度的 P50/P95、cache 和
 RSS。
 

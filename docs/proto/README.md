@@ -11,8 +11,8 @@ V3 的目标 schema、文件布局、首发和验证要求以 V3 实施方案为
 [`storage-tools/src/proto_range_storage/`](../../storage-tools/src/proto_range_storage/)。
 
 V3 是当前主发布 Proto 格式；HTTP service 与 native SDK 运行时只读取 V3。2026-07-17 已使用完整源
-SQLite 完成九维 release gate：release root 为 `data/proto-v3-releases/2026-07-17T000001Z`，汇总报告位于
-`reports/v3-release-20260717/release-gate-summary.json`。`storage-tools` 的 V3 发布命令均显式使用 `v3-` 前缀，CLI 仍保留 V2
+SQLite 完成九维 release gate：当前 release root 为 `data/proto-v3-releases/2026-07-17T132350Z`，汇总报告位于
+`reports/v3-release-20260717T132350Z/release-gate-summary.json`。`storage-tools` 的 V3 发布命令均显式使用 `v3-` 前缀，CLI 仍保留 V2
 参考命令；无参数 CLI 不代表选择任何运行时格式。V2 只用于历史参考 mmap、索引、Protobuf、cache 和 benchmark
 实现；V3 不读取 V2，不做 V2/V3 对比，也不提供回退到 V2 的发布路径。
 
