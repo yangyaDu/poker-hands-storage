@@ -2,6 +2,7 @@ syntax = "proto3";
 
 package zenithstrat.gto.v2;
 
+//动作类型
 enum ActionType {
   ACTION_TYPE_UNSPECIFIED = 0;
   ACTION_TYPE_FOLD = 1;
@@ -18,6 +19,8 @@ enum HandEncoding {
   HAND_ENCODING_1326_COMBO = 2;
 }
 
+//压缩的按action存储的矩阵
+//action_type，action_type，action_type，CompactActionColumn的唯一key,value是该key对应的[手牌，frequency,ev]，action_hand_bitmap是该action对应的手牌位图
 message CompactActionColumn {
   ActionType action_type = 1;
 
@@ -43,6 +46,7 @@ message CompactActionColumn {
   bytes action_hand_bitmap = 6;
 }
 
+//表示一条行动线的紧凑编码矩阵
 message CompactLineMatrix {
   // 固定为 2，表示此紧凑编码规范。
   uint32 schema_version = 1;

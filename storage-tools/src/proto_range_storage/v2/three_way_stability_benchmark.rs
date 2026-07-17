@@ -21,11 +21,13 @@ use crate::errors::ToolError;
 use crate::range_store_builder::{sha256_bytes, sha256_file};
 
 use super::cli::parse_three_way_hot_benchmark_args;
-use crate::proto_range_storage::v2::line_matrix_store::MatrixCacheInsertOutcome;
-use crate::proto_range_storage::v2::query_facade::{ProtoRangeStoreFacade, ProtoRangeStoreFacadeOptions};
 use super::three_way_benchmark::{
     run_three_way_hot_benchmark, run_three_way_hot_benchmark_with_workload,
     ThreeWayHotBenchmarkCommand, ThreeWayHotBenchmarkReport,
+};
+use crate::proto_range_storage::v2::line_matrix_store::MatrixCacheInsertOutcome;
+use crate::proto_range_storage::v2::query_facade::{
+    ProtoRangeStoreFacade, ProtoRangeStoreFacadeOptions,
 };
 
 const SOURCE_DERIVED_TRAVERSAL_ALGORITHM_VERSION: &str = "line-transition-v1";

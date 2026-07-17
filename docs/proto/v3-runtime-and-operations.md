@@ -1,9 +1,14 @@
 # Proto V3 运行与发布
 
-更新日期：2026-07-16
+更新日期：2026-07-17
 
 Proto V3 是 HTTP service 和 native SDK 的默认存储。运行时只读取维度目录中的 manifest 与三组
 `.pb/.idx` 文件，不打开 SQLite，不读取 V2，也不需要 `lines.db`。
+
+2026-07-17 的完整源库 release gate 已完成：工具、HTTP service 和 native SDK 均以 V3 作为默认 Proto
+格式。已验证 root 是 `data/proto-v3-releases/2026-07-17T000001Z`，九维 standalone/cross/benchmark
+汇总位于 `reports/v3-release-20260717/release-gate-summary.json`；verify/cross 零失败和零差异，全部 benchmark 的
+`correctnessVerified=true`。
 
 ## CLI
 

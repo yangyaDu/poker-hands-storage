@@ -19,8 +19,8 @@ fn uses_documented_defaults() {
     assert_eq!(config.bind, "0.0.0.0:8080".parse().unwrap());
     assert_eq!(config.data_dir, PathBuf::from("/data"));
     assert_eq!(config.max_open_handles, 2);
-    assert_eq!(config.metadata_cache_bytes_per_handle, 8 * 1024 * 1024);
-    assert_eq!(config.strategy_cache_bytes_per_handle, 64 * 1024 * 1024);
+    assert_eq!(config.metadata_cache_byte_budget, 8 * 1024 * 1024);
+    assert_eq!(config.strategy_cache_byte_budget, 64 * 1024 * 1024);
     assert!(!config.verify_checksums);
     assert!(config.prewarm.is_empty());
 }
@@ -39,8 +39,8 @@ fn parses_overrides_and_prewarm_dimensions() {
     .unwrap();
     assert_eq!(config.bind, "127.0.0.1:9090".parse().unwrap());
     assert_eq!(config.max_open_handles, 5);
-    assert_eq!(config.metadata_cache_bytes_per_handle, 1024);
-    assert_eq!(config.strategy_cache_bytes_per_handle, 2048);
+    assert_eq!(config.metadata_cache_byte_budget, 1024);
+    assert_eq!(config.strategy_cache_byte_budget, 2048);
     assert!(config.verify_checksums);
     assert_eq!(
         config.prewarm,

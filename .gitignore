@@ -12,7 +12,11 @@
 .DS_Store
 Thumbs.db
 
-reports/
+# Keep generated reports ignored by default, except for the audited V3 release-gate evidence.
+reports/*
+!reports/v3-release-20260717/
+reports/v3-release-20260717/*
+!reports/v3-release-20260717/release-gate-summary.json
 
 range-store-native/node_modules
 
@@ -20,6 +24,9 @@ data/sqlite/*.wal
 data/sqlite/*.shm
 data/sqlite/*-wal
 data/sqlite/*-shm
+
+# Versioned Proto V3 archive payloads are external release artifacts, not source.
+data/proto-v3-releases/
 # Environment
 .env
 .env.local

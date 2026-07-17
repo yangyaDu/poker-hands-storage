@@ -1,0 +1,31 @@
+{
+  "releaseId": "2026-07-17T000001Z",
+  "archiveRoot": "data/proto-v3-releases/2026-07-17T000001Z",
+  "sourceDb": "data/sqlite/range.db",
+  "dimensions": 9,
+  "verify": { "passedDimensions": 9, "failureCount": 0 },
+  "crossVerify": {
+    "passedDimensions": 9,
+    "failureCount": 0,
+    "mappingDifferences": 0,
+    "actionDifferences": 0,
+    "cellDifferences": 0
+  },
+  "benchmark": {
+    "passedDimensions": 9,
+    "correctnessVerified": true,
+    "iterations": 1000,
+    "warmupIterations": 50
+  },
+  "perDimension": [
+    { "dimension": "default:6:100", "metadataP50Ms": 0.0004, "metadataP95Ms": 0.0006, "strategyP50Ms": 0.0004, "strategyP95Ms": 0.0004, "metadataResidentBytes": 175854, "strategyResidentBytes": 8096, "deltaRssBytes": 1781760 },
+    { "dimension": "default:6:200", "metadataP50Ms": 0.0003, "metadataP95Ms": 0.0004, "strategyP50Ms": 0.0004, "strategyP95Ms": 0.0004, "metadataResidentBytes": 175822, "strategyResidentBytes": 8096, "deltaRssBytes": 1232896 },
+    { "dimension": "default:6:300", "metadataP50Ms": 0.0004, "metadataP95Ms": 0.0004, "strategyP50Ms": 0.0004, "strategyP95Ms": 0.0004, "metadataResidentBytes": 169290, "strategyResidentBytes": 8096, "deltaRssBytes": 1126400 },
+    { "dimension": "default:8:100", "metadataP50Ms": 0.0004, "metadataP95Ms": 0.0005, "strategyP50Ms": 0.0004, "strategyP95Ms": 0.0004, "metadataResidentBytes": 172831, "strategyResidentBytes": 7072, "deltaRssBytes": 782336 },
+    { "dimension": "default:8:200", "metadataP50Ms": 0.0004, "metadataP95Ms": 0.0005, "strategyP50Ms": 0.0004, "strategyP95Ms": 0.0005, "metadataResidentBytes": 171055, "strategyResidentBytes": 7072, "deltaRssBytes": 2019328 },
+    { "dimension": "default:8:300", "metadataP50Ms": 0.0004, "metadataP95Ms": 0.0005, "strategyP50Ms": 0.0004, "strategyP95Ms": 0.0004, "metadataResidentBytes": 171353, "strategyResidentBytes": 7472, "deltaRssBytes": 561152 },
+    { "dimension": "default:9:100", "metadataP50Ms": 0.0004, "metadataP95Ms": 0.0005, "strategyP50Ms": 0.0004, "strategyP95Ms": 0.0004, "metadataResidentBytes": 155377, "strategyResidentBytes": 8096, "deltaRssBytes": 37765120 },
+    { "dimension": "default:9:200", "metadataP50Ms": 0.0008, "metadataP95Ms": 0.0012, "strategyP50Ms": 0.0007, "strategyP95Ms": 0.0008, "metadataResidentBytes": 156077, "strategyResidentBytes": 8096, "deltaRssBytes": 41324544 },
+    { "dimension": "default:9:300", "metadataP50Ms": 0.0007, "metadataP95Ms": 0.0009, "strategyP50Ms": 0.0007, "strategyP95Ms": 0.0008, "metadataResidentBytes": 160692, "strategyResidentBytes": 8096, "deltaRssBytes": 18931712 }
+  ]
+}

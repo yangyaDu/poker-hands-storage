@@ -1,9 +1,23 @@
 # Proto V3 验证与 Benchmark
 
-更新日期：2026-07-16
+更新日期：2026-07-17
 
 V3 只有两个正确性基线：归档自洽检查，以及以源 SQLite 为唯一事实来源的 cross verify。V2 不参与
 结果或性能比较。
+
+## 2026-07-17 九维 release gate 记录
+
+完整源库的 V3 release 已发布到 `data/proto-v3-releases/2026-07-17T000001Z`，包含
+`default_{6,8,9}max_{100,200,300}BB` 九个维度。汇总报告固定在
+`reports/v3-release-20260717/release-gate-summary.json`：9/9 standalone verify 成功、9/9 SQLite
+cross verify 零差异、9/9 benchmark 的 `correctnessVerified=true`，并保留每个维度的 P50/P95、cache 和
+RSS。
+
+该记录是当前 V3 默认格式的真实数据验收依据。后续版本仍须在新的版本化目录重复相同门禁，不引入 V2
+双读或 V2 回退。
+
+仓库保留上述报告作为可审计的 release evidence；对应的 `data/proto-v3-releases/<release-id>` 归档是
+外部版本化发布物，必须与引用它的代码和报告一同交付，但不纳入 Git 工作树。
 
 ## Standalone
 
@@ -48,4 +62,4 @@ Benchmark 在计时前强制执行 full cross correctness gate。报告覆盖：
 - P50/P95/P99、QPS、metadata/strategy cache bytes 和进程 RSS。
 
 性能模式可关闭完整文件 CRC；发布 standalone/cross gate 必须验证完整文件 CRC。Fixture benchmark 只
-验证工具链和报告字段，真实结论必须来自完整九维源库和固定机器环境。
+验证工具链和报告字段；当前真实九维结论见本页的 2026-07-17 release gate 记录及其报告目录。

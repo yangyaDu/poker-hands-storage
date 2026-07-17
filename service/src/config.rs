@@ -16,8 +16,10 @@ pub struct ServiceConfig {
     pub bind: SocketAddr,
     pub data_dir: PathBuf,
     pub max_open_handles: usize,
-    pub metadata_cache_bytes_per_handle: usize,
-    pub strategy_cache_bytes_per_handle: usize,
+    /// Facade-wide metadata cache budget, dynamically divided among open dimension handles.
+    pub metadata_cache_byte_budget: usize,
+    /// Facade-wide decoded-strategy cache budget, dynamically divided among open dimension handles.
+    pub strategy_cache_byte_budget: usize,
     pub verify_checksums: bool,
     pub prewarm: Vec<DimensionRef>,
 }
@@ -56,12 +58,12 @@ impl ServiceConfig {
             Some(value) => parse_bool("PHS_VERIFY_CHECKSUMS", &value)?,
             None => false,
         };
-        let metadata_cache_bytes_per_handle = parse_usize_or_default(
+        let metadata_cache_byte_budget = parse_usize_or_default(
             "PHS_METADATA_CACHE_BYTES",
             lookup("PHS_METADATA_CACHE_BYTES"),
             DEFAULT_METADATA_CACHE_BYTES,
         )?;
-        let strategy_cache_bytes_per_handle = parse_usize_or_default(
+        let strategy_cache_byte_budget = parse_usize_or_default(
             "PHS_STRATEGY_CACHE_BYTES",
             lookup("PHS_STRATEGY_CACHE_BYTES"),
             DEFAULT_STRATEGY_CACHE_BYTES,
@@ -72,8 +74,8 @@ impl ServiceConfig {
             bind,
             data_dir,
             max_open_handles,
-            metadata_cache_bytes_per_handle,
-            strategy_cache_bytes_per_handle,
+            metadata_cache_byte_budget,
+            strategy_cache_byte_budget,
             verify_checksums,
             prewarm,
         })

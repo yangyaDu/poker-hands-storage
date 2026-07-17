@@ -1,6 +1,7 @@
 # poker-hands-storage
 
-独立的 Rust 存储与查询服务。默认 HTTP service 与 Bun/Node native SDK 读取 Proto V3 业务存储。
+独立的 Rust 存储与查询服务。HTTP service 与 Bun/Node native SDK 运行时使用 Proto V3 业务存储；
+`storage-tools` 以 V3 作为当前主发布格式和命令集，同时保留显式的 V2 参考命令。
 
 一个 V3 根目录包含若干维度子目录；每个维度固定由七个文件组成：
 
@@ -25,7 +26,7 @@ V3 reader 不读取 V2，也没有 V2/V3 双读或回退路径。
 | `range-store-core` | 共享领域类型 | 提供维度、手牌、查询契约、SQLite 离线访问和历史 Binary 参考实现 |
 | `service` | HTTP API 服务 | 默认使用 V3 facade，提供 OpenAPI、错误映射、health/readiness 和 Docker 入口 |
 | `range-store-native` | Bun/Node 进程内 SDK | 默认使用同一 V3 facade，失败抛出 `RangeStoreError` |
-| `storage-tools` | V3 存储与离线工具 | 提供 V3 export、reader、facade、standalone/cross verify 和 SQLite/V3 benchmark |
+| `storage-tools` | V3 主发布与离线工具 | 提供显式 V3 export、reader、facade、standalone/cross verify 和 SQLite/V3 benchmark；CLI 仍保留 V2 参考命令 |
 | `.docker` | HTTP service 容器化 | Dockerfile 构建 V3 runtime 所需的 `storage-tools` library + `service`，不包含 CLI 或 native SDK 二进制 |
 | `docs` | 项目文档 | 入口见 [docs/README.md](docs/README.md) |
 
@@ -110,26 +111,36 @@ poker-hands-storage/
 |
 |-- storage-tools/
 |   |-- Cargo.toml                     # 离线工具 crate 配置
-|   |-- build.rs                       # 从 matrix.proto 生成 Prost Rust 类型
-|   |-- proto/                         # 单行动线 LineMatrix Protobuf schema
+|   |-- build.rs                       # 从 V2 compact_matrix.proto 与 V3 compact_range_storage.proto 生成 Prost Rust 类型
+|   |-- proto/                         # V2 CompactLineMatrix 与 V3 业务存储 Protobuf schema
 |   |-- src/
 |   |   |-- main.rs                    # CLI 入口，分发 build/export/verify/benchmark 命令
 |   |   |-- lib.rs                     # storage-tools crate root，声明离线工具公共模块
 |   |   |-- errors.rs                  # ToolError 错误类型
 |   |   |-- metadata.rs                # 构建阶段写入 meta.db
 |   |   |-- range_store_builder.rs     # SQLite -> manifest/meta/idx/bin 构建流程
-|   |   |-- proto_range_storage/       # Proto LineMatrix payload and archive storage
-|   |   |   |-- proto.rs               # Protobuf type definitions
-|   |   |   |-- line_matrix_codec.rs   # payload conversion and validation
-|   |   |   |-- sqlite_source.rs       # SQLite source query
-|   |   |   |-- line_matrix_store.rs   # archive writer and reader
-|   |   |   |-- query_service.rs       # single-dimension core-compatible query
-|   |   |   |-- query_facade.rs        # multi-dimension query and LRU handle pool
-|   |   |   |-- three_way_benchmark.rs # shared Core/Proto/SQLite hot benchmark
-|   |   |   |-- three_way_cold_benchmark.rs # fresh-process Core/Proto/SQLite cold benchmark
-|   |   |   |-- cli.rs                 # archive CLI argument parsing
-|   |   |   |-- format.rs              # archive binary layout
-|   |   |   `-- benchmark.rs           # Proto archive versus core benchmark
+|   |   |-- proto_range_storage/       # V2 参考存储与 V3 业务存储实现
+|   |   |   |-- mod.rs                 # V2/V3 存储模块入口
+|   |   |   |-- v2/                    # CompactLineMatrix 参考存储实现
+|   |   |   |   |-- proto.rs            # Protobuf type definitions
+|   |   |   |   |-- line_matrix_codec.rs # payload conversion and validation
+|   |   |   |   |-- sqlite_source.rs    # SQLite source query
+|   |   |   |   |-- line_matrix_store.rs # archive writer and reader
+|   |   |   |   |-- query_service.rs    # single-dimension core-compatible query
+|   |   |   |   |-- query_facade.rs     # multi-dimension query and LRU handle pool
+|   |   |   |   |-- three_way_benchmark.rs # shared Core/Proto/SQLite hot benchmark
+|   |   |   |   |-- three_way_cold_benchmark.rs # fresh-process Core/Proto/SQLite cold benchmark
+|   |   |   |   |-- three_way_stability_benchmark.rs # repeated-run stability benchmark
+|   |   |   |   |-- cli.rs              # archive CLI argument parsing
+|   |   |   |   |-- format.rs           # archive binary layout
+|   |   |   |   `-- benchmark.rs        # Proto archive versus core benchmark
+|   |   |   |-- v3/                    # 业务命名的 Protobuf archive 实现
+|   |   |   |   |-- archive.rs          # archive export/open/publish workflow
+|   |   |   |   |-- facade.rs           # multi-dimension query facade
+|   |   |   |   |-- metadata_store.rs   # drill/action-path metadata storage
+|   |   |   |   |-- strategy_store.rs   # hand-strategy storage
+|   |   |   |   |-- verification.rs     # standalone and SQLite cross verification
+|   |   |   |   `-- ...
 |   |   |-- verification/              # standalone/cross verify 和验证报告
 |   |   |   |-- mod.rs                 # verification 子模块入口，组织验证实现
 |   |   |   |-- cli.rs                 # verify --mode standalone|cross 参数解析
@@ -194,7 +205,11 @@ V3 实现状态：
 - V3 schema、六个 data/index 文件、manifest、元数据和 HandStrategy reader/writer 已完成。
 - standalone verify 与 SQLite 全量 cross verify 已完成，包含 NULL-EV 精确语义。
 - V3 facade、按字节预算缓存、HTTP service、native SDK 和 SQLite/V3 benchmark 已接入。
-- fixture 端到端和 workspace 回归已通过；真实九维源库仍须在发布环境执行 export + cross gate。
+- fixture 端到端和 workspace 回归已通过；2026-07-17 已在完整源库完成九维 export、standalone verify、
+  SQLite cross verify 与 benchmark gate。release root 为
+  `data/proto-v3-releases/2026-07-17T000001Z`，汇总报告位于
+  `reports/v3-release-20260717/release-gate-summary.json`：9/9 verify 与
+  cross 均为零失败/零差异，9/9 benchmark 均为 `correctnessVerified=true`。
 
 历史 Range Strata Binary 与 Proto V2 仍留在仓库中用于参考和回归，不属于 V3 发布产物。
 
@@ -282,8 +297,8 @@ bun run test:sdk
 | `PHS_BIND` | `0.0.0.0:8080` | HTTP 监听地址 |
 | `PHS_DATA_DIR` | `/data` | Proto V3 根目录；直接包含维度子目录 |
 | `PHS_MAX_OPEN_HANDLES` | `2` | 最大打开维度 reader 数 |
-| `PHS_METADATA_CACHE_BYTES` | `8388608` | 每个维度 metadata page cache 字节预算 |
-| `PHS_STRATEGY_CACHE_BYTES` | `67108864` | 每个维度 decoded strategy cache 字节预算 |
+| `PHS_METADATA_CACHE_BYTES` | `8388608` | facade metadata cache 全局总预算；按当前打开 handle 数动态均分 |
+| `PHS_STRATEGY_CACHE_BYTES` | `67108864` | facade decoded strategy cache 全局总预算；按当前打开 handle 数动态均分 |
 | `PHS_VERIFY_CHECKSUMS` | `false` | 打开维度时是否校验六个完整文件 CRC32C |
 | `PHS_PREWARM` | 空 | 启动预热维度，格式 `strategy:player_count:depth_bb` |
 | `PHS_SQLITE3_LIB` | 自动检测 | 离线工具使用的 SQLite 动态库路径 |

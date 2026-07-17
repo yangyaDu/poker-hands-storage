@@ -5,6 +5,7 @@ pub mod cli;
 pub mod facade;
 pub mod format;
 pub mod manifest;
+mod metadata_export;
 pub mod metadata_store;
 pub mod proto;
 pub mod query_service;
@@ -13,3 +14,4 @@ pub mod strategy_store;
 pub mod verification;
 
 pub(crate) mod source;
+mod storage_file;

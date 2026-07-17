@@ -362,6 +362,24 @@ pub fn stable_hash64(value: &str) -> u64 {
         })
 }
 
+/// Orders locator records in the canonical on-disk and verification order.
+pub(crate) fn sort_hash_locators(locators: &mut [HashLocator]) {
+    locators.sort_unstable_by_key(|locator| {
+        (
+            locator.hash,
+            locator.page_id,
+            locator.entry_index,
+            locator.value_index,
+        )
+    });
+}
+
+/// Converts an in-memory index to the fixed-width V3 representation.
+pub(crate) fn checked_u32_index(name: &str, value: usize) -> Result<u32, ToolError> {
+    u32::try_from(value)
+        .map_err(|_| ToolError::new("V3_INDEX_VALUE_OVERFLOW", format!("{name} exceeds uint32")))
+}
+
 pub fn equal_hash_range(locators: &[HashLocator], hash: u64) -> std::ops::Range<usize> {
     let start = locators.partition_point(|locator| locator.hash < hash);
     let end = locators.partition_point(|locator| locator.hash <= hash);

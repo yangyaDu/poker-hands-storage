@@ -2,7 +2,7 @@ use std::fs;
 use std::path::Path;
 
 use poker_hands_storage_tools::proto_range_storage::v3::archive::{
-    export_v3_archive, V3ArchiveExportOptions,
+    export_v3_archive, verify_v3_archive_before_publish, V3ArchiveExportOptions,
 };
 use poker_hands_storage_tools::proto_range_storage::v3::format::{
     decode_payload_locator, encode_payload_locator, DRILL_SCENARIOS_DATA_FILE_NAME,
@@ -32,6 +32,7 @@ fn clean_archive_passes_standalone_and_full_sqlite_cross_verification() {
     assert_eq!(standalone.counts.files_checked, 6);
     assert_eq!(standalone.counts.concrete_action_paths, 3);
     assert_eq!(standalone.counts.hand_strategies, 3);
+    verify_v3_archive_before_publish(&archive_dir).unwrap();
 
     let cross = cross_verify_sqlite_v3(&source_db, &archive_dir, options());
     assert!(cross.ok, "{:?}", cross.failure_samples);
@@ -109,6 +110,10 @@ fn standalone_verifier_reports_dangling_drill_reference_after_valid_crc_rewrite(
         .failure_samples
         .iter()
         .any(|failure| failure.message.contains("missing abstract action path")));
+
+    let error = verify_v3_archive_before_publish(&archive_dir).unwrap_err();
+    assert_eq!(error.code(), "VERIFY_ERROR");
+    assert!(error.message().contains("standalone verification failed"));
 }
 
 fn options() -> V3VerificationOptions {

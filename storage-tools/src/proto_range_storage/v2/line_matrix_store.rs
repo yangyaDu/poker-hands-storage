@@ -22,7 +22,9 @@ use crate::proto_range_storage::v2::line_matrix_codec::{
 use crate::proto_range_storage::v2::proto::{
     ActionType, CompactActionColumn, CompactLineMatrix, HandEncoding,
 };
-use crate::proto_range_storage::v2::sqlite_source::{load_all_lines, load_rows_with_ev, ResolvedLine};
+use crate::proto_range_storage::v2::sqlite_source::{
+    load_all_lines, load_rows_with_ev, ResolvedLine,
+};
 
 pub use crate::proto_range_storage::v2::benchmark::{
     run_compact_vs_core_benchmark, run_compact_vs_core_cold_worker, CompactVsCoreBenchmarkCommand,

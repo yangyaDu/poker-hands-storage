@@ -1,11 +1,10 @@
 use std::fs::{self, File};
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use memmap2::Mmap;
 use prost::Message;
-use range_store_core::crc32c::{assert_crc32c, crc32c};
+use range_store_core::crc32c::assert_crc32c;
 use range_store_core::dimension::DimensionSpec;
 use range_store_core::sqlite::Connection;
 
@@ -13,15 +12,18 @@ use crate::errors::ToolError;
 
 use super::cache::{ByteCacheStats, ByteLru};
 use super::format::{
-    decode_header, decode_payload_locator, decode_section_descriptor, encode_header,
-    encode_payload_locator, encode_section_descriptor, FileHeader, FileKind, PayloadLocator,
-    SectionDescriptor, SectionKind, HAND_STRATEGIES_DATA_FILE_NAME,
-    HAND_STRATEGIES_INDEX_FILE_NAME, HEADER_SIZE, PAYLOAD_LOCATOR_SIZE, SECTION_DESCRIPTOR_SIZE,
+    decode_header, decode_payload_locator, decode_section_descriptor, FileKind, PayloadLocator,
+    SectionKind, HAND_STRATEGIES_DATA_FILE_NAME, HAND_STRATEGIES_INDEX_FILE_NAME, HEADER_SIZE,
+    PAYLOAD_LOCATOR_SIZE, SECTION_DESCRIPTOR_SIZE,
 };
-use super::manifest::{HandStrategiesManifest, ManifestFile};
+use super::manifest::HandStrategiesManifest;
 use super::metadata_store::ExportedConcreteActionPath;
 use super::proto::HandStrategy;
 use super::source::load_strategy_rows;
+use super::storage_file::{
+    manifest_file, payload_locator_section, write_index_file, write_payload_data_file,
+    StagedFilePair,
+};
 use super::strategy_codec::{build_hand_strategy, DecodedHandStrategy};
 
 pub const DEFAULT_STRATEGY_CACHE_BYTE_BUDGET: usize = 64 * 1024 * 1024;
@@ -59,44 +61,34 @@ pub fn export_hand_strategies(
     }
     validate_concrete_path_ids(concrete_paths)?;
     fs::create_dir_all(&options.out_dir)?;
-    let data_path = options.out_dir.join(HAND_STRATEGIES_DATA_FILE_NAME);
-    let index_path = options.out_dir.join(HAND_STRATEGIES_INDEX_FILE_NAME);
-    if !options.overwrite && (data_path.exists() || index_path.exists()) {
+    let files = StagedFilePair::new(
+        &options.out_dir,
+        HAND_STRATEGIES_DATA_FILE_NAME,
+        HAND_STRATEGIES_INDEX_FILE_NAME,
+    );
+    if !options.overwrite && files.final_paths().into_iter().any(Path::exists) {
         return Err(ToolError::invalid_argument(
             "V3 hand strategy output already exists",
         ));
     }
-    let data_tmp = options
-        .out_dir
-        .join(format!("{HAND_STRATEGIES_DATA_FILE_NAME}.tmp"));
-    let index_tmp = options
-        .out_dir
-        .join(format!("{HAND_STRATEGIES_INDEX_FILE_NAME}.tmp"));
-    remove_if_exists(&data_tmp);
-    remove_if_exists(&index_tmp);
+    files.remove_temporary_files();
 
     let connection = Connection::open(&options.source_db, true)?;
     let result = write_strategy_files(
         &connection,
         &options.dimension,
         concrete_paths,
-        &data_tmp,
-        &index_tmp,
+        &files.data.temporary_path,
+        &files.index.temporary_path,
     );
     let manifest = match result {
         Ok(manifest) => manifest,
         Err(error) => {
-            remove_if_exists(&data_tmp);
-            remove_if_exists(&index_tmp);
+            files.remove_temporary_files();
             return Err(error);
         }
     };
-    if options.overwrite {
-        remove_if_exists(&data_path);
-        remove_if_exists(&index_path);
-    }
-    fs::rename(&data_tmp, &data_path)?;
-    fs::rename(&index_tmp, &index_path)?;
+    files.publish(options.overwrite)?;
     Ok(manifest)
 }
 
@@ -176,6 +168,20 @@ impl HandStrategyStore {
             .lock()
             .expect("V3 strategy cache lock poisoned")
             .stats()
+    }
+
+    pub(crate) fn resize_cache_budget(&self, byte_budget: usize) {
+        self.cache
+            .lock()
+            .expect("V3 strategy cache lock poisoned")
+            .resize(byte_budget);
+    }
+
+    pub(crate) fn cache_byte_budget(&self) -> usize {
+        self.cache
+            .lock()
+            .expect("V3 strategy cache lock poisoned")
+            .byte_budget()
     }
 
     /// Decode every strategy payload and verify that locators densely and contiguously cover the
@@ -295,75 +301,39 @@ fn write_strategy_files(
     index_path: &Path,
 ) -> Result<HandStrategiesManifest, ToolError> {
     let record_count = concrete_paths.len() as u64;
-    let mut data_file = File::create(data_path)?;
-    data_file.write_all(&encode_header(FileHeader::new(
+    let locators = write_payload_data_file(
+        data_path,
         FileKind::HandStrategiesData,
-        record_count,
+        concrete_paths.len(),
         0,
-        0,
-    )))?;
-    let mut offset = HEADER_SIZE as u64;
-    let mut locators = Vec::with_capacity(concrete_paths.len());
-    for path in concrete_paths {
-        let rows = load_strategy_rows(connection, dimension, path.source_id)?;
-        let strategy = build_hand_strategy(&rows)?;
-        let payload = strategy.encode_to_vec();
-        let byte_length = u32::try_from(payload.len()).map_err(|_| {
+        |path_index| {
+            let rows =
+                load_strategy_rows(connection, dimension, concrete_paths[path_index].source_id)?;
+            Ok(build_hand_strategy(&rows)?.encode_to_vec())
+        },
+        || {
             ToolError::new(
                 "V3_HAND_STRATEGY_TOO_LARGE",
                 "Encoded V3 hand strategy exceeds uint32",
             )
-        })?;
-        data_file.write_all(&payload)?;
-        locators.push(PayloadLocator {
-            offset,
-            byte_length,
-            crc32c: crc32c(&payload),
-        });
-        offset = offset
-            .checked_add(u64::from(byte_length))
-            .ok_or_else(|| invalid_store("V3 hand strategy data offset overflow"))?;
-    }
-    data_file.sync_all()?;
-
-    let descriptor = SectionDescriptor::new(
-        SectionKind::PayloadLocators,
-        PAYLOAD_LOCATOR_SIZE as u16,
-        (HEADER_SIZE + SECTION_DESCRIPTOR_SIZE) as u64,
-        record_count,
+        },
+        || invalid_store("V3 hand strategy data offset overflow"),
     )?;
-    let mut index_file = File::create(index_path)?;
-    index_file.write_all(&encode_header(FileHeader::new(
+    write_index_file(
+        index_path,
         FileKind::HandStrategiesIndex,
         record_count,
         0,
-        1,
-    )))?;
-    index_file.write_all(&encode_section_descriptor(descriptor))?;
-    for locator in locators {
-        index_file.write_all(&encode_payload_locator(locator))?;
-    }
-    index_file.sync_all()?;
+        vec![payload_locator_section(
+            SectionKind::PayloadLocators,
+            &locators,
+        )],
+    )?;
 
     Ok(HandStrategiesManifest {
-        data: manifest_file(data_path, HAND_STRATEGIES_DATA_FILE_NAME, record_count)?,
-        index: manifest_file(index_path, HAND_STRATEGIES_INDEX_FILE_NAME, record_count)?,
+        data: manifest_file(data_path, HAND_STRATEGIES_DATA_FILE_NAME, record_count, 0)?,
+        index: manifest_file(index_path, HAND_STRATEGIES_INDEX_FILE_NAME, record_count, 0)?,
         record_count,
-    })
-}
-
-fn manifest_file(
-    path: &Path,
-    file_name: &str,
-    record_count: u64,
-) -> Result<ManifestFile, ToolError> {
-    let bytes = fs::read(path)?;
-    Ok(ManifestFile {
-        file_name: file_name.to_owned(),
-        size_bytes: bytes.len() as u64,
-        crc32c: crc32c(&bytes),
-        primary_count: record_count,
-        secondary_count: 0,
     })
 }
 
@@ -390,10 +360,6 @@ fn validate_concrete_path_ids(
         }
     }
     Ok(())
-}
-
-fn remove_if_exists(path: &Path) {
-    let _ = fs::remove_file(path);
 }
 
 fn invalid_store(message: impl Into<String>) -> ToolError {

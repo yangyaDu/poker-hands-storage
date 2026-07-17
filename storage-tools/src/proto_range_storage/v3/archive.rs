@@ -18,7 +18,7 @@ use super::metadata_store::{
 use super::strategy_store::{
     export_hand_strategies, HandStrategyExportOptions, HandStrategyStore, HandStrategyStoreOptions,
 };
-use super::verification::{cross_verify_sqlite_v3, V3VerificationOptions};
+use super::verification::{cross_verify_sqlite_v3, verify_v3_archive, V3VerificationOptions};
 
 #[derive(Debug, Clone)]
 pub struct V3ArchiveExportOptions {
@@ -139,11 +139,41 @@ impl V3Archive {
     pub fn strategies(&self) -> &HandStrategyStore {
         &self.strategies
     }
+
+    pub(crate) fn resize_cache_budgets(
+        &self,
+        metadata_cache_byte_budget: usize,
+        strategy_cache_byte_budget: usize,
+    ) {
+        self.metadata
+            .resize_cache_budget(metadata_cache_byte_budget);
+        self.strategies
+            .resize_cache_budget(strategy_cache_byte_budget);
+    }
+
+    pub(crate) fn cache_budgets(&self) -> (usize, usize) {
+        (
+            self.metadata.cache_byte_budget(),
+            self.strategies.cache_byte_budget(),
+        )
+    }
 }
 
 pub fn export_v3_archive(
     options: &V3ArchiveExportOptions,
 ) -> Result<V3ArchiveExportSummary, ToolError> {
+    export_v3_archive_with_verifier(options, |building_dir| {
+        verify_v3_archive_before_publish(building_dir)
+    })
+}
+
+fn export_v3_archive_with_verifier<F>(
+    options: &V3ArchiveExportOptions,
+    verify_before_publish: F,
+) -> Result<V3ArchiveExportSummary, ToolError>
+where
+    F: FnOnce(&Path) -> Result<(), ToolError>,
+{
     if options.out_dir.exists() && !options.overwrite {
         return Err(ToolError::invalid_argument(format!(
             "V3 archive output already exists: {}",
@@ -185,13 +215,7 @@ pub fn export_v3_archive(
             hand_strategies,
         };
         write_manifest(&building_dir, &manifest)?;
-        V3Archive::open_with_options(
-            &building_dir,
-            V3ArchiveOpenOptions {
-                verify_file_checksums: true,
-                ..V3ArchiveOpenOptions::default()
-            },
-        )?;
+        verify_before_publish(&building_dir)?;
         Ok::<ArchiveManifest, ToolError>(manifest)
     })();
     let manifest = match result {
@@ -206,6 +230,22 @@ pub fn export_v3_archive(
         manifest,
         archive_dir: options.out_dir.clone(),
     })
+}
+
+/// Performs the complete standalone read-back verification required before an
+/// archive manifest may be published to its final directory.
+pub fn verify_v3_archive_before_publish(archive_dir: impl AsRef<Path>) -> Result<(), ToolError> {
+    let archive_dir = archive_dir.as_ref();
+    let report = verify_v3_archive(archive_dir, V3VerificationOptions::default());
+    if report.ok {
+        return Ok(());
+    }
+    Err(ToolError::verify(format!(
+        "V3 archive standalone verification failed for {} with {} failures; first={:?}",
+        archive_dir.display(),
+        report.failure_count,
+        report.failure_samples.first()
+    )))
 }
 
 pub fn export_all_v3_archives(
@@ -333,4 +373,80 @@ fn remove_dir_if_exists(path: &Path) -> Result<(), ToolError> {
         fs::remove_dir_all(path)?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn export_failure_during_read_back_verification_removes_building_without_publishing() {
+        let temp = tempfile::tempdir().unwrap();
+        let source_db = temp.path().join("source.db");
+        let out_dir = temp.path().join("archive");
+        build_source_fixture(&source_db);
+        let options = V3ArchiveExportOptions {
+            source_db,
+            out_dir: out_dir.clone(),
+            dimension: DimensionSpec {
+                strategy: "default".to_owned(),
+                player_count: 6,
+                depth_bb: 100,
+            },
+            metadata_page_target_bytes: 4096,
+            overwrite: false,
+        };
+
+        let error = export_v3_archive_with_verifier(&options, |building_dir| {
+            corrupt_read_back_payload(building_dir);
+            verify_v3_archive_before_publish(building_dir)
+        })
+        .unwrap_err();
+
+        assert_eq!(error.code(), "VERIFY_ERROR");
+        assert!(!out_dir.exists());
+        assert!(!sibling_path(&out_dir, "building").unwrap().exists());
+    }
+
+    fn corrupt_read_back_payload(archive_dir: &Path) {
+        let path = archive_dir.join(super::super::format::HAND_STRATEGIES_DATA_FILE_NAME);
+        let mut bytes = fs::read(&path).unwrap();
+        *bytes.last_mut().unwrap() ^= 0xff;
+        fs::write(path, bytes).unwrap();
+    }
+
+    fn build_source_fixture(path: &Path) {
+        Connection::open(path, false)
+            .unwrap()
+            .exec(
+                "CREATE TABLE concrete_lines_default_6max_100BB(
+                   id INTEGER PRIMARY KEY,
+                   abstract_line TEXT NOT NULL,
+                   concrete_line TEXT NOT NULL
+                 );
+                 CREATE TABLE drill_scenario_lines_default(
+                   id INTEGER PRIMARY KEY,
+                   drill_name TEXT NOT NULL,
+                   abstract_line TEXT NOT NULL,
+                   player_count INTEGER NOT NULL,
+                   depth INTEGER NOT NULL
+                 );
+                 CREATE TABLE range_data_default_6max_100BB(
+                   concrete_line_id INTEGER NOT NULL,
+                   hole_cards TEXT NOT NULL,
+                   action_name TEXT NOT NULL,
+                   action_size REAL NOT NULL,
+                   amount_bb REAL NOT NULL,
+                   frequency REAL NOT NULL,
+                   hand_ev REAL
+                 );
+                 INSERT INTO concrete_lines_default_6max_100BB VALUES
+                   (10, 'A', 'A-1');
+                 INSERT INTO drill_scenario_lines_default VALUES
+                   (1, 'rfi', 'A', 6, 100);
+                 INSERT INTO range_data_default_6max_100BB VALUES
+                   (10, 'AA', 'fold', 0.0, 0.0, 0.0, NULL);",
+            )
+            .unwrap();
+    }
 }

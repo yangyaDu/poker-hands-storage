@@ -25,8 +25,8 @@ pub struct V3BenchmarkCommand {
     pub iterations: usize,
     pub warmup_iterations: usize,
     pub max_open_handles: usize,
-    pub metadata_cache_byte_budget_per_handle: usize,
-    pub strategy_cache_byte_budget_per_handle: usize,
+    pub metadata_cache_byte_budget: usize,
+    pub strategy_cache_byte_budget: usize,
     pub verify_file_checksums: bool,
     pub out_path: PathBuf,
     pub markdown_path: PathBuf,
@@ -121,8 +121,8 @@ pub fn run_v3_benchmark(command: &V3BenchmarkCommand) -> Result<V3BenchmarkRepor
     let facade_options = V3FacadeOptions {
         max_open_handles: command.max_open_handles,
         verify_file_checksums: command.verify_file_checksums,
-        metadata_cache_byte_budget_per_handle: command.metadata_cache_byte_budget_per_handle,
-        strategy_cache_byte_budget_per_handle: command.strategy_cache_byte_budget_per_handle,
+        metadata_cache_byte_budget: command.metadata_cache_byte_budget,
+        strategy_cache_byte_budget: command.strategy_cache_byte_budget,
     };
 
     let memory_before = get_memory_snapshot();

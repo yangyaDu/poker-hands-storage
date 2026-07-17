@@ -132,8 +132,8 @@ pub fn parse_v3_benchmark_args(args: Vec<String>) -> Result<V3BenchmarkCommand, 
     let mut iterations = 1_000;
     let mut warmup_iterations = 50;
     let mut max_open_handles = 2;
-    let mut metadata_cache_byte_budget_per_handle = 8 * 1024 * 1024;
-    let mut strategy_cache_byte_budget_per_handle = 64 * 1024 * 1024;
+    let mut metadata_cache_byte_budget = 8 * 1024 * 1024;
+    let mut strategy_cache_byte_budget = 64 * 1024 * 1024;
     let mut verify_file_checksums = false;
     let mut out_path = PathBuf::from("reports/v3-benchmark.json");
     let mut markdown_path = PathBuf::from("reports/v3-benchmark.md");
@@ -157,11 +157,11 @@ pub fn parse_v3_benchmark_args(args: Vec<String>) -> Result<V3BenchmarkCommand, 
                     parse_usize("--max-open-handles", next_value(&args, &mut index)?)?
             }
             "--metadata-cache-bytes" => {
-                metadata_cache_byte_budget_per_handle =
+                metadata_cache_byte_budget =
                     parse_usize("--metadata-cache-bytes", next_value(&args, &mut index)?)?
             }
             "--strategy-cache-bytes" => {
-                strategy_cache_byte_budget_per_handle =
+                strategy_cache_byte_budget =
                     parse_usize("--strategy-cache-bytes", next_value(&args, &mut index)?)?
             }
             "--verify-checksums" => verify_file_checksums = true,
@@ -183,8 +183,8 @@ pub fn parse_v3_benchmark_args(args: Vec<String>) -> Result<V3BenchmarkCommand, 
         iterations,
         warmup_iterations,
         max_open_handles,
-        metadata_cache_byte_budget_per_handle,
-        strategy_cache_byte_budget_per_handle,
+        metadata_cache_byte_budget,
+        strategy_cache_byte_budget,
         verify_file_checksums,
         out_path,
         markdown_path,

@@ -99,8 +99,8 @@ fn archive_query_service_serves_full_business_chain_and_uses_bounded_caches() {
         V3FacadeOptions {
             max_open_handles: 1,
             verify_file_checksums: true,
-            metadata_cache_byte_budget_per_handle: 16 * 1024,
-            strategy_cache_byte_budget_per_handle: 16 * 1024,
+            metadata_cache_byte_budget: 16 * 1024,
+            strategy_cache_byte_budget: 16 * 1024,
         },
     )
     .unwrap();
@@ -211,8 +211,8 @@ fn facade_evicts_dimension_handles_and_supports_concurrent_queries() {
             V3FacadeOptions {
                 max_open_handles: 1,
                 verify_file_checksums: false,
-                metadata_cache_byte_budget_per_handle: 8 * 1024,
-                strategy_cache_byte_budget_per_handle: 8 * 1024,
+                metadata_cache_byte_budget: 8 * 1024,
+                strategy_cache_byte_budget: 8 * 1024,
             },
         )
         .unwrap(),
@@ -245,6 +245,138 @@ fn facade_evicts_dimension_handles_and_supports_concurrent_queries() {
     for thread in threads {
         assert_eq!(thread.join().unwrap(), 2);
     }
+}
+
+#[test]
+fn facade_total_cache_budgets_cover_two_open_dimension_handles() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_db = temp.path().join("source.db");
+    build_source_fixture(&source_db);
+    add_second_dimension_fixture(&source_db);
+    let root = temp.path().join("root");
+    fs::create_dir(&root).unwrap();
+    export_v3_archive(&V3ArchiveExportOptions {
+        source_db: source_db.clone(),
+        out_dir: root.join("default_6max_100BB"),
+        dimension: dimension_spec(),
+        metadata_page_target_bytes: 1024,
+        overwrite: false,
+    })
+    .unwrap();
+    export_v3_archive(&V3ArchiveExportOptions {
+        source_db,
+        out_dir: root.join("default_8max_200BB"),
+        dimension: second_dimension_spec(),
+        metadata_page_target_bytes: 1024,
+        overwrite: false,
+    })
+    .unwrap();
+
+    let metadata_budget = 1024;
+    let strategy_budget = 1024;
+    let facade = V3Facade::open_with_options(
+        root,
+        V3FacadeOptions {
+            max_open_handles: 2,
+            verify_file_checksums: false,
+            metadata_cache_byte_budget: metadata_budget,
+            strategy_cache_byte_budget: strategy_budget,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(
+        facade
+            .query_hand_strategy_by_path(&dimension_ref(), "A-1", "AA")
+            .unwrap()
+            .actions
+            .len(),
+        2
+    );
+    let single_handle_cache = facade.cache_stats();
+    assert_eq!(single_handle_cache.open_handle_count, 1);
+    assert_eq!(
+        single_handle_cache.metadata_per_handle_byte_budget,
+        metadata_budget
+    );
+    assert_eq!(
+        single_handle_cache.strategy_per_handle_byte_budget,
+        strategy_budget
+    );
+    assert!(
+        single_handle_cache.strategies.resident_estimated_bytes > strategy_budget / 2,
+        "the first handle must contain a decoded strategy that the resize needs to evict"
+    );
+    assert_eq!(
+        facade
+            .query_hand_strategy_by_path(&second_dimension_ref(), "C-1", "JJ")
+            .unwrap()
+            .actions
+            .len(),
+        1
+    );
+
+    let cache = facade.cache_stats();
+    assert_eq!(cache.open_handle_count, 2);
+    assert_eq!(cache.metadata_per_handle_byte_budget, metadata_budget / 2);
+    assert_eq!(cache.strategy_per_handle_byte_budget, strategy_budget / 2);
+    assert!(cache.metadata.resident_estimated_bytes <= metadata_budget);
+    assert!(cache.strategies.resident_estimated_bytes <= strategy_budget);
+    assert!(
+        cache.strategies.evictions >= 1,
+        "opening the second handle must evict the first handle's oversized decoded strategy"
+    );
+}
+
+#[test]
+fn facade_total_cache_budgets_smaller_than_handle_capacity_disable_cache_without_panicking() {
+    let temp = tempfile::tempdir().unwrap();
+    let source_db = temp.path().join("source.db");
+    build_source_fixture(&source_db);
+    add_second_dimension_fixture(&source_db);
+    let root = temp.path().join("root");
+    fs::create_dir(&root).unwrap();
+    export_v3_archive(&V3ArchiveExportOptions {
+        source_db: source_db.clone(),
+        out_dir: root.join("default_6max_100BB"),
+        dimension: dimension_spec(),
+        metadata_page_target_bytes: 1024,
+        overwrite: false,
+    })
+    .unwrap();
+    export_v3_archive(&V3ArchiveExportOptions {
+        source_db,
+        out_dir: root.join("default_8max_200BB"),
+        dimension: second_dimension_spec(),
+        metadata_page_target_bytes: 1024,
+        overwrite: false,
+    })
+    .unwrap();
+
+    let metadata_budget = 1;
+    let strategy_budget = 1;
+    let facade = V3Facade::open_with_options(
+        root,
+        V3FacadeOptions {
+            max_open_handles: 2,
+            verify_file_checksums: false,
+            metadata_cache_byte_budget: metadata_budget,
+            strategy_cache_byte_budget: strategy_budget,
+        },
+    )
+    .unwrap();
+
+    facade
+        .query_hand_strategy_by_path(&dimension_ref(), "A-1", "AA")
+        .unwrap();
+    facade
+        .query_hand_strategy_by_path(&second_dimension_ref(), "C-1", "JJ")
+        .unwrap();
+
+    let cache = facade.cache_stats();
+    assert_eq!(cache.open_handle_count, 2);
+    assert!(cache.metadata.resident_estimated_bytes <= metadata_budget);
+    assert!(cache.strategies.resident_estimated_bytes <= strategy_budget);
 }
 
 fn dimension_spec() -> DimensionSpec {

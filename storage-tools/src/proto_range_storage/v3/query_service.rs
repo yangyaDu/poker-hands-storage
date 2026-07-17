@@ -165,6 +165,19 @@ impl V3QueryService {
         self.archive.strategies().record_count()
     }
 
+    pub(crate) fn resize_cache_budgets(
+        &self,
+        metadata_cache_byte_budget: usize,
+        strategy_cache_byte_budget: usize,
+    ) {
+        self.archive
+            .resize_cache_budgets(metadata_cache_byte_budget, strategy_cache_byte_budget);
+    }
+
+    pub(crate) fn cache_budgets(&self) -> (usize, usize) {
+        self.archive.cache_budgets()
+    }
+
     fn require_dimension(&self, requested: &DimensionRef) -> Result<(), ToolError> {
         let stored = self.archive.manifest();
         if stored.strategy == requested.strategy

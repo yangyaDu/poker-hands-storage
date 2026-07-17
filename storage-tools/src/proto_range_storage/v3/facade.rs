@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -19,8 +19,10 @@ use super::query_service::V3QueryService;
 pub struct V3FacadeOptions {
     pub max_open_handles: usize,
     pub verify_file_checksums: bool,
-    pub metadata_cache_byte_budget_per_handle: usize,
-    pub strategy_cache_byte_budget_per_handle: usize,
+    /// Facade-wide metadata cache budget, dynamically divided among open dimension handles.
+    pub metadata_cache_byte_budget: usize,
+    /// Facade-wide decoded-strategy cache budget, dynamically divided among open dimension handles.
+    pub strategy_cache_byte_budget: usize,
 }
 
 impl Default for V3FacadeOptions {
@@ -28,10 +30,8 @@ impl Default for V3FacadeOptions {
         Self {
             max_open_handles: 16,
             verify_file_checksums: false,
-            metadata_cache_byte_budget_per_handle:
-                super::metadata_store::DEFAULT_METADATA_CACHE_BYTE_BUDGET,
-            strategy_cache_byte_budget_per_handle:
-                super::strategy_store::DEFAULT_STRATEGY_CACHE_BYTE_BUDGET,
+            metadata_cache_byte_budget: super::metadata_store::DEFAULT_METADATA_CACHE_BYTE_BUDGET,
+            strategy_cache_byte_budget: super::strategy_store::DEFAULT_STRATEGY_CACHE_BYTE_BUDGET,
         }
     }
 }
@@ -48,12 +48,16 @@ pub struct HandlePoolStats {
 #[serde(rename_all = "camelCase")]
 pub struct FacadeCacheStats {
     pub open_handle_count: usize,
+    /// Current metadata-cache sub-budget assigned to each open handle.
+    pub metadata_per_handle_byte_budget: usize,
+    /// Current decoded-strategy-cache sub-budget assigned to each open handle.
+    pub strategy_per_handle_byte_budget: usize,
     pub metadata: ByteCacheStats,
     pub strategies: ByteCacheStats,
 }
 
 pub struct V3Facade {
-    archive_dirs: BTreeMap<String, PathBuf>,
+    archive_dirs: HashMap<DimensionRef, PathBuf>,
     options: V3FacadeOptions,
     handles: Mutex<HandlePool>,
 }
@@ -79,7 +83,7 @@ impl V3Facade {
                 root_dir.display()
             )));
         }
-        let mut archive_dirs = BTreeMap::new();
+        let mut archive_dirs = HashMap::new();
         for entry in fs::read_dir(root_dir)? {
             let path = entry?.path();
             if !path.is_dir() || !path.join(MANIFEST_FILE_NAME).is_file() {
@@ -88,11 +92,10 @@ impl V3Facade {
             let manifest = read_manifest(&path)?;
             let dimension =
                 DimensionRef::new(manifest.strategy, manifest.player_count, manifest.depth_bb);
-            let key = dimension_key(&dimension);
-            if archive_dirs.insert(key.clone(), path).is_some() {
+            if archive_dirs.insert(dimension.clone(), path).is_some() {
                 return Err(ToolError::new(
                     "INVALID_V3_MANIFEST",
-                    format!("Duplicate V3 dimension {key}"),
+                    format!("Duplicate V3 dimension {}", dimension_key(&dimension)),
                 ));
             }
         }
@@ -104,7 +107,13 @@ impl V3Facade {
     }
 
     pub fn known_dimensions(&self) -> Vec<String> {
-        self.archive_dirs.keys().cloned().collect()
+        let mut dimensions = self
+            .archive_dirs
+            .keys()
+            .map(dimension_key)
+            .collect::<Vec<_>>();
+        dimensions.sort();
+        dimensions
     }
 
     pub fn prewarm(&self, dimension: &DimensionRef) -> Result<(), ToolError> {
@@ -192,11 +201,27 @@ impl V3Facade {
 
     pub fn cache_stats(&self) -> FacadeCacheStats {
         let handles = self.handles.lock().expect("V3 handle pool lock poisoned");
+        let open_handle_count = handles.entries.len();
         let mut stats = FacadeCacheStats {
-            open_handle_count: handles.entries.len(),
+            open_handle_count,
             ..FacadeCacheStats::default()
         };
-        for handle in handles.entries.values() {
+        for (index, handle) in handles.entries.values().enumerate() {
+            let (metadata_cache_byte_budget, strategy_cache_byte_budget) =
+                handle.service.cache_budgets();
+            if index == 0 {
+                stats.metadata_per_handle_byte_budget = metadata_cache_byte_budget;
+                stats.strategy_per_handle_byte_budget = strategy_cache_byte_budget;
+            } else {
+                debug_assert_eq!(
+                    stats.metadata_per_handle_byte_budget,
+                    metadata_cache_byte_budget
+                );
+                debug_assert_eq!(
+                    stats.strategy_per_handle_byte_budget,
+                    strategy_cache_byte_budget
+                );
+            }
             stats.metadata.merge(handle.service.metadata_cache_stats());
             stats
                 .strategies
@@ -210,15 +235,17 @@ impl V3Facade {
         dimension: &DimensionRef,
         query: impl FnOnce(&V3QueryService) -> Result<T, ToolError>,
     ) -> Result<T, ToolError> {
-        let key = dimension_key(dimension);
-        let archive_dir = self.archive_dirs.get(&key).ok_or_else(|| {
+        let archive_dir = self.archive_dirs.get(dimension).ok_or_else(|| {
             ToolError::new(
                 "DIMENSION_NOT_FOUND",
-                format!("V3 storage does not contain dimension {key}"),
+                format!(
+                    "V3 storage does not contain dimension {}",
+                    dimension_key(dimension)
+                ),
             )
         })?;
         let mut handles = self.handles.lock().expect("V3 handle pool lock poisoned");
-        let service = handles.get_or_open(&key, archive_dir, &self.options)?;
+        let service = handles.get_or_open(dimension, archive_dir, &self.options)?;
         drop(handles);
         query(&service)
     }
@@ -227,7 +254,7 @@ impl V3Facade {
 struct HandlePool {
     capacity: usize,
     counter: u64,
-    entries: HashMap<String, OpenHandle>,
+    entries: HashMap<DimensionRef, OpenHandle>,
     stats: HandlePoolStats,
 }
 
@@ -248,15 +275,15 @@ impl HandlePool {
 
     fn get_or_open(
         &mut self,
-        key: &str,
+        dimension: &DimensionRef,
         archive_dir: &Path,
         options: &V3FacadeOptions,
     ) -> Result<Arc<V3QueryService>, ToolError> {
         self.counter = self.counter.wrapping_add(1);
         let sequence = self.counter;
-        if self.entries.contains_key(key) {
+        if self.entries.contains_key(dimension) {
             self.stats.hits = self.stats.hits.wrapping_add(1);
-            let handle = self.entries.get_mut(key).expect("existing V3 handle");
+            let handle = self.entries.get_mut(dimension).expect("existing V3 handle");
             handle.last_access = sequence;
             return Ok(Arc::clone(&handle.service));
         }
@@ -267,26 +294,53 @@ impl HandlePool {
                 .min_by_key(|(_, handle)| handle.last_access)
                 .map(|(key, _)| key.clone())
             {
-                self.entries.remove(&lru_key);
+                let evicted = self.entries.remove(&lru_key).expect("existing V3 handle");
+                evicted.service.resize_cache_budgets(0, 0);
                 self.stats.evictions = self.stats.evictions.wrapping_add(1);
+                self.resize_open_handle_caches(options);
             }
         }
+        let next_handle_count = self.entries.len() + 1;
         let service = Arc::new(V3QueryService::open_with_options(
             archive_dir,
             V3ArchiveOpenOptions {
                 verify_file_checksums: options.verify_file_checksums,
-                metadata_cache_byte_budget: options.metadata_cache_byte_budget_per_handle,
-                strategy_cache_byte_budget: options.strategy_cache_byte_budget_per_handle,
+                metadata_cache_byte_budget: per_handle_budget(
+                    options.metadata_cache_byte_budget,
+                    next_handle_count,
+                ),
+                strategy_cache_byte_budget: per_handle_budget(
+                    options.strategy_cache_byte_budget,
+                    next_handle_count,
+                ),
             },
         )?);
         self.entries.insert(
-            key.to_owned(),
+            dimension.clone(),
             OpenHandle {
                 service: Arc::clone(&service),
                 last_access: sequence,
             },
         );
+        self.resize_open_handle_caches(options);
         self.stats.opens = self.stats.opens.wrapping_add(1);
         Ok(service)
     }
+
+    fn resize_open_handle_caches(&self, options: &V3FacadeOptions) {
+        let open_handle_count = self.entries.len();
+        let metadata_cache_byte_budget =
+            per_handle_budget(options.metadata_cache_byte_budget, open_handle_count);
+        let strategy_cache_byte_budget =
+            per_handle_budget(options.strategy_cache_byte_budget, open_handle_count);
+        for handle in self.entries.values() {
+            handle
+                .service
+                .resize_cache_budgets(metadata_cache_byte_budget, strategy_cache_byte_budget);
+        }
+    }
+}
+
+fn per_handle_budget(total_budget: usize, open_handle_count: usize) -> usize {
+    total_budget / open_handle_count.max(1)
 }

@@ -12,8 +12,8 @@ pub async fn serve(config: ServiceConfig) -> Result<(), AppError> {
         &config.data_dir,
         config.max_open_handles,
         config.verify_checksums,
-        config.metadata_cache_bytes_per_handle,
-        config.strategy_cache_bytes_per_handle,
+        config.metadata_cache_byte_budget,
+        config.strategy_cache_byte_budget,
     )?);
     for dimension in &config.prewarm {
         service.prewarm(dimension)?;

@@ -61,8 +61,8 @@ impl QueryService {
         data_dir: impl Into<PathBuf>,
         max_open_handles: usize,
         verify_checksums: bool,
-        metadata_cache_bytes_per_handle: usize,
-        strategy_cache_bytes_per_handle: usize,
+        metadata_cache_byte_budget: usize,
+        strategy_cache_byte_budget: usize,
     ) -> Result<Self, AppError> {
         Ok(Self {
             facade: V3Facade::open_with_options(
@@ -70,8 +70,8 @@ impl QueryService {
                 V3FacadeOptions {
                     max_open_handles,
                     verify_file_checksums: verify_checksums,
-                    metadata_cache_byte_budget_per_handle: metadata_cache_bytes_per_handle,
-                    strategy_cache_byte_budget_per_handle: strategy_cache_bytes_per_handle,
+                    metadata_cache_byte_budget,
+                    strategy_cache_byte_budget,
                 },
             )?,
         })

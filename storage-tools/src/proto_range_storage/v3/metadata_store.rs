@@ -1,34 +1,31 @@
 use std::collections::HashSet;
-use std::fs::{self, File};
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::fs::File;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use memmap2::Mmap;
 use prost::Message;
-use range_store_core::crc32c::{assert_crc32c, crc32c};
-use range_store_core::dimension::DimensionSpec;
+use range_store_core::crc32c::assert_crc32c;
 use range_store_core::metadata::{ConcreteLineFilter, ConcreteLineRow};
-use range_store_core::sqlite::Connection;
 
 use crate::errors::ToolError;
 
 use super::cache::{ByteCacheStats, ByteLru};
 use super::format::{
-    decode_hash_locator, decode_header, decode_payload_locator, decode_section_descriptor,
-    encode_hash_locator, encode_header, encode_payload_locator, encode_section_descriptor,
-    stable_hash64, FileHeader, FileKind, HashLocator, PayloadLocator, SectionDescriptor,
-    SectionKind, ABSTRACT_ACTION_PATHS_DATA_FILE_NAME, ABSTRACT_ACTION_PATHS_INDEX_FILE_NAME,
-    DRILL_SCENARIOS_DATA_FILE_NAME, DRILL_SCENARIOS_INDEX_FILE_NAME, HASH_LOCATOR_SIZE,
-    HEADER_SIZE, NO_VALUE_INDEX, PAYLOAD_LOCATOR_SIZE, SECTION_DESCRIPTOR_SIZE,
+    checked_u32_index, decode_hash_locator, decode_header, decode_payload_locator,
+    decode_section_descriptor, sort_hash_locators, stable_hash64, FileKind, HashLocator,
+    PayloadLocator, SectionKind, ABSTRACT_ACTION_PATHS_DATA_FILE_NAME,
+    ABSTRACT_ACTION_PATHS_INDEX_FILE_NAME, DRILL_SCENARIOS_DATA_FILE_NAME,
+    DRILL_SCENARIOS_INDEX_FILE_NAME, HASH_LOCATOR_SIZE, HEADER_SIZE, NO_VALUE_INDEX,
+    PAYLOAD_LOCATOR_SIZE, SECTION_DESCRIPTOR_SIZE,
 };
-use super::manifest::{AbstractActionPathsManifest, DrillScenariosManifest, ManifestFile};
+pub use super::metadata_export::{
+    export_metadata, ExportedConcreteActionPath, MetadataExportOptions, MetadataExportSummary,
+    DEFAULT_METADATA_PAGE_TARGET_BYTES,
+};
 use super::proto::{
     AbstractActionPathEntry, AbstractActionPathPage, DrillScenarioEntry, DrillScenarioPage,
 };
-use super::source::{load_metadata, LoadedMetadata};
-
-pub const DEFAULT_METADATA_PAGE_TARGET_BYTES: usize = 64 * 1024;
 pub const DEFAULT_METADATA_CACHE_BYTE_BUDGET: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
@@ -44,85 +41,11 @@ impl Default for MetadataStoreOptions {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct MetadataExportOptions {
-    pub source_db: PathBuf,
-    pub out_dir: PathBuf,
-    pub dimension: DimensionSpec,
-    pub page_target_bytes: usize,
-    pub overwrite: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ExportedConcreteActionPath {
-    pub source_id: u32,
-    pub concrete_action_path_id: u32,
-    pub abstract_action_path: String,
-    pub concrete_action_path: String,
-}
-
-#[derive(Debug, Clone)]
-pub struct MetadataExportSummary {
-    pub drill_scenarios: DrillScenariosManifest,
-    pub abstract_action_paths: AbstractActionPathsManifest,
-    pub concrete_paths: Vec<ExportedConcreteActionPath>,
-}
-
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetadataSnapshot {
     pub drill_scenarios: Vec<DrillScenarioEntry>,
     pub abstract_action_paths: Vec<AbstractActionPathEntry>,
     pub concrete_path_count: u64,
-}
-
-pub fn export_metadata(
-    options: &MetadataExportOptions,
-) -> Result<MetadataExportSummary, ToolError> {
-    if !options.source_db.is_file() {
-        return Err(ToolError::invalid_argument(format!(
-            "Source database does not exist: {}",
-            options.source_db.display()
-        )));
-    }
-    if options.page_target_bytes == 0 {
-        return Err(ToolError::invalid_argument(
-            "V3 metadata page target must be positive",
-        ));
-    }
-    let connection = Connection::open(&options.source_db, true)?;
-    let loaded = load_metadata(&connection, &options.dimension)?;
-    fs::create_dir_all(&options.out_dir)?;
-    prepare_output_paths(&options.out_dir, options.overwrite)?;
-
-    let paths = MetadataPaths::new(&options.out_dir);
-    paths.remove_temporary_files();
-    let result = write_metadata_to_temporary_files(&paths, &loaded, options.page_target_bytes);
-    let (drill_scenarios, abstract_action_paths) = match result {
-        Ok(manifests) => manifests,
-        Err(error) => {
-            paths.remove_temporary_files();
-            return Err(error);
-        }
-    };
-    if let Err(error) = paths.publish(options.overwrite) {
-        paths.remove_temporary_files();
-        return Err(error);
-    }
-
-    Ok(MetadataExportSummary {
-        drill_scenarios,
-        abstract_action_paths,
-        concrete_paths: loaded
-            .concrete_paths
-            .into_iter()
-            .map(|path| ExportedConcreteActionPath {
-                source_id: path.source_id,
-                concrete_action_path_id: path.concrete_action_path_id,
-                abstract_action_path: path.abstract_action_path,
-                concrete_action_path: path.concrete_action_path,
-            })
-            .collect(),
-    })
 }
 
 pub struct MetadataStore {
@@ -183,6 +106,31 @@ impl MetadataStore {
         stats
     }
 
+    pub(crate) fn resize_cache_budget(&self, page_cache_byte_budget: usize) {
+        let drill_budget = page_cache_byte_budget / 2;
+        let action_path_budget = page_cache_byte_budget - drill_budget;
+        self.drill_cache
+            .lock()
+            .expect("V3 drill page cache lock poisoned")
+            .resize(drill_budget);
+        self.action_path_cache
+            .lock()
+            .expect("V3 action path page cache lock poisoned")
+            .resize(action_path_budget);
+    }
+
+    pub(crate) fn cache_byte_budget(&self) -> usize {
+        self.drill_cache
+            .lock()
+            .expect("V3 drill page cache lock poisoned")
+            .byte_budget()
+            + self
+                .action_path_cache
+                .lock()
+                .expect("V3 action path page cache lock poisoned")
+                .byte_budget()
+    }
+
     /// Decode every metadata page and prove that the fixed-width indexes are an exact,
     /// one-to-one projection of the protobuf payloads.
     pub fn verify_and_snapshot(&self) -> Result<MetadataSnapshot, ToolError> {
@@ -202,7 +150,7 @@ impl MetadataStore {
                 expected_drill_locators.push(HashLocator::entry(
                     stable_hash64(&entry.drill_name),
                     page_id,
-                    to_u32("drill entry index", entry_index)?,
+                    checked_u32_index("drill entry index", entry_index)?,
                 ));
                 drill_scenarios.push(entry);
             }
@@ -227,7 +175,8 @@ impl MetadataStore {
                 )));
             }
             for (entry_index, entry) in page.entries.into_iter().enumerate() {
-                let entry_index = to_u32("abstract action path entry index", entry_index)?;
+                let entry_index =
+                    checked_u32_index("abstract action path entry index", entry_index)?;
                 expected_abstract_locators.push(HashLocator::entry(
                     stable_hash64(&entry.abstract_action_path),
                     page_id,
@@ -238,7 +187,7 @@ impl MetadataStore {
                         stable_hash64(&path.concrete_action_path),
                         page_id,
                         entry_index,
-                        to_u32("concrete action path value index", value_index)?,
+                        checked_u32_index("concrete action path value index", value_index)?,
                     ));
                 }
                 abstract_action_paths.push(entry);
@@ -301,7 +250,7 @@ impl MetadataStore {
         }
         concrete_ids.sort_unstable();
         for (index, actual) in concrete_ids.iter().copied().enumerate() {
-            let expected = to_u32("concrete action path id", index + 1)?;
+            let expected = checked_u32_index("concrete action path id", index + 1)?;
             if actual != expected {
                 return Err(invalid_metadata(format!(
                     "Concrete action path ids must be dense: expected {expected}, got {actual}"
@@ -542,372 +491,6 @@ fn estimate_action_path_page_bytes(page: &AbstractActionPathPage) -> usize {
                         .sum::<usize>()
             })
             .sum::<usize>()
-}
-
-struct MetadataPaths {
-    final_paths: [PathBuf; 4],
-    temporary_paths: [PathBuf; 4],
-}
-
-impl MetadataPaths {
-    fn new(dir: &Path) -> Self {
-        let final_paths = [
-            dir.join(DRILL_SCENARIOS_DATA_FILE_NAME),
-            dir.join(DRILL_SCENARIOS_INDEX_FILE_NAME),
-            dir.join(ABSTRACT_ACTION_PATHS_DATA_FILE_NAME),
-            dir.join(ABSTRACT_ACTION_PATHS_INDEX_FILE_NAME),
-        ];
-        let temporary_paths = [
-            dir.join(format!("{DRILL_SCENARIOS_DATA_FILE_NAME}.tmp")),
-            dir.join(format!("{DRILL_SCENARIOS_INDEX_FILE_NAME}.tmp")),
-            dir.join(format!("{ABSTRACT_ACTION_PATHS_DATA_FILE_NAME}.tmp")),
-            dir.join(format!("{ABSTRACT_ACTION_PATHS_INDEX_FILE_NAME}.tmp")),
-        ];
-        Self {
-            final_paths,
-            temporary_paths,
-        }
-    }
-
-    fn remove_temporary_files(&self) {
-        for path in &self.temporary_paths {
-            let _ = fs::remove_file(path);
-        }
-    }
-
-    fn publish(&self, overwrite: bool) -> Result<(), ToolError> {
-        if overwrite {
-            for path in &self.final_paths {
-                if path.exists() {
-                    fs::remove_file(path)?;
-                }
-            }
-        }
-        for (temporary, final_path) in self.temporary_paths.iter().zip(&self.final_paths) {
-            fs::rename(temporary, final_path)?;
-        }
-        Ok(())
-    }
-}
-
-fn prepare_output_paths(dir: &Path, overwrite: bool) -> Result<(), ToolError> {
-    for file_name in [
-        DRILL_SCENARIOS_DATA_FILE_NAME,
-        DRILL_SCENARIOS_INDEX_FILE_NAME,
-        ABSTRACT_ACTION_PATHS_DATA_FILE_NAME,
-        ABSTRACT_ACTION_PATHS_INDEX_FILE_NAME,
-    ] {
-        let path = dir.join(file_name);
-        if path.exists() && !overwrite {
-            return Err(ToolError::invalid_argument(format!(
-                "V3 metadata output already exists: {}",
-                path.display()
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn write_metadata_to_temporary_files(
-    paths: &MetadataPaths,
-    loaded: &LoadedMetadata,
-    page_target_bytes: usize,
-) -> Result<(DrillScenariosManifest, AbstractActionPathsManifest), ToolError> {
-    let drill_pages = paginate(
-        loaded.drill_scenarios.clone(),
-        page_target_bytes,
-        |entries| DrillScenarioPage { entries },
-    );
-    let action_path_pages = paginate(
-        loaded.abstract_action_paths.clone(),
-        page_target_bytes,
-        |entries| AbstractActionPathPage { entries },
-    );
-
-    let drill_page_locators = write_page_data_file(
-        &paths.temporary_paths[0],
-        FileKind::DrillScenariosData,
-        &drill_pages,
-        loaded.drill_scenarios.len() as u64,
-    )?;
-    let mut drill_hash_locators = Vec::with_capacity(loaded.drill_scenarios.len());
-    for (page_id, page) in drill_pages.iter().enumerate() {
-        for (entry_index, entry) in page.entries.iter().enumerate() {
-            drill_hash_locators.push(HashLocator::entry(
-                stable_hash64(&entry.drill_name),
-                to_u32("drill page id", page_id)?,
-                to_u32("drill entry index", entry_index)?,
-            ));
-        }
-    }
-    sort_hash_locators(&mut drill_hash_locators);
-    write_index_file(
-        &paths.temporary_paths[1],
-        FileKind::DrillScenariosIndex,
-        drill_pages.len() as u64,
-        drill_hash_locators.len() as u64,
-        vec![
-            payload_locator_section(&drill_page_locators),
-            hash_locator_section(SectionKind::PrimaryHashLocators, &drill_hash_locators),
-        ],
-    )?;
-
-    let action_page_locators = write_page_data_file(
-        &paths.temporary_paths[2],
-        FileKind::AbstractActionPathsData,
-        &action_path_pages,
-        loaded.abstract_action_paths.len() as u64,
-    )?;
-    let mut abstract_hash_locators = Vec::with_capacity(loaded.abstract_action_paths.len());
-    let mut concrete_hash_locators = Vec::with_capacity(loaded.concrete_paths.len());
-    for (page_id, page) in action_path_pages.iter().enumerate() {
-        for (entry_index, entry) in page.entries.iter().enumerate() {
-            let page_id = to_u32("action path page id", page_id)?;
-            let entry_index = to_u32("action path entry index", entry_index)?;
-            abstract_hash_locators.push(HashLocator::entry(
-                stable_hash64(&entry.abstract_action_path),
-                page_id,
-                entry_index,
-            ));
-            for (value_index, path) in entry.concrete_action_paths.iter().enumerate() {
-                concrete_hash_locators.push(HashLocator::value(
-                    stable_hash64(&path.concrete_action_path),
-                    page_id,
-                    entry_index,
-                    to_u32("concrete action path value index", value_index)?,
-                ));
-            }
-        }
-    }
-    sort_hash_locators(&mut abstract_hash_locators);
-    sort_hash_locators(&mut concrete_hash_locators);
-    write_index_file(
-        &paths.temporary_paths[3],
-        FileKind::AbstractActionPathsIndex,
-        action_path_pages.len() as u64,
-        (abstract_hash_locators.len() + concrete_hash_locators.len()) as u64,
-        vec![
-            payload_locator_section(&action_page_locators),
-            hash_locator_section(SectionKind::PrimaryHashLocators, &abstract_hash_locators),
-            hash_locator_section(SectionKind::SecondaryHashLocators, &concrete_hash_locators),
-        ],
-    )?;
-
-    let drill_scenarios = DrillScenariosManifest {
-        data: manifest_file(
-            &paths.temporary_paths[0],
-            DRILL_SCENARIOS_DATA_FILE_NAME,
-            drill_pages.len() as u64,
-            loaded.drill_scenarios.len() as u64,
-        )?,
-        index: manifest_file(
-            &paths.temporary_paths[1],
-            DRILL_SCENARIOS_INDEX_FILE_NAME,
-            drill_pages.len() as u64,
-            drill_hash_locators.len() as u64,
-        )?,
-        page_count: drill_pages.len() as u64,
-        drill_count: loaded.drill_scenarios.len() as u64,
-        hash_record_count: drill_hash_locators.len() as u64,
-    };
-    let abstract_action_paths = AbstractActionPathsManifest {
-        data: manifest_file(
-            &paths.temporary_paths[2],
-            ABSTRACT_ACTION_PATHS_DATA_FILE_NAME,
-            action_path_pages.len() as u64,
-            loaded.abstract_action_paths.len() as u64,
-        )?,
-        index: manifest_file(
-            &paths.temporary_paths[3],
-            ABSTRACT_ACTION_PATHS_INDEX_FILE_NAME,
-            action_path_pages.len() as u64,
-            (abstract_hash_locators.len() + concrete_hash_locators.len()) as u64,
-        )?,
-        page_count: action_path_pages.len() as u64,
-        abstract_path_count: loaded.abstract_action_paths.len() as u64,
-        concrete_path_count: loaded.concrete_paths.len() as u64,
-        abstract_hash_record_count: abstract_hash_locators.len() as u64,
-        concrete_hash_record_count: concrete_hash_locators.len() as u64,
-    };
-    Ok((drill_scenarios, abstract_action_paths))
-}
-
-fn paginate<T, P, F>(entries: Vec<T>, page_target_bytes: usize, make_page: F) -> Vec<P>
-where
-    T: Clone,
-    P: Message,
-    F: Fn(Vec<T>) -> P,
-{
-    let mut pages = Vec::new();
-    let mut current = Vec::new();
-    for entry in entries {
-        current.push(entry);
-        if current.len() > 1 && make_page(current.clone()).encoded_len() > page_target_bytes {
-            let overflow = current.pop().expect("page contains overflow entry");
-            pages.push(make_page(std::mem::take(&mut current)));
-            current.push(overflow);
-        }
-    }
-    if !current.is_empty() {
-        pages.push(make_page(current));
-    }
-    pages
-}
-
-fn write_page_data_file<P: Message>(
-    path: &Path,
-    kind: FileKind,
-    pages: &[P],
-    entry_count: u64,
-) -> Result<Vec<PayloadLocator>, ToolError> {
-    let mut file = File::create(path)?;
-    file.write_all(&encode_header(FileHeader::new(
-        kind,
-        pages.len() as u64,
-        entry_count,
-        0,
-    )))?;
-    let mut offset = HEADER_SIZE as u64;
-    let mut locators = Vec::with_capacity(pages.len());
-    for page in pages {
-        let payload = page.encode_to_vec();
-        let byte_length = u32::try_from(payload.len()).map_err(|_| {
-            ToolError::new(
-                "V3_PROTO_PAGE_TOO_LARGE",
-                "Encoded V3 metadata page exceeds uint32",
-            )
-        })?;
-        file.write_all(&payload)?;
-        locators.push(PayloadLocator {
-            offset,
-            byte_length,
-            crc32c: crc32c(&payload),
-        });
-        offset = offset
-            .checked_add(u64::from(byte_length))
-            .ok_or_else(|| ToolError::invalid_format("V3 metadata data offset overflow"))?;
-    }
-    file.sync_all()?;
-    Ok(locators)
-}
-
-struct EncodedSection {
-    kind: SectionKind,
-    record_size: u16,
-    record_count: u64,
-    bytes: Vec<u8>,
-}
-
-fn payload_locator_section(locators: &[PayloadLocator]) -> EncodedSection {
-    let mut bytes = Vec::with_capacity(locators.len() * PAYLOAD_LOCATOR_SIZE);
-    for locator in locators {
-        bytes.extend_from_slice(&encode_payload_locator(*locator));
-    }
-    EncodedSection {
-        kind: SectionKind::PageLocators,
-        record_size: PAYLOAD_LOCATOR_SIZE as u16,
-        record_count: locators.len() as u64,
-        bytes,
-    }
-}
-
-fn hash_locator_section(kind: SectionKind, locators: &[HashLocator]) -> EncodedSection {
-    let mut bytes = Vec::with_capacity(locators.len() * HASH_LOCATOR_SIZE);
-    for locator in locators {
-        bytes.extend_from_slice(&encode_hash_locator(*locator));
-    }
-    EncodedSection {
-        kind,
-        record_size: HASH_LOCATOR_SIZE as u16,
-        record_count: locators.len() as u64,
-        bytes,
-    }
-}
-
-fn write_index_file(
-    path: &Path,
-    kind: FileKind,
-    primary_count: u64,
-    secondary_count: u64,
-    sections: Vec<EncodedSection>,
-) -> Result<(), ToolError> {
-    let section_count = u32::try_from(sections.len())
-        .map_err(|_| ToolError::invalid_format("V3 index section count exceeds uint32"))?;
-    let directory_bytes = sections
-        .len()
-        .checked_mul(SECTION_DESCRIPTOR_SIZE)
-        .ok_or_else(|| ToolError::invalid_format("V3 section directory size overflow"))?;
-    let mut offset = u64::try_from(HEADER_SIZE + directory_bytes)
-        .map_err(|_| ToolError::invalid_format("V3 index section offset exceeds uint64"))?;
-    let mut descriptors = Vec::with_capacity(sections.len());
-    for section in &sections {
-        if section.bytes.len()
-            != usize::try_from(section.record_count)
-                .ok()
-                .and_then(|count| count.checked_mul(usize::from(section.record_size)))
-                .ok_or_else(|| ToolError::invalid_format("V3 index section size overflow"))?
-        {
-            return Err(ToolError::invalid_format(
-                "V3 encoded index section length does not match records",
-            ));
-        }
-        let descriptor = SectionDescriptor::new(
-            section.kind,
-            section.record_size,
-            offset,
-            section.record_count,
-        )?;
-        offset = descriptor.end()?;
-        descriptors.push(descriptor);
-    }
-
-    let mut file = File::create(path)?;
-    file.write_all(&encode_header(FileHeader::new(
-        kind,
-        primary_count,
-        secondary_count,
-        section_count,
-    )))?;
-    for descriptor in descriptors {
-        file.write_all(&encode_section_descriptor(descriptor))?;
-    }
-    for section in sections {
-        file.write_all(&section.bytes)?;
-    }
-    file.sync_all()?;
-    Ok(())
-}
-
-fn manifest_file(
-    path: &Path,
-    file_name: &str,
-    primary_count: u64,
-    secondary_count: u64,
-) -> Result<ManifestFile, ToolError> {
-    let bytes = fs::read(path)?;
-    Ok(ManifestFile {
-        file_name: file_name.to_owned(),
-        size_bytes: bytes.len() as u64,
-        crc32c: crc32c(&bytes),
-        primary_count,
-        secondary_count,
-    })
-}
-
-fn sort_hash_locators(locators: &mut [HashLocator]) {
-    locators.sort_unstable_by_key(|locator| {
-        (
-            locator.hash,
-            locator.page_id,
-            locator.entry_index,
-            locator.value_index,
-        )
-    });
-}
-
-fn to_u32(name: &str, value: usize) -> Result<u32, ToolError> {
-    u32::try_from(value)
-        .map_err(|_| ToolError::new("V3_INDEX_VALUE_OVERFLOW", format!("{name} exceeds uint32")))
 }
 
 struct PagedDataset {

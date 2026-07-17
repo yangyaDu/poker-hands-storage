@@ -154,4 +154,32 @@ where
             ..self.stats
         }
     }
+
+    pub(crate) fn resize(&mut self, byte_budget: usize) {
+        self.byte_budget = byte_budget;
+        while self.stats.resident_estimated_bytes > self.byte_budget {
+            let Some(lru_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, entry)| entry.last_access)
+                .map(|(key, _)| *key)
+            else {
+                break;
+            };
+            let evicted = self.entries.remove(&lru_key).expect("existing LRU entry");
+            self.stats.resident_estimated_bytes = self
+                .stats
+                .resident_estimated_bytes
+                .saturating_sub(evicted.estimated_bytes);
+            self.stats.evictions = self.stats.evictions.wrapping_add(1);
+            self.stats.evicted_estimated_bytes = self
+                .stats
+                .evicted_estimated_bytes
+                .wrapping_add(evicted.estimated_bytes as u64);
+        }
+    }
+
+    pub(crate) fn byte_budget(&self) -> usize {
+        self.byte_budget
+    }
 }

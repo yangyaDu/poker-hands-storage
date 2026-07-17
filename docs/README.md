@@ -1,6 +1,6 @@
 # Poker Hands Storage 文档地图
 
-更新日期：2026-07-16
+更新日期：2026-07-17
 
 当前默认链路：
 
@@ -31,5 +31,7 @@
 - `range-store-core` 继续提供共享维度、手牌、查询类型和 SQLite 离线访问；其中旧 PFSP reader 是历史参考。
 - 线上运行时只需要 V3 目录，不需要 SQLite 或 V2 产物。
 
-当前代码和 fixture 回归已完成。真实九维 export、cross verify 与性能报告必须在拥有完整源
-`range.db` 的发布环境运行后，才能形成首发数据验收结论。
+当前代码、fixture 回归与真实九维首发数据验收均已完成。2026-07-17 的完整源库 release root 为
+`data/proto-v3-releases/2026-07-17T000001Z`；九份 standalone verify、九份 SQLite cross verify 及九份
+benchmark 汇总位于 `reports/v3-release-20260717/release-gate-summary.json`，verify/cross 均为零失败和零差异，benchmark 均为
+`correctnessVerified=true`。

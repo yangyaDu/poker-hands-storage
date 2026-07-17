@@ -1,0 +1,177 @@
+syntax = "proto3";
+
+// V3 的业务存储 schema。
+//
+// 一个归档目录只对应一个 strategy / player_count / depth_bb 维度；维度信息由
+// manifest.json 声明，因此本文件的 message 不重复存储 dimension_id。
+//
+// 归档中的三条业务查询链为：
+//   drill_name -> abstract_action_path[]
+//   abstract_action_path -> concrete_action_path[]
+//   concrete_action_path_id + hole_cards -> action strategy[]
+//
+// 目录内的数据结构与定位关系：
+//
+//   drill-scenarios.idx          abstract-action-paths.idx       hand-strategies.idx
+//   drill_name -> page/entry     path -> page/entry/value        id -> offset/length/CRC
+//             |                            |                                |
+//             v                            v                                v
+//   DrillScenarioPage          AbstractActionPathPage                 HandStrategy
+//   drill -> abstract[]        abstract -> (id, concrete)[]      169 hands -> action[]
+//
+// 三个 .idx 文件仅负责定位；各 .pb 文件中的 Protobuf payload 才是业务数据事实来源。
+package poker.hands.storage.v3;
+
+// 行动的标准化类别。行动身份还包含 action_size_x10000 与 amount_centi_bb，
+// 因此同一 ActionType 可以存在多个不同尺寸的行动列。
+enum ActionType {
+  ACTION_TYPE_UNSPECIFIED = 0;
+  ACTION_TYPE_FOLD = 1;
+  ACTION_TYPE_CHECK = 2;
+  ACTION_TYPE_CALL = 3;
+  ACTION_TYPE_BET = 4;
+  ACTION_TYPE_RAISE = 5;
+  ACTION_TYPE_ALLIN = 6;
+}
+
+// 手牌空间的编码方式。
+//
+// V3 首期仅导出和读取 PREFLOP：hole_cards 使用现有的 169 种起手牌编码。
+// POSTFLOP 为后续 schema 演进预留；在定义公共牌和 postflop 手牌编码前不得写入。
+enum HandEncoding {
+  HAND_ENCODING_UNSPECIFIED = 0;
+  HAND_ENCODING_PREFLOP = 1;
+  HAND_ENCODING_POSTFLOP = 2;
+}
+
+// drill_name 查询结果的一页。drill-scenarios.pb 由多个此类 Protobuf payload 追加组成；
+// drill-scenarios.idx 使用 drill_name 定位到具体 page 和 entry。
+//
+//   DrillScenarioPage
+//   +-- entries[]
+//       +-- drill_name
+//       `-- abstract_action_paths[]
+message DrillScenarioPage {
+  repeated DrillScenarioEntry entries = 1;
+}
+
+// 一个 drill 场景及其在当前维度中可用的抽象行动路径。
+message DrillScenarioEntry {
+  // 来源 drill_scenario_lines_{strategy}.drill_name。
+  string drill_name = 1;
+
+  // 来源 abstract_line，按字典序稳定排序；每项都必须能在
+  // AbstractActionPathPage 中解析。
+  repeated string abstract_action_paths = 2;
+}
+
+// abstract_action_path 查询结果的一页。abstract-action-paths.pb 由多个此类
+// Protobuf payload 追加组成；同一索引文件同时支持 abstract 与 concrete 路径查询。
+//
+//   AbstractActionPathPage
+//   +-- entries[]
+//       +-- abstract_action_path
+//       `-- concrete_action_paths[]
+//           +-- concrete_action_path_id  --+--> hand-strategies.idx record
+//           `-- concrete_action_path     --+--> concrete path hash index
+message AbstractActionPathPage {
+  repeated AbstractActionPathEntry entries = 1;
+}
+
+// 一个抽象行动路径及其映射到的具体行动路径。
+message AbstractActionPathEntry {
+  // 来源 concrete_lines_{strategy}_{player_count}max_{depth}BB.abstract_line。
+  string abstract_action_path = 1;
+
+  // 按 concrete_action_path_id 升序稳定排序。
+  repeated ConcreteActionPathRef concrete_action_paths = 2;
+}
+
+// 当前维度内的一条具体行动路径。该 ID 是 metadata 与 hand strategy payload
+// 之间的外键，不是 AbstractActionPathEntry 内的局部数组下标。
+message ConcreteActionPathRef {
+  // 当前维度内从 1 连续编号，取值范围为
+  // 1..=hand-strategies.idx record count。该值直接定位对应 HandStrategy。
+  uint32 concrete_action_path_id = 1;
+
+  // 来源 concrete_line。当前维度内必须唯一；concrete 路径索引通过该完整字符串
+  // 验证 hash 命中，避免 hash collision 造成误解析。
+  string concrete_action_path = 2;
+}
+
+// 一个具体行动路径下的全部 preflop 手牌策略。
+//
+// hand-strategies.pb 直接追加该 message 的 raw Protobuf payload；第 N 条
+// hand-strategies.idx record 对应 concrete_action_path_id=N。
+//
+// 手牌/行动定位示意：
+//
+//   hole_cards -> hand_id (0..168)
+//                   |
+//                   v
+//   available_hand_bitmap (original hand-id space)
+//                   |  rank(set bit)
+//                   v
+//           global_compact_index
+//                   |
+//                   v
+//   ActionStrategyColumn.action_hand_bitmap
+//                   |  rank(set bit)
+//                   v
+//          action-local array index -> frequency_x10000[index]
+//                                    -> hand_ev_x10000[index]
+message HandStrategy {
+  // 固定为 3；reader 必须拒绝其他 schema version。
+  uint32 schema_version = 1;
+
+  // V3 首期固定为 HAND_ENCODING_PREFLOP。
+  HandEncoding hand_encoding = 2;
+
+  // 行动列。每列覆盖自己拥有的手牌 cell，行动身份为
+  // (action_type, action_size_x10000, amount_centi_bb)，同一策略内不得重复。
+  repeated ActionStrategyColumn actions = 3;
+
+  // 原始 preflop hand_id（0..168）空间的 LSB-first 位图，固定 22 bytes。
+  // bit 的 rank 定义 hand_id -> global_compact_index 映射；其置位集合必须等于
+  // 所有 ActionStrategyColumn.action_hand_bitmap 覆盖手牌的并集。
+  bytes available_hand_bitmap = 100;
+}
+
+// 单个行动列在所有相关手牌上的策略值。
+//
+// 对同一个 action_hand_bitmap，三个字段始终按相同的 action-local index 对齐：
+//
+//   action_hand_bitmap:  0 1 0 1 1 ...
+//                          |   | |
+//   frequency_x10000:   [f0, f1, f2, ...]
+//   hand_ev_x10000:     [e0, e1, e2, ...]
+//
+// 位图第 k 个置位 bit 对应两个数组的第 k 项。
+message ActionStrategyColumn {
+  // 行动类别；不得为 ACTION_TYPE_UNSPECIFIED。
+  ActionType action_type = 1;
+
+  // 行动完成后当前玩家在本轮的总投入，单位为 1/100 BB。
+  uint32 amount_centi_bb = 2;
+
+  // 行动尺寸，单位为 1/10000。
+  uint32 action_size_x10000 = 3;
+
+  // 仅保存 action_hand_bitmap 置位手牌的频率；数组顺序等于位图置位 bit 的升序。
+  //
+  // 0..=10000：round(frequency * 10000)。
+  // 20000：source hand_ev 为 NULL 的保留哨兵；对应 hand_ev_x10000 必须为 0，
+  // reader 对外解码为 frequency=0、hand_ev=null。
+  // 10001..19999 及大于 20000 的值均非法。
+  repeated uint32 frequency_x10000 = 4 [packed = true];
+
+  // 与 frequency_x10000 一一对应的 EV，单位为 1/10000。
+  // 真实 EV 可为负；frequency 哨兵为 20000 时该项固定为 0，不能作为真实 EV 使用。
+  repeated sint32 hand_ev_x10000 = 5 [packed = true];
+
+  // global_compact_index 空间的 LSB-first 位图，长度必须为
+  // ceil(popcount(HandStrategy.available_hand_bitmap) / 8)。
+  // 置位 bit 的 rank 定义 action-local array index；frequency_x10000 与
+  // hand_ev_x10000 的长度均必须等于该位图的置位数，尾部 padding bit 必须为 0。
+  bytes action_hand_bitmap = 6;
+}
