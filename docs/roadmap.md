@@ -22,7 +22,7 @@ Proto V3 首发发布门禁已完成。2026-07-17 的不可变 release root 为
 
 HTTP service 与 Bun/Node native SDK 运行时只读取 V3 目录；线上不依赖源 SQLite、`meta.db`、
 `lines.db`、Range Strata Binary 或 Proto V2 产物。V2 和历史 Binary 代码仅保留为参考与回归资产，
-不是当前运行时或发布格式。
+不是当前运行时或发布格式；V2 方案已冻结，不再安排功能、性能、benchmark 或兼容性开发。
 
 ## 后续工作
 
@@ -56,19 +56,20 @@ HTTP service 与 Bun/Node native SDK 运行时只读取 V3 目录；线上不依
 - 抽取 metadata/strategy 共用的 payload/index writer，并使用具名路径结构与强类型维度 key。
 - 重构不改变已发布 V3 磁盘契约，并保持 V3 专属测试、九维验证与 benchmark 门禁通过。
 
-### 4. 可选的历史代码清理
+### 4. 冻结的历史资产
 
-目的：在确认没有参考或回归依赖后，评估精简 V2/历史 Binary 代码和文档。
+Proto V2 已停止开发，不再作为实施方案或优化目标。若未来需要删除历史资产，必须另开独立清理任务，
+不影响当前 V3 工作。
 
-验收条件：
+当前约束：
 
-- 先盘点仍被测试、benchmark 或迁移工具使用的 V2 资产。
-- 每次删除都独立评审，并明确不会改变 V3 runtime、发布格式或已发布 V3 release 的可读性。
-- 未完成盘点前，V2 内容保持明确的“历史/参考”定位。
+- 不新增或改造 V2 功能、性能优化、benchmark、导出格式或兼容路径。
+- V2 仅保留为历史参考；任何删除或归档动作单独评审。
 
 ## 暂不做
 
 - 不在 V3 runtime 中恢复 SQLite metadata、Range Strata Binary 或 V2 双读/回退路径。
+- 不恢复 Proto V2 的实施计划或迭代开发。
 - 不复制每个节点的 169 手牌策略 payload。
 - 不把 `storage-tools` CLI 放进 HTTP service runtime 镜像。
 - 不在当前阶段做 Java、Python、Go 等多语言 SDK。

@@ -1,7 +1,7 @@
 # poker-hands-storage
 
 独立的 Rust 存储与查询服务。HTTP service 与 Bun/Node native SDK 运行时使用 Proto V3 业务存储；
-`storage-tools` 以 V3 作为当前主发布格式和命令集，同时保留显式的 V2 参考命令。
+`storage-tools` 以 V3 作为当前主发布格式和命令集；V2 已冻结，仅保留显式历史参考命令。
 
 一个 V3 根目录包含若干维度子目录；每个维度固定由七个文件组成：
 
