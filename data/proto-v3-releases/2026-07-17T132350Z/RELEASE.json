@@ -1,0 +1,39 @@
+{
+  "schemaVersion": 1,
+  "releaseId": "2026-07-17T132350Z",
+  "format": "proto-v3",
+  "createdAt": "2026-07-17T13:30:02Z",
+  "source": {
+    "fileName": "range.db",
+    "byteLength": 1517748224,
+    "sha256": "0e022c8d273e31b7b4664658411516c24ad2c3829cea9f0cc3cf8f39705a912a"
+  },
+  "build": {
+    "gitCommit": "617a6c7a795def4f6c4de2752e7a2dd7887dff0f",
+    "tool": "poker-hands-storage-tools"
+  },
+  "dimensions": [
+    "default:6:100",
+    "default:6:200",
+    "default:6:300",
+    "default:8:100",
+    "default:8:200",
+    "default:8:300",
+    "default:9:100",
+    "default:9:200",
+    "default:9:300"
+  ],
+  "payload": {
+    "fileCount": 63,
+    "byteLength": 174021244,
+    "checksumsFile": "SHA256SUMS",
+    "checksumsSha256": "39645db8b2a65fef522d792ae46fb76fa8251671f92bc518c79bf3195dd3c89d"
+  },
+  "evidence": {
+    "directoryName": "v3-release-20260717T132350Z",
+    "standaloneReports": 9,
+    "crossReports": 9,
+    "benchmarkReports": 9,
+    "allPassed": true
+  }
+}

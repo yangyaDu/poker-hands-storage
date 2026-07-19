@@ -9,7 +9,7 @@ use crate::DimensionReader;
 /// Thread-safe LRU pool of open [`DimensionReader`] handles.
 #[derive(Debug)]
 pub struct HandlePool {
-    data_dir: PathBuf,
+data_dir: PathBuf,
     known: HashMap<String, QueryableDimension>,
     capacity: usize,
     state: Mutex<PoolState>,

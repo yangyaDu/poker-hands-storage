@@ -1,0 +1,67 @@
+{
+  "format": "POKER_HANDS_PROTO_V3",
+  "version": 3,
+  "payloadSchema": "poker.hands.storage.v3",
+  "strategy": "default",
+  "playerCount": 9,
+  "depthBb": 100,
+  "handEncoding": "HAND_ENCODING_PREFLOP",
+  "complete": true,
+  "drillScenarios": {
+    "data": {
+      "fileName": "drill-scenarios.pb",
+      "sizeBytes": 11289,
+      "crc32c": 1420304645,
+      "primaryCount": 1,
+      "secondaryCount": 9
+    },
+    "index": {
+      "fileName": "drill-scenarios.idx",
+      "sizeBytes": 328,
+      "crc32c": 907896291,
+      "primaryCount": 1,
+      "secondaryCount": 9
+    },
+    "pageCount": 1,
+    "drillCount": 9,
+    "hashRecordCount": 9
+  },
+  "abstractActionPaths": {
+    "data": {
+      "fileName": "abstract-action-paths.pb",
+      "sizeBytes": 7924221,
+      "crc32c": 2119811330,
+      "primaryCount": 125,
+      "secondaryCount": 4040
+    },
+    "index": {
+      "fileName": "abstract-action-paths.idx",
+      "sizeBytes": 4829176,
+      "crc32c": 4058563516,
+      "primaryCount": 125,
+      "secondaryCount": 201127
+    },
+    "pageCount": 125,
+    "abstractPathCount": 4040,
+    "concretePathCount": 197087,
+    "abstractHashRecordCount": 4040,
+    "concreteHashRecordCount": 197087
+  },
+  "handStrategies": {
+    "data": {
+      "fileName": "hand-strategies.pb",
+      "sizeBytes": 43250224,
+      "crc32c": 3424605830,
+      "primaryCount": 197087,
+      "secondaryCount": 0
+    },
+    "index": {
+      "fileName": "hand-strategies.idx",
+      "sizeBytes": 3153456,
+      "crc32c": 1260918441,
+      "primaryCount": 197087,
+      "secondaryCount": 0
+    },
+    "recordCount": 197087
+  }
+}
